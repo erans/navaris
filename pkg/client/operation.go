@@ -34,10 +34,11 @@ func (c *Client) ListOperations(ctx context.Context, sandboxID, state string) ([
 
 // CancelOperation cancels a pending or running operation.
 func (c *Client) CancelOperation(ctx context.Context, id string) error {
-	_, err := c.doRequest(ctx, "POST", fmt.Sprintf("/v1/operations/%s/cancel", id), nil)
+	resp, err := c.doRequest(ctx, "POST", fmt.Sprintf("/v1/operations/%s/cancel", id), nil)
 	if err != nil {
 		return err
 	}
+	resp.Body.Close()
 	return nil
 }
 

@@ -163,6 +163,13 @@ func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operatio
 		return nil, fmt.Errorf("cannot start sandbox in state %s: %w", sbx.State, domain.ErrInvalidState)
 	}
 
+	// Transition to starting before enqueue to prevent duplicate operations
+	sbx.State = domain.SandboxStarting
+	sbx.UpdatedAt = time.Now().UTC()
+	if err := s.sandboxes.Update(ctx, sbx); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	op := &domain.Operation{
 		OperationID:  uuid.NewString(),
@@ -187,6 +194,13 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 	}
 	if !sbx.State.CanTransitionTo(domain.SandboxStopping) {
 		return nil, fmt.Errorf("cannot stop sandbox in state %s: %w", sbx.State, domain.ErrInvalidState)
+	}
+
+	// Transition to stopping before enqueue to prevent duplicate operations
+	sbx.State = domain.SandboxStopping
+	sbx.UpdatedAt = time.Now().UTC()
+	if err := s.sandboxes.Update(ctx, sbx); err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()

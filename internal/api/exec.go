@@ -58,10 +58,12 @@ func (s *Server) execInSandbox(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		stdout, stdoutErr = io.ReadAll(io.LimitReader(handle.Stdout, 10<<20))
+		handle.Stdout.Close()
 	}()
 	go func() {
 		defer wg.Done()
 		stderr, stderrErr = io.ReadAll(io.LimitReader(handle.Stderr, 1<<20))
+		handle.Stderr.Close()
 	}()
 	wg.Wait()
 

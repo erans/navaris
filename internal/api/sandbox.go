@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -186,8 +187,11 @@ func (s *Server) startSandbox(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req stopSandboxRequest
-	// Body is optional for stop; ignore decode errors
-	decodeJSON(r, &req)
+	// Body is optional for stop; only ignore EOF (empty body)
+	if err := decodeJSON(r, &req); err != nil && err != io.EOF {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
 
 	op, err := s.cfg.Sandboxes.Stop(r.Context(), id, req.Force)
 	if err != nil {
