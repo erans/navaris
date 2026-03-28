@@ -1,0 +1,92 @@
+package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+var operationCmd = &cobra.Command{
+	Use:   "operation",
+	Short: "Manage asynchronous operations",
+}
+
+func init() {
+	operationCmd.AddCommand(operationListCmd)
+	operationCmd.AddCommand(operationGetCmd)
+	operationCmd.AddCommand(operationCancelCmd)
+}
+
+var operationListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List operations",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sandboxID, _ := cmd.Flags().GetString("sandbox")
+		state, _ := cmd.Flags().GetString("state")
+
+		c := newClient(cmd)
+		ops, err := c.ListOperations(cmd.Context(), sandboxID, state)
+		if err != nil {
+			return err
+		}
+		printResult(ops, []string{"OPERATION_ID", "TYPE", "STATE", "RESOURCE", "STARTED_AT"}, func() [][]string {
+			rows := make([][]string, len(ops))
+			for i, op := range ops {
+				rows[i] = []string{
+					op.OperationID, op.Type, string(op.State), op.ResourceID,
+					op.StartedAt.Format("2006-01-02T15:04:05Z"),
+				}
+			}
+			return rows
+		})
+		return nil
+	},
+}
+
+var operationGetCmd = &cobra.Command{
+	Use:   "get <operation-id>",
+	Short: "Get an operation by ID",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := newClient(cmd)
+		op, err := c.GetOperation(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		fin := "-"
+		if op.FinishedAt != nil {
+			fin = op.FinishedAt.Format(time.RFC3339)
+		}
+		errText := "-"
+		if op.ErrorText != "" {
+			errText = op.ErrorText
+		}
+		printResult(op, []string{"OPERATION_ID", "TYPE", "STATE", "RESOURCE", "STARTED_AT", "FINISHED_AT", "ERROR"}, func() [][]string {
+			return [][]string{{
+				op.OperationID, op.Type, string(op.State), op.ResourceID,
+				op.StartedAt.Format(time.RFC3339), fin, errText,
+			}}
+		})
+		return nil
+	},
+}
+
+var operationCancelCmd = &cobra.Command{
+	Use:   "cancel <operation-id>",
+	Short: "Cancel a pending or running operation",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := newClient(cmd)
+		if err := c.CancelOperation(cmd.Context(), args[0]); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Operation %s cancelled\n", args[0])
+		return nil
+	},
+}
+
+func init() {
+	operationListCmd.Flags().String("sandbox", "", "Filter by sandbox ID")
+	operationListCmd.Flags().String("state", "", "Filter by state (pending, running, succeeded, failed, cancelled)")
+}
