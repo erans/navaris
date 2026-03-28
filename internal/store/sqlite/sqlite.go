@@ -7,8 +7,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/navaris/navaris/internal/store"
 	_ "modernc.org/sqlite"
 )
+
+var _ store.Store = (*Store)(nil)
 
 //go:embed migrations/*.sql
 var migrations embed.FS
