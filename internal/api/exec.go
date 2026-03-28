@@ -49,9 +49,14 @@ func (s *Server) execInSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stdout, _ := io.ReadAll(handle.Stdout)
-	stderr, _ := io.ReadAll(handle.Stderr)
-	exitCode, _ := handle.Wait()
+	stdout, stdoutErr := io.ReadAll(handle.Stdout)
+	stderr, stderrErr := io.ReadAll(handle.Stderr)
+	exitCode, waitErr := handle.Wait()
+
+	if stdoutErr != nil || stderrErr != nil || waitErr != nil {
+		http.Error(w, "exec stream failed", http.StatusInternalServerError)
+		return
+	}
 
 	resp := execResponse{
 		ExitCode: exitCode,

@@ -20,6 +20,7 @@ type CreateSandboxOpts struct {
 
 type SandboxService struct {
 	sandboxes domain.SandboxStore
+	snapshots domain.SnapshotStore
 	ops       domain.OperationStore
 	ports     domain.PortBindingStore
 	sessions  domain.SessionStore
@@ -30,6 +31,7 @@ type SandboxService struct {
 
 func NewSandboxService(
 	sandboxes domain.SandboxStore,
+	snapshots domain.SnapshotStore,
 	ops domain.OperationStore,
 	ports domain.PortBindingStore,
 	sessions domain.SessionStore,
@@ -39,6 +41,7 @@ func NewSandboxService(
 ) *SandboxService {
 	svc := &SandboxService{
 		sandboxes: sandboxes,
+		snapshots: snapshots,
 		ops:       ops,
 		ports:     ports,
 		sessions:  sessions,
@@ -244,20 +247,44 @@ func (s *SandboxService) handleCreate(ctx context.Context, op *domain.Operation)
 	s.sandboxes.Update(ctx, sbx)
 	s.publishStateChange(ctx, sbx)
 
-	// Create via provider
-	ref, err := s.provider.CreateSandbox(ctx, domain.CreateSandboxRequest{
+	createReq := domain.CreateSandboxRequest{
 		Name:          sbx.Name,
 		ImageRef:      sbx.SourceImageID,
 		CPULimit:      sbx.CPULimit,
 		MemoryLimitMB: sbx.MemoryLimitMB,
 		NetworkMode:   sbx.NetworkMode,
-	})
-	if err != nil {
-		sbx.State = domain.SandboxFailed
-		sbx.UpdatedAt = time.Now().UTC()
-		s.sandboxes.Update(ctx, sbx)
-		s.publishStateChange(ctx, sbx)
-		return err
+	}
+
+	var ref domain.BackendRef
+	if sbx.ParentSnapshotID != "" {
+		// Snapshot-based creation: look up snapshot backend ref
+		snap, err := s.snapshots.Get(ctx, sbx.ParentSnapshotID)
+		if err != nil {
+			sbx.State = domain.SandboxFailed
+			sbx.UpdatedAt = time.Now().UTC()
+			s.sandboxes.Update(ctx, sbx)
+			s.publishStateChange(ctx, sbx)
+			return fmt.Errorf("lookup parent snapshot: %w", err)
+		}
+		snapshotRef := domain.BackendRef{Backend: snap.Backend, Ref: snap.BackendRef}
+		ref, err = s.provider.CreateSandboxFromSnapshot(ctx, snapshotRef, createReq)
+		if err != nil {
+			sbx.State = domain.SandboxFailed
+			sbx.UpdatedAt = time.Now().UTC()
+			s.sandboxes.Update(ctx, sbx)
+			s.publishStateChange(ctx, sbx)
+			return err
+		}
+	} else {
+		// Image-based creation
+		ref, err = s.provider.CreateSandbox(ctx, createReq)
+		if err != nil {
+			sbx.State = domain.SandboxFailed
+			sbx.UpdatedAt = time.Now().UTC()
+			s.sandboxes.Update(ctx, sbx)
+			s.publishStateChange(ctx, sbx)
+			return err
+		}
 	}
 
 	sbx.BackendRef = ref.Ref

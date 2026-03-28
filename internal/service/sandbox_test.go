@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func newServiceEnv(t *testing.T) *serviceEnv {
 
 	projSvc := service.NewProjectService(s.ProjectStore())
 	sbxSvc := service.NewSandboxService(
-		s.SandboxStore(), s.OperationStore(), s.PortBindingStore(),
+		s.SandboxStore(), s.SnapshotStore(), s.OperationStore(), s.PortBindingStore(),
 		s.SessionStore(), mock, bus, disp,
 	)
 
@@ -157,5 +158,64 @@ func TestSandboxServiceCreateWithOptions(t *testing.T) {
 	}
 	if *sbx.MemoryLimitMB != 2048 {
 		t.Errorf("wrong memory: %d", *sbx.MemoryLimitMB)
+	}
+}
+
+func TestSandboxServiceCreateFromSnapshot(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := t.Context()
+
+	// Create a sandbox first so we have a snapshot parent
+	createOp, err := env.sandbox.Create(ctx, env.projectID, "parent-sbx", "img", service.CreateSandboxOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.dispatcher.WaitIdle()
+
+	// Create a snapshot record in the store
+	sbx, _ := env.sandbox.Get(ctx, createOp.ResourceID)
+	snap := &domain.Snapshot{
+		SnapshotID: uuid.NewString(),
+		SandboxID:  sbx.SandboxID,
+		Backend:    sbx.Backend,
+		BackendRef: "snap-ref-123",
+		Label:      "test-snap",
+		State:      domain.SnapshotReady,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := env.store.SnapshotStore().Create(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+
+	// Track whether CreateSandboxFromSnapshot was called
+	called := false
+	env.mock.CreateSandboxFromSnapshotFn = func(_ context.Context, snapshotRef domain.BackendRef, _ domain.CreateSandboxRequest) (domain.BackendRef, error) {
+		called = true
+		if snapshotRef.Ref != "snap-ref-123" {
+			t.Errorf("expected snapshot ref snap-ref-123, got %s", snapshotRef.Ref)
+		}
+		return domain.BackendRef{Backend: "mock", Ref: "mock-from-snap"}, nil
+	}
+
+	op, err := env.sandbox.CreateFromSnapshot(ctx, env.projectID, "snap-sbx", snap.SnapshotID, service.CreateSandboxOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.dispatcher.WaitIdle()
+
+	if !called {
+		t.Error("expected CreateSandboxFromSnapshot to be called")
+	}
+
+	newSbx, err := env.sandbox.Get(ctx, op.ResourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSbx.State != domain.SandboxRunning {
+		t.Errorf("expected running, got %s", newSbx.State)
+	}
+	if newSbx.BackendRef != "mock-from-snap" {
+		t.Errorf("expected backend ref mock-from-snap, got %s", newSbx.BackendRef)
 	}
 }
