@@ -102,6 +102,9 @@ func (d *Dispatcher) loop() {
 		case <-d.done:
 			return
 		case op := <-d.queue:
+			if op == nil {
+				return
+			}
 			d.sem <- struct{}{} // acquire
 			go d.run(op)
 		}
