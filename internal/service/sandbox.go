@@ -1,0 +1,383 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/worker"
+)
+
+type CreateSandboxOpts struct {
+	CPULimit      *int
+	MemoryLimitMB *int
+	NetworkMode   domain.NetworkMode
+	ExpiresAt     *time.Time
+	Metadata      map[string]any
+}
+
+type SandboxService struct {
+	sandboxes domain.SandboxStore
+	ops       domain.OperationStore
+	ports     domain.PortBindingStore
+	sessions  domain.SessionStore
+	provider  domain.Provider
+	events    domain.EventBus
+	workers   *worker.Dispatcher
+}
+
+func NewSandboxService(
+	sandboxes domain.SandboxStore,
+	ops domain.OperationStore,
+	ports domain.PortBindingStore,
+	sessions domain.SessionStore,
+	provider domain.Provider,
+	events domain.EventBus,
+	workers *worker.Dispatcher,
+) *SandboxService {
+	svc := &SandboxService{
+		sandboxes: sandboxes,
+		ops:       ops,
+		ports:     ports,
+		sessions:  sessions,
+		provider:  provider,
+		events:    events,
+		workers:   workers,
+	}
+	svc.registerHandlers()
+	return svc
+}
+
+func (s *SandboxService) registerHandlers() {
+	s.workers.Register("create_sandbox", s.handleCreate)
+	s.workers.Register("start_sandbox", s.handleStart)
+	s.workers.Register("stop_sandbox", s.handleStop)
+	s.workers.Register("destroy_sandbox", s.handleDestroy)
+}
+
+func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	now := time.Now().UTC()
+	networkMode := opts.NetworkMode
+	if networkMode == "" {
+		networkMode = domain.NetworkIsolated
+	}
+
+	sbx := &domain.Sandbox{
+		SandboxID:     uuid.NewString(),
+		ProjectID:     projectID,
+		Name:          name,
+		State:         domain.SandboxPending,
+		Backend:       "incus",
+		SourceImageID: imageID,
+		NetworkMode:   networkMode,
+		CPULimit:      opts.CPULimit,
+		MemoryLimitMB: opts.MemoryLimitMB,
+		ExpiresAt:     opts.ExpiresAt,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Metadata:      opts.Metadata,
+	}
+	if err := s.sandboxes.Create(ctx, sbx); err != nil {
+		return nil, err
+	}
+
+	op := &domain.Operation{
+		OperationID:  uuid.NewString(),
+		ResourceType: "sandbox",
+		ResourceID:   sbx.SandboxID,
+		SandboxID:    sbx.SandboxID,
+		Type:         "create_sandbox",
+		State:        domain.OpPending,
+		StartedAt:    now,
+		Metadata:     map[string]any{"image_id": imageID},
+	}
+	if err := s.ops.Create(ctx, op); err != nil {
+		return nil, err
+	}
+	s.workers.Enqueue(op)
+	return op, nil
+}
+
+func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name, snapshotID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	now := time.Now().UTC()
+	networkMode := opts.NetworkMode
+	if networkMode == "" {
+		networkMode = domain.NetworkIsolated
+	}
+
+	sbx := &domain.Sandbox{
+		SandboxID:        uuid.NewString(),
+		ProjectID:        projectID,
+		Name:             name,
+		State:            domain.SandboxPending,
+		Backend:          "incus",
+		ParentSnapshotID: snapshotID,
+		NetworkMode:      networkMode,
+		CPULimit:         opts.CPULimit,
+		MemoryLimitMB:    opts.MemoryLimitMB,
+		ExpiresAt:        opts.ExpiresAt,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		Metadata:         opts.Metadata,
+	}
+	if err := s.sandboxes.Create(ctx, sbx); err != nil {
+		return nil, err
+	}
+
+	op := &domain.Operation{
+		OperationID:  uuid.NewString(),
+		ResourceType: "sandbox",
+		ResourceID:   sbx.SandboxID,
+		SandboxID:    sbx.SandboxID,
+		Type:         "create_sandbox",
+		State:        domain.OpPending,
+		StartedAt:    now,
+		Metadata:     map[string]any{"snapshot_id": snapshotID},
+	}
+	if err := s.ops.Create(ctx, op); err != nil {
+		return nil, err
+	}
+	s.workers.Enqueue(op)
+	return op, nil
+}
+
+func (s *SandboxService) Get(ctx context.Context, id string) (*domain.Sandbox, error) {
+	return s.sandboxes.Get(ctx, id)
+}
+
+func (s *SandboxService) List(ctx context.Context, filter domain.SandboxFilter) ([]*domain.Sandbox, error) {
+	return s.sandboxes.List(ctx, filter)
+}
+
+func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operation, error) {
+	sbx, err := s.sandboxes.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !sbx.State.CanTransitionTo(domain.SandboxStarting) {
+		return nil, fmt.Errorf("cannot start sandbox in state %s: %w", sbx.State, domain.ErrInvalidState)
+	}
+
+	now := time.Now().UTC()
+	op := &domain.Operation{
+		OperationID:  uuid.NewString(),
+		ResourceType: "sandbox",
+		ResourceID:   sbx.SandboxID,
+		SandboxID:    sbx.SandboxID,
+		Type:         "start_sandbox",
+		State:        domain.OpPending,
+		StartedAt:    now,
+	}
+	if err := s.ops.Create(ctx, op); err != nil {
+		return nil, err
+	}
+	s.workers.Enqueue(op)
+	return op, nil
+}
+
+func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*domain.Operation, error) {
+	sbx, err := s.sandboxes.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !sbx.State.CanTransitionTo(domain.SandboxStopping) {
+		return nil, fmt.Errorf("cannot stop sandbox in state %s: %w", sbx.State, domain.ErrInvalidState)
+	}
+
+	now := time.Now().UTC()
+	op := &domain.Operation{
+		OperationID:  uuid.NewString(),
+		ResourceType: "sandbox",
+		ResourceID:   sbx.SandboxID,
+		SandboxID:    sbx.SandboxID,
+		Type:         "stop_sandbox",
+		State:        domain.OpPending,
+		StartedAt:    now,
+		Metadata:     map[string]any{"force": force},
+	}
+	if err := s.ops.Create(ctx, op); err != nil {
+		return nil, err
+	}
+	s.workers.Enqueue(op)
+	return op, nil
+}
+
+func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operation, error) {
+	sbx, err := s.sandboxes.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if sbx.State == domain.SandboxDestroyed {
+		return nil, fmt.Errorf("sandbox already destroyed: %w", domain.ErrInvalidState)
+	}
+
+	now := time.Now().UTC()
+	op := &domain.Operation{
+		OperationID:  uuid.NewString(),
+		ResourceType: "sandbox",
+		ResourceID:   sbx.SandboxID,
+		SandboxID:    sbx.SandboxID,
+		Type:         "destroy_sandbox",
+		State:        domain.OpPending,
+		StartedAt:    now,
+	}
+	if err := s.ops.Create(ctx, op); err != nil {
+		return nil, err
+	}
+	s.workers.Enqueue(op)
+	return op, nil
+}
+
+// Operation handlers
+
+func (s *SandboxService) handleCreate(ctx context.Context, op *domain.Operation) error {
+	sbx, err := s.sandboxes.Get(ctx, op.ResourceID)
+	if err != nil {
+		return err
+	}
+
+	// Transition to starting
+	sbx.State = domain.SandboxStarting
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+
+	// Create via provider
+	ref, err := s.provider.CreateSandbox(ctx, domain.CreateSandboxRequest{
+		Name:          sbx.Name,
+		ImageRef:      sbx.SourceImageID,
+		CPULimit:      sbx.CPULimit,
+		MemoryLimitMB: sbx.MemoryLimitMB,
+		NetworkMode:   sbx.NetworkMode,
+	})
+	if err != nil {
+		sbx.State = domain.SandboxFailed
+		sbx.UpdatedAt = time.Now().UTC()
+		s.sandboxes.Update(ctx, sbx)
+		s.publishStateChange(ctx, sbx)
+		return err
+	}
+
+	sbx.BackendRef = ref.Ref
+	sbx.Backend = ref.Backend
+
+	// Start the sandbox
+	if err := s.provider.StartSandbox(ctx, ref); err != nil {
+		sbx.State = domain.SandboxFailed
+		sbx.UpdatedAt = time.Now().UTC()
+		s.sandboxes.Update(ctx, sbx)
+		s.publishStateChange(ctx, sbx)
+		return err
+	}
+
+	sbx.State = domain.SandboxRunning
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+	return nil
+}
+
+func (s *SandboxService) handleStart(ctx context.Context, op *domain.Operation) error {
+	sbx, err := s.sandboxes.Get(ctx, op.ResourceID)
+	if err != nil {
+		return err
+	}
+
+	sbx.State = domain.SandboxStarting
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+
+	ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
+	if err := s.provider.StartSandbox(ctx, ref); err != nil {
+		sbx.State = domain.SandboxFailed
+		sbx.UpdatedAt = time.Now().UTC()
+		s.sandboxes.Update(ctx, sbx)
+		s.publishStateChange(ctx, sbx)
+		return err
+	}
+
+	sbx.State = domain.SandboxRunning
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+	return nil
+}
+
+func (s *SandboxService) handleStop(ctx context.Context, op *domain.Operation) error {
+	sbx, err := s.sandboxes.Get(ctx, op.ResourceID)
+	if err != nil {
+		return err
+	}
+
+	sbx.State = domain.SandboxStopping
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+
+	force := false
+	if op.Metadata != nil {
+		if v, ok := op.Metadata["force"].(bool); ok {
+			force = v
+		}
+	}
+
+	ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
+	if err := s.provider.StopSandbox(ctx, ref, force); err != nil {
+		sbx.State = domain.SandboxFailed
+		sbx.UpdatedAt = time.Now().UTC()
+		s.sandboxes.Update(ctx, sbx)
+		s.publishStateChange(ctx, sbx)
+		return err
+	}
+
+	sbx.State = domain.SandboxStopped
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+	return nil
+}
+
+func (s *SandboxService) handleDestroy(ctx context.Context, op *domain.Operation) error {
+	sbx, err := s.sandboxes.Get(ctx, op.ResourceID)
+	if err != nil {
+		return err
+	}
+
+	ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
+
+	// Best-effort cleanup: sessions, port bindings
+	sessions, _ := s.sessions.ListBySandbox(ctx, sbx.SandboxID)
+	for _, sess := range sessions {
+		s.sessions.Delete(ctx, sess.SessionID)
+	}
+	ports, _ := s.ports.ListBySandbox(ctx, sbx.SandboxID)
+	for _, pb := range ports {
+		s.provider.UnpublishPort(ctx, ref, pb.PublishedPort)
+		s.ports.Delete(ctx, sbx.SandboxID, pb.TargetPort)
+	}
+
+	if err := s.provider.DestroySandbox(ctx, ref); err != nil {
+		return err
+	}
+
+	sbx.State = domain.SandboxDestroyed
+	sbx.UpdatedAt = time.Now().UTC()
+	s.sandboxes.Update(ctx, sbx)
+	s.publishStateChange(ctx, sbx)
+	return nil
+}
+
+func (s *SandboxService) publishStateChange(ctx context.Context, sbx *domain.Sandbox) {
+	s.events.Publish(ctx, domain.Event{
+		Type:      domain.EventSandboxStateChanged,
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"sandbox_id": sbx.SandboxID,
+			"project_id": sbx.ProjectID,
+			"state":      string(sbx.State),
+		},
+	})
+}
