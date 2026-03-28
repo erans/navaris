@@ -96,6 +96,7 @@ func (gc *GC) sweepOrphanedSnapshots(ctx context.Context) {
 		ref := domain.BackendRef{Backend: snap.Backend, Ref: snap.BackendRef}
 		if err := gc.provider.DeleteSnapshot(ctx, ref); err != nil {
 			slog.Error("gc: delete orphaned snapshot", "snapshot_id", snap.SnapshotID, "error", err)
+			continue // skip DB deletion so we retry next sweep
 		}
 		if err := gc.snapshots.Delete(ctx, snap.SnapshotID); err != nil {
 			slog.Error("gc: delete orphaned snapshot record", "snapshot_id", snap.SnapshotID, "error", err)

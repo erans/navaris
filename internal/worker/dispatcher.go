@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/navaris/navaris/internal/domain"
@@ -20,10 +21,14 @@ type Dispatcher struct {
 	cancels  sync.Map // operationID -> context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
+	stopped  atomic.Bool
 	done     chan struct{}
 }
 
 func NewDispatcher(opStore domain.OperationStore, events domain.EventBus, concurrency int) *Dispatcher {
+	if concurrency < 1 {
+		concurrency = 1
+	}
 	return &Dispatcher{
 		opStore:  opStore,
 		events:   events,
@@ -44,7 +49,15 @@ func (d *Dispatcher) Start() {
 
 func (d *Dispatcher) Stop() {
 	d.stopOnce.Do(func() {
+		d.stopped.Store(true)
 		close(d.done)
+		// Drain remaining queued items so wg accounting balances
+		go func() {
+			for range d.queue {
+				d.wg.Done()
+			}
+		}()
+		close(d.queue)
 		// Wait for in-flight handlers with timeout
 		ch := make(chan struct{})
 		go func() {
@@ -60,6 +73,10 @@ func (d *Dispatcher) Stop() {
 }
 
 func (d *Dispatcher) Enqueue(op *domain.Operation) {
+	if d.stopped.Load() {
+		slog.Warn("dispatcher: enqueue after stop, dropping operation", "operation_id", op.OperationID)
+		return
+	}
 	d.wg.Add(1)
 	select {
 	case d.queue <- op:

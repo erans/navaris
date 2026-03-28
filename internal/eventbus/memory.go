@@ -50,11 +50,14 @@ func (b *MemoryBus) Subscribe(_ context.Context, filter domain.EventFilter) (<-c
 	b.subscribers[sub] = struct{}{}
 	b.mu.Unlock()
 
+	var once sync.Once
 	cancel := func() {
-		b.mu.Lock()
-		delete(b.subscribers, sub)
-		b.mu.Unlock()
-		close(ch)
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.subscribers, sub)
+			b.mu.Unlock()
+			close(ch)
+		})
 	}
 	return ch, cancel, nil
 }
