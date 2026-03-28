@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/url"
 )
 
 // CreateSandbox creates a new sandbox from an image.
@@ -36,11 +37,12 @@ func (c *Client) GetSandbox(ctx context.Context, id string) (*Sandbox, error) {
 
 // ListSandboxes lists sandboxes for a project, optionally filtering by state.
 func (c *Client) ListSandboxes(ctx context.Context, projectID string, state string) ([]Sandbox, error) {
-	path := fmt.Sprintf("/v1/sandboxes?project_id=%s", projectID)
+	params := url.Values{}
+	params.Set("project_id", projectID)
 	if state != "" {
-		path += fmt.Sprintf("&state=%s", state)
+		params.Set("state", state)
 	}
-	return getList[Sandbox](c, ctx, path)
+	return getList[Sandbox](c, ctx, "/v1/sandboxes?"+params.Encode())
 }
 
 // StartSandbox starts a stopped sandbox.

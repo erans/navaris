@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/navaris/navaris/internal/domain"
 )
@@ -49,8 +50,21 @@ func (s *Server) execInSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stdout, stdoutErr := io.ReadAll(io.LimitReader(handle.Stdout, 10<<20)) // 10 MB limit
-	stderr, stderrErr := io.ReadAll(io.LimitReader(handle.Stderr, 1<<20))  // 1 MB limit
+	// Drain stdout and stderr concurrently to prevent deadlock
+	var stdout, stderr []byte
+	var stdoutErr, stderrErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		stdout, stdoutErr = io.ReadAll(io.LimitReader(handle.Stdout, 10<<20))
+	}()
+	go func() {
+		defer wg.Done()
+		stderr, stderrErr = io.ReadAll(io.LimitReader(handle.Stderr, 1<<20))
+	}()
+	wg.Wait()
+
 	exitCode, waitErr := handle.Wait()
 
 	if stdoutErr != nil || stderrErr != nil || waitErr != nil {

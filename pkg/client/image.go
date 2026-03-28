@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/url"
 )
 
 // PromoteImage promotes a snapshot to a base image.
@@ -35,14 +36,16 @@ func (c *Client) GetImage(ctx context.Context, id string) (*BaseImage, error) {
 
 // ListImages lists images with optional name and architecture filters.
 func (c *Client) ListImages(ctx context.Context, name, architecture string) ([]BaseImage, error) {
-	path := "/v1/images"
-	sep := "?"
+	params := url.Values{}
 	if name != "" {
-		path += fmt.Sprintf("%sname=%s", sep, name)
-		sep = "&"
+		params.Set("name", name)
 	}
 	if architecture != "" {
-		path += fmt.Sprintf("%sarchitecture=%s", sep, architecture)
+		params.Set("architecture", architecture)
+	}
+	path := "/v1/images"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
 	}
 	return getList[BaseImage](c, ctx, path)
 }

@@ -59,8 +59,11 @@ func extractToken(r *http.Request) string {
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	// Fall back to query parameter
-	return r.URL.Query().Get("token")
+	// Fall back to query parameter only for WebSocket endpoints
+	if strings.HasPrefix(r.URL.Path, "/v1/events") {
+		return r.URL.Query().Get("token")
+	}
+	return ""
 }
 
 type statusCapture struct {

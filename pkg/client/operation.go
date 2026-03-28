@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 )
 
@@ -17,14 +18,16 @@ func (c *Client) GetOperation(ctx context.Context, id string) (*Operation, error
 
 // ListOperations lists operations with optional filters.
 func (c *Client) ListOperations(ctx context.Context, sandboxID, state string) ([]Operation, error) {
-	path := "/v1/operations"
-	sep := "?"
+	params := url.Values{}
 	if sandboxID != "" {
-		path += fmt.Sprintf("%ssandbox_id=%s", sep, sandboxID)
-		sep = "&"
+		params.Set("sandbox_id", sandboxID)
 	}
 	if state != "" {
-		path += fmt.Sprintf("%sstate=%s", sep, state)
+		params.Set("state", state)
+	}
+	path := "/v1/operations"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
 	}
 	return getList[Operation](c, ctx, path)
 }

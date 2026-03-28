@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -163,7 +164,11 @@ func (d *Dispatcher) run(op *domain.Operation) {
 
 	// Execute handler
 	if err := handler(ctx, op); err != nil {
-		d.fail(op, err.Error())
+		if errors.Is(err, context.Canceled) {
+			d.cancel(op)
+		} else {
+			d.fail(op, err.Error())
+		}
 		return
 	}
 
@@ -184,6 +189,16 @@ func (d *Dispatcher) fail(op *domain.Operation, errText string) {
 	op.ErrorText = errText
 	if err := d.opStore.Update(context.Background(), op); err != nil {
 		slog.Error("dispatcher: failed to update op to failed", "error", err)
+	}
+	d.publishOpEvent(context.Background(), op)
+}
+
+func (d *Dispatcher) cancel(op *domain.Operation) {
+	now := time.Now().UTC()
+	op.State = domain.OpCancelled
+	op.FinishedAt = &now
+	if err := d.opStore.Update(context.Background(), op); err != nil {
+		slog.Error("dispatcher: failed to update op to cancelled", "error", err)
 	}
 	d.publishOpEvent(context.Background(), op)
 }
