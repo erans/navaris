@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/navaris/navaris/internal/domain"
@@ -40,7 +41,12 @@ func respondError(w http.ResponseWriter, err error) {
 	code := mapErrorCode(err)
 	resp := errorResponse{}
 	resp.Error.Code = code
-	resp.Error.Message = err.Error()
+	if code >= 500 {
+		resp.Error.Message = "internal server error"
+		slog.Error("api error", "status", code, "error", err.Error())
+	} else {
+		resp.Error.Message = err.Error()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(resp)

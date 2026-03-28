@@ -49,8 +49,8 @@ func (s *Server) execInSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stdout, stdoutErr := io.ReadAll(handle.Stdout)
-	stderr, stderrErr := io.ReadAll(handle.Stderr)
+	stdout, stdoutErr := io.ReadAll(io.LimitReader(handle.Stdout, 10<<20)) // 10 MB limit
+	stderr, stderrErr := io.ReadAll(io.LimitReader(handle.Stderr, 1<<20))  // 1 MB limit
 	exitCode, waitErr := handle.Wait()
 
 	if stdoutErr != nil || stderrErr != nil || waitErr != nil {

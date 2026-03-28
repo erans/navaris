@@ -12,17 +12,18 @@ import (
 type OperationHandler func(ctx context.Context, op *domain.Operation) error
 
 type Dispatcher struct {
-	opStore  domain.OperationStore
-	events   domain.EventBus
-	handlers map[string]OperationHandler
-	queue    chan *domain.Operation
-	sem      chan struct{}
-	cancels  sync.Map // operationID -> context.CancelFunc
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	stopped  bool
-	stopOnce sync.Once
-	done     chan struct{}
+	opStore    domain.OperationStore
+	events     domain.EventBus
+	handlers   map[string]OperationHandler
+	queue      chan *domain.Operation
+	sem        chan struct{}
+	cancels    sync.Map // operationID -> context.CancelFunc
+	cancelled  sync.Map // operationID -> struct{} (pre-run cancellation)
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	stopped    bool
+	stopOnce   sync.Once
+	done       chan struct{}
 }
 
 func NewDispatcher(opStore domain.OperationStore, events domain.EventBus, concurrency int) *Dispatcher {
@@ -88,9 +89,13 @@ func (d *Dispatcher) Enqueue(op *domain.Operation) {
 }
 
 func (d *Dispatcher) Cancel(opID string) {
+	// Cancel running operation
 	if cancelFn, ok := d.cancels.LoadAndDelete(opID); ok {
 		cancelFn.(context.CancelFunc)()
+		return
 	}
+	// Mark for cancellation if still queued
+	d.cancelled.Store(opID, struct{}{})
 }
 
 func (d *Dispatcher) WaitIdle() {
@@ -122,6 +127,18 @@ func (d *Dispatcher) run(op *domain.Operation) {
 		<-d.sem // release
 		d.wg.Done()
 	}()
+
+	// Check if cancelled while queued
+	if _, wasCancelled := d.cancelled.LoadAndDelete(op.OperationID); wasCancelled {
+		now := time.Now().UTC()
+		op.State = domain.OpCancelled
+		op.FinishedAt = &now
+		if err := d.opStore.Update(context.Background(), op); err != nil {
+			slog.Error("dispatcher: failed to update op to cancelled", "error", err)
+		}
+		d.publishOpEvent(context.Background(), op)
+		return
+	}
 
 	handler, ok := d.handlers[op.Type]
 	if !ok {

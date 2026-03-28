@@ -47,6 +47,8 @@ func (s *Server) createPort(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     time.Now().UTC(),
 	}
 	if err := s.cfg.Ports.Create(r.Context(), pb); err != nil {
+		// Rollback: unpublish the port we just published
+		s.cfg.Provider.UnpublishPort(r.Context(), ref, endpoint.PublishedPort)
 		respondError(w, err)
 		return
 	}
