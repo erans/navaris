@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/navaris/navaris/internal/api"
+	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/eventbus"
 	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/service"
@@ -74,8 +75,19 @@ func run(cfg config) error {
 	// Worker dispatcher
 	disp := worker.NewDispatcher(store.OperationStore(), bus, cfg.concurrency)
 
-	// Provider (mock for now; Incus added in Phase 10)
-	prov := provider.NewMock()
+	// Provider
+	var prov domain.Provider
+	if cfg.incusSocket != "" {
+		p, err := newIncusProvider(cfg.incusSocket)
+		if err != nil {
+			return fmt.Errorf("incus provider: %w", err)
+		}
+		prov = p
+		logger.Info("using incus provider", "socket", cfg.incusSocket)
+	} else {
+		prov = provider.NewMock()
+		logger.Info("using mock provider")
+	}
 
 	// Services
 	projSvc := service.NewProjectService(store.ProjectStore())
