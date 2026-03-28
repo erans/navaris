@@ -189,6 +189,8 @@ navaris/
 │   │   ├── exec.go
 │   │   ├── events.go
 │   │   └── middleware/
+│   ├── eventbus/              In-memory event pub/sub
+│   │   └── memory.go
 │   └── worker/                Background task execution
 │       ├── dispatcher.go
 │       ├── handlers.go
@@ -214,11 +216,11 @@ navaris/
 **Sandbox:**
 
 ```
-Pending → Starting → Running ⇄ Stopped → Destroyed
-                  ↘ Failed ↙
+Pending → Starting → Running → Stopping → Stopped → Destroyed
+                  ↘   Failed   ↙
 ```
 
-`Failed` is reachable from `Starting`, `Running`, or `Stopping`.
+`Failed` is reachable from `Starting`, `Running`, or `Stopping`. `Stopping` is a transitional state entered when a stop is requested on a running sandbox.
 
 **Snapshot:**
 
@@ -292,8 +294,10 @@ Pending → Ready → Deleted
 | label | string | e.g., `before-task`, `checkpoint-1` |
 | state | enum | |
 | created_at | time | |
+| updated_at | time | |
 | parent_image_id | UUID | nullable |
 | publishable | bool | |
+| consistency_mode | enum | `stopped` or `live` — records how the snapshot was taken |
 | metadata | JSON | |
 
 #### Session
@@ -304,9 +308,10 @@ Pending → Ready → Deleted
 | sandbox_id | UUID | FK to sandbox |
 | backing | enum | `direct` or `tmux` |
 | shell | string | e.g., `/bin/bash` |
-| state | enum | active, exited, destroyed |
+| state | enum | active, detached, exited, destroyed |
 | created_at | time | |
 | last_attached_at | time | nullable |
+| updated_at | time | |
 | idle_timeout | duration | nullable |
 | metadata | JSON | |
 
@@ -377,7 +382,7 @@ type SandboxStore interface {
 }
 
 // Similar interfaces: SnapshotStore, ImageStore, SessionStore,
-// OperationStore, ProjectStore
+// OperationStore, ProjectStore, PortBindingStore
 
 type Provider interface {
     // Sandbox lifecycle
@@ -400,7 +405,9 @@ type Provider interface {
     // Branching and images
     CreateSandboxFromSnapshot(ctx context.Context, snapshotRef BackendRef, req CreateSandboxRequest) (BackendRef, error)
     PublishSnapshotAsImage(ctx context.Context, snapshotRef BackendRef, req PublishImageRequest) (BackendRef, error)
+    // Images
     DeleteImage(ctx context.Context, imageRef BackendRef) error
+    GetImageInfo(ctx context.Context, imageRef BackendRef) (ImageInfo, error)
 
     // Networking
     PublishPort(ctx context.Context, ref BackendRef, targetPort int, opts PublishPortOptions) (PublishedEndpoint, error)
@@ -426,6 +433,42 @@ type BackendRef struct {
 ```
 
 The control plane stores BackendRef but never interprets it. The bridge between control-plane UUIDs and backend-native names.
+
+### 8.5a ConsistencyMode
+
+```go
+type ConsistencyMode string
+const (
+    ConsistencyStopped ConsistencyMode = "stopped" // default: sandbox must be stopped
+    ConsistencyLive    ConsistencyMode = "live"     // explicit opt-in: snapshot while running
+)
+```
+
+### 8.5b Handle types
+
+```go
+type ExecHandle struct {
+    Stdout io.ReadCloser
+    Stderr io.ReadCloser
+    Wait   func() (exitCode int, err error) // blocks until process exits
+    Cancel func() error
+}
+
+type DetachedExecHandle struct {
+    Stdin  io.WriteCloser        // write to the shell
+    Stdout io.ReadCloser         // read from the shell
+    Resize func(w, h int) error  // resize PTY
+    Close  func() error          // terminate the process
+}
+
+type SessionHandle struct {
+    Conn   io.ReadWriteCloser    // bidirectional PTY stream
+    Resize func(w, h int) error
+    Close  func() error
+}
+```
+
+`DetachedExecHandle` is used by the `direct` session backing. The SessionService wraps Stdout in a per-session ring buffer (configurable size, default 1MB) to provide scrollback. The ring buffer is owned by SessionService and lives in the control plane process memory.
 
 ### 8.6 Event types
 
@@ -455,7 +498,9 @@ type SandboxService struct {
 }
 ```
 
-Same pattern for SnapshotService, ImageService, SessionService, ProjectService. OperationService reads/cancels operations only.
+Same pattern for SnapshotService, ImageService, ProjectService. OperationService reads/cancels operations only.
+
+**Exception: SessionService** does not use the Dispatcher or create Operation records. Session create, attach, and destroy are synchronous — the provider calls are fast (start a shell, connect to tmux) and do not benefit from async queuing. This keeps the session API simple for agents that create-and-immediately-attach.
 
 ### 9.2 Mutating operation flow
 
@@ -500,13 +545,16 @@ In-memory output buffer per operation. Fixed size cap (configurable, default 1MB
 
 #### Create session
 
+**Precondition:** Sandbox must be in `Running` state. Returns `ErrInvalidState` otherwise.
+
 ```
 CreateSession request
+  → Validate sandbox state is Running
   → Service determines backing strategy (direct, tmux, or auto-detect)
   → Creates Session record (state=Active)
   → For direct: calls provider.ExecDetached() to start shell, wraps in ring buffer
   → For tmux: calls provider.Exec() with "tmux new-session -d -s <id>"
-  → Returns Session
+  → Returns Session (synchronous, no Operation)
 ```
 
 #### Attach to session
@@ -532,7 +580,10 @@ GetScrollback request (synchronous GET)
 ```
 SendInput request (POST)
   → For direct: writes to PTY stdin
-  → For tmux: runs "tmux send-keys -t <id> '<input>' Enter" via provider.Exec()
+  → For tmux: runs "tmux send-keys -t <id> -l '<input>'" via provider.Exec()
+    (the -l flag sends literal characters, avoiding tmux key-name interpretation)
+    Input is base64-encoded on the wire and decoded by the API handler before passing to tmux.
+    Newlines in the input are sent as-is; the caller explicitly includes \n if Enter is intended.
 ```
 
 #### Behaviors
@@ -540,7 +591,7 @@ SendInput request (POST)
 - Multiple sessions per sandbox: yes
 - Multiple clients on same session: tmux supports natively; direct allows one at a time in v1
 - Session outlives sandbox stop: no. Stopping kills processes. Session moves to exited.
-- Sandbox destroy cascades: all sessions destroyed
+- Sandbox destroy cascades: all sessions destroyed. All pending/running operations on the sandbox are cancelled first, then destruction proceeds.
 - CP restart with tmux backing: sessions survive. Reconciliation re-discovers via `tmux list-sessions`.
 - CP restart with direct backing: PTY process may still run but buffer and tracking are lost. Session marked exited on reconciliation.
 
@@ -594,6 +645,7 @@ Connects via Unix socket (`/var/lib/incus/unix.socket`). No TLS for local v1.
 | PublishSnapshotAsImage | `Publish` creates reusable image, returns fingerprint |
 | PublishPort | Incus proxy device: `host:allocatedPort → container:targetPort` |
 | UnpublishPort | Remove proxy device |
+| GetImageInfo | `GetImage` to fetch image metadata by fingerprint |
 
 ### 10.3 Port allocation
 
@@ -658,8 +710,10 @@ CREATE TABLE snapshots (
     label            TEXT NOT NULL,
     state            TEXT NOT NULL,
     created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
     parent_image_id  TEXT,
     publishable      INTEGER NOT NULL DEFAULT 0,
+    consistency_mode TEXT NOT NULL DEFAULT 'stopped',
     metadata         TEXT
 );
 
@@ -670,6 +724,7 @@ CREATE TABLE sessions (
     shell            TEXT NOT NULL DEFAULT '/bin/bash',
     state            TEXT NOT NULL,
     created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
     last_attached_at TEXT,
     idle_timeout_sec INTEGER,
     metadata         TEXT
@@ -772,8 +827,8 @@ DELETE /v1/projects/:id                          → DeleteProject
 
 POST   /v1/sandboxes                             → CreateSandbox
 POST   /v1/sandboxes/from-snapshot               → CreateSandboxFromSnapshot
-POST   /v1/sandboxes/from-image                  → CreateSandboxFromImage
-GET    /v1/sandboxes                             → ListSandboxes
+POST   /v1/sandboxes/from-image                  → CreateSandboxFromImage (sugar: CreateSandbox with image_id)
+GET    /v1/sandboxes                             → ListSandboxes (?project_id= required)
 GET    /v1/sandboxes/:id                         → GetSandbox
 POST   /v1/sandboxes/:id/start                   → StartSandbox
 POST   /v1/sandboxes/:id/stop                    → StopSandbox
@@ -782,6 +837,7 @@ POST   /v1/sandboxes/:id/exec                    → Exec
 GET    /v1/sandboxes/:id/attach                  → AttachSession (WS, non-persistent)
 POST   /v1/sandboxes/:id/ports                   → PublishPort
 DELETE /v1/sandboxes/:id/ports/:port             → UnpublishPort
+GET    /v1/sandboxes/:id/ports                   → ListPortBindings
 
 POST   /v1/sandboxes/:id/sessions               → CreateSession
 GET    /v1/sandboxes/:id/sessions               → ListSessions
@@ -793,12 +849,14 @@ DELETE /v1/sessions/:id                          → DestroySession
 
 POST   /v1/sandboxes/:id/snapshots               → CreateSnapshot
 GET    /v1/sandboxes/:id/snapshots               → ListSnapshots
-POST   /v1/sandboxes/:id/restore                 → RestoreSnapshot
+GET    /v1/snapshots/:id                         → GetSnapshot
+POST   /v1/sandboxes/:id/snapshots/:sid/restore  → RestoreSnapshot
 DELETE /v1/snapshots/:id                         → DeleteSnapshot
 
 POST   /v1/images                                → CreateBaseImageFromSnapshot
 POST   /v1/images/register                       → RegisterBaseImage
 GET    /v1/images                                → ListBaseImages
+GET    /v1/images/:id                            → GetBaseImage
 DELETE /v1/images/:id                            → DeleteBaseImage
 
 GET    /v1/operations                            → ListOperations
@@ -843,6 +901,25 @@ Error codes are machine-readable strings. HTTP status codes are set appropriatel
 ### 12.4 Auth middleware
 
 Bearer token from `Authorization` header. In v1, a static secret generated at install time. Rejects unauthenticated requests with 401.
+
+For WebSocket upgrade requests, the token may be passed as a `?token=` query parameter, since some WebSocket clients cannot set Authorization headers. The server accepts either mechanism.
+
+### 12.4a Pagination
+
+v1 list endpoints return all matching records without pagination. Response lists are expected to be small for local development. The response envelope reserves space for pagination metadata:
+
+```json
+{
+  "data": [ ... ],
+  "pagination": null
+}
+```
+
+v2 will populate `pagination` with cursor/limit fields. SDK and CLI code should not assume the list is complete if `pagination` is non-null.
+
+### 12.4b Project filtering
+
+List endpoints that return project-scoped resources (`ListSandboxes`, `ListSessions`, `ListSnapshots`) require a `?project_id=` query parameter. Omitting it returns a 400 error. The CLI uses the configured `default_project` automatically. `ListOperations` accepts an optional `?project_id=` filter but does not require it.
 
 ### 12.5 Request ID
 
@@ -974,8 +1051,8 @@ navaris
 ├── project create|list|get|update|delete
 ├── sandbox create|list|get|start|stop|destroy|exec|attach|port
 ├── session create|list|get|attach|scrollback|input|destroy
-├── snapshot create|list|restore|delete
-├── image list|promote|register|delete
+├── snapshot create|list|get|restore|delete
+├── image list|get|promote|register|delete
 ├── operation list|get|cancel|stream
 └── config
 ```
