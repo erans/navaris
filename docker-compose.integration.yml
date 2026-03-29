@@ -25,8 +25,6 @@ services:
       - --incus-socket=/var/lib/incus/unix.socket
       - --auth-token=test-token
       - --log-level=debug
-    ports:
-      - "${NAVARIS_HOST_PORT:-}:8080"
     volumes:
       - incus-socket:/var/lib/incus:ro
     depends_on:
@@ -38,6 +36,14 @@ services:
       timeout: 5s
       retries: 15
       start_period: 5s
+
+  navarisd-dev:
+    extends:
+      service: navarisd
+    ports:
+      - "${NAVARIS_HOST_PORT:?set NAVARIS_HOST_PORT}:8080"
+    profiles:
+      - dev
 
   test-runner:
     build:

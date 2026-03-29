@@ -10,7 +10,7 @@ integration-test:
 	exit $$rc
 
 integration-env:
-	NAVARIS_HOST_PORT=8080 docker compose -f $(COMPOSE_FILE) up -d --build incus navarisd
+	NAVARIS_HOST_PORT=8080 docker compose -f $(COMPOSE_FILE) --profile dev up -d --build incus navarisd-dev
 	@echo ""
 	@echo "Navaris API: http://localhost:8080"
 	@echo "Token:       test-token"
@@ -22,7 +22,7 @@ integration-env:
 	@echo "  make integration-env-down"
 
 integration-env-down:
-	NAVARIS_HOST_PORT=8080 docker compose -f $(COMPOSE_FILE) down -v
+	NAVARIS_HOST_PORT=8080 docker compose -f $(COMPOSE_FILE) --profile dev down -v
 
 integration-logs:
 	docker compose -f $(COMPOSE_FILE) logs -f
