@@ -1,0 +1,354 @@
+//go:build firecracker
+
+package firecracker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
+	"syscall"
+	"time"
+
+	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/google/uuid"
+	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
+	"github.com/navaris/navaris/internal/provider/firecracker/network"
+)
+
+// validImageRef matches safe image reference names (alphanumeric, dots, dashes, underscores).
+var validImageRef = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func vmName() string {
+	return "nvrs-fc-" + uuid.NewString()[:8]
+}
+
+func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+	// Validate ImageRef to prevent path traversal.
+	if !validImageRef.MatchString(req.ImageRef) {
+		return domain.BackendRef{}, fmt.Errorf("firecracker: invalid image ref %q", req.ImageRef)
+	}
+
+	vmID := vmName()
+	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+
+	// Create VM directory.
+	if err := os.MkdirAll(vmDir, 0o755); err != nil {
+		return domain.BackendRef{}, fmt.Errorf("firecracker create dir %s: %w", vmID, err)
+	}
+
+	// Copy rootfs image.
+	srcImage := filepath.Join(p.config.ImageDir, req.ImageRef+".ext4")
+	dstImage := filepath.Join(vmDir, "rootfs.ext4")
+	if err := copyFile(srcImage, dstImage); err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker copy rootfs %s: %w", vmID, err)
+	}
+
+	// Allocate resources.
+	cid := p.allocateCID()
+	uid := p.uids.Allocate()
+
+	// Write vminfo.json.
+	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
+	if err := info.Write(jailer.VMInfoPath(p.config.ChrootBase, vmID)); err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
+	}
+
+	return domain.BackendRef{Backend: backendName, Ref: vmID}, nil
+}
+
+func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) error {
+	vmID := ref.Ref
+
+	// Read vminfo.
+	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	info, err := ReadVMInfo(infoPath)
+	if err != nil {
+		return fmt.Errorf("firecracker start %s: %w", vmID, err)
+	}
+
+	// Check if already running.
+	if info.PID > 0 && processAlive(info.PID) {
+		return nil
+	}
+
+	// Allocate networking.
+	subnetIdx := p.subnets.Allocate()
+	tapName := network.TapName(vmID)
+	hostIP := p.subnets.HostIP(subnetIdx).String()
+
+	if err := network.CreateTap(tapName, hostIP); err != nil {
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker create tap %s: %w", vmID, err)
+	}
+
+	// Build Firecracker config.
+	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
+	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off " + p.subnets.KernelBootArg(subnetIdx)
+
+	fcCfg := fcsdk.Config{
+		SocketPath:      filepath.Join(vmDir, "firecracker.sock"),
+		KernelImagePath: p.config.KernelPath,
+		KernelArgs:      bootArgs,
+		Drives: []models.Drive{
+			{
+				DriveID:      fcsdk.String("rootfs"),
+				PathOnHost:   fcsdk.String(rootfsPath),
+				IsRootDevice: fcsdk.Bool(true),
+				IsReadOnly:   fcsdk.Bool(false),
+			},
+		},
+		NetworkInterfaces: fcsdk.NetworkInterfaces{
+			{
+				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
+					MacAddress:  fmt.Sprintf("02:FC:00:00:%02x:%02x", subnetIdx>>8, subnetIdx&0xFF),
+					HostDevName: tapName,
+				},
+			},
+		},
+		VsockDevices: []fcsdk.VsockDevice{
+			{Path: "vsock", CID: uint32(info.CID)},
+		},
+		JailerCfg: &fcsdk.JailerConfig{
+			GID:            fcsdk.Int(info.UID),
+			UID:            fcsdk.Int(info.UID),
+			ID:             vmID,
+			NumaNode:       fcsdk.Int(0),
+			ExecFile:       p.config.FirecrackerBin,
+			JailerBinary:   p.config.JailerBin,
+			ChrootBaseDir:  p.config.ChrootBase,
+			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
+		},
+	}
+
+	// Launch VM.
+	machine, err := fcsdk.NewMachine(ctx, fcCfg)
+	if err != nil {
+		network.DeleteTap(tapName)
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker new machine %s: %w", vmID, err)
+	}
+
+	if err := machine.Start(ctx); err != nil {
+		network.DeleteTap(tapName)
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker start machine %s: %w", vmID, err)
+	}
+
+	// Update vminfo with runtime state.
+	pid, pidErr := machine.PID()
+	if pidErr != nil {
+		slog.Warn("firecracker: could not get PID", "vm", vmID, "error", pidErr)
+	}
+	info.PID = pid
+	info.TapDevice = tapName
+	info.SubnetIdx = subnetIdx
+	info.Write(infoPath)
+
+	// Register in memory.
+	p.vmMu.Lock()
+	p.vms[vmID] = info
+	p.vmMu.Unlock()
+
+	// Add masquerade for published mode.
+	if info.NetworkMode == string(domain.NetworkPublished) {
+		guestIP := p.subnets.GuestIP(subnetIdx).String()
+		if err := network.AddMasquerade(guestIP, p.hostIface); err != nil {
+			// Non-fatal -- log but continue.
+			slog.Warn("firecracker: masquerade failed", "vm", vmID, "error", err)
+		}
+	}
+
+	// Wait for agent health check.
+	if err := p.waitForAgent(ctx, info.CID, 30*time.Second); err != nil {
+		// Agent didn't respond -- leave VM running, caller can retry or destroy.
+		return fmt.Errorf("firecracker agent timeout %s: %w", vmID, err)
+	}
+
+	return nil
+}
+
+func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force bool) error {
+	vmID := ref.Ref
+	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	info, err := ReadVMInfo(infoPath)
+	if err != nil {
+		return fmt.Errorf("firecracker stop %s: %w", vmID, err)
+	}
+
+	if info.PID > 0 && processAlive(info.PID) {
+		info.Stopping = true
+		info.Write(infoPath)
+
+		if force {
+			syscall.Kill(info.PID, syscall.SIGKILL)
+		} else {
+			// Graceful: send CtrlAltDel via Firecracker API socket.
+			vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+			sockPath := filepath.Join(vmDir, "root", "run", "firecracker.socket")
+			machine, merr := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
+			if merr == nil {
+				machine.Shutdown(ctx)
+			}
+			deadline := time.After(30 * time.Second)
+			for processAlive(info.PID) {
+				select {
+				case <-ctx.Done():
+					syscall.Kill(info.PID, syscall.SIGKILL)
+					goto stopped
+				case <-deadline:
+					syscall.Kill(info.PID, syscall.SIGKILL)
+					goto stopped
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+		}
+	}
+stopped:
+
+	// Clean up networking.
+	if info.TapDevice != "" {
+		network.DeleteTap(info.TapDevice)
+		if info.NetworkMode == string(domain.NetworkPublished) {
+			guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
+			network.RemoveMasquerade(guestIP, p.hostIface)
+		}
+		p.subnets.Release(info.SubnetIdx)
+	}
+
+	// Update vminfo.
+	info.ClearRuntime()
+	info.Write(infoPath)
+
+	p.vmMu.Lock()
+	delete(p.vms, vmID)
+	p.vmMu.Unlock()
+
+	return nil
+}
+
+func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) error {
+	// Stop first if running. Ignore "not found" errors (already stopped/cleaned).
+	if err := p.StopSandbox(ctx, ref, true); err != nil && !os.IsNotExist(errors.Unwrap(err)) {
+		return fmt.Errorf("firecracker destroy stop %s: %w", ref.Ref, err)
+	}
+
+	vmID := ref.Ref
+	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+
+	if err := os.RemoveAll(vmDir); err != nil {
+		return fmt.Errorf("firecracker destroy %s: %w", vmID, err)
+	}
+
+	p.vmMu.Lock()
+	delete(p.vms, vmID)
+	p.vmMu.Unlock()
+
+	return nil
+}
+
+func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (domain.SandboxState, error) {
+	vmID := ref.Ref
+	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+
+	// Check if VM directory exists.
+	if _, err := os.Stat(vmDir); os.IsNotExist(err) {
+		return domain.SandboxDestroyed, nil
+	}
+
+	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	info, err := ReadVMInfo(infoPath)
+	if err != nil {
+		if os.IsNotExist(errors.Unwrap(err)) {
+			return domain.SandboxDestroyed, nil
+		}
+		return "", fmt.Errorf("firecracker state %s: %w", vmID, err)
+	}
+
+	// Check if stopping.
+	if info.Stopping {
+		return domain.SandboxStopping, nil
+	}
+
+	// Check process liveness.
+	if info.PID == 0 || !processAlive(info.PID) {
+		if info.PID > 0 {
+			// Had a PID but it's dead -- unexpected crash.
+			return domain.SandboxFailed, nil
+		}
+		return domain.SandboxStopped, nil
+	}
+
+	// Process alive -- check agent health.
+	if err := p.pingAgent(ctx, info.CID); err != nil {
+		return domain.SandboxStarting, nil
+	}
+
+	return domain.SandboxRunning, nil
+}
+
+func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+	return domain.BackendRef{}, ErrNotImplemented
+}
+
+// Helper functions.
+
+func processAlive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
+
+func (p *Provider) waitForAgent(ctx context.Context, cid uint32, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	for {
+		client, err := p.dialAgent(cid)
+		if err == nil {
+			pingErr := client.Ping(2 * time.Second)
+			client.Close()
+			if pingErr == nil {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("agent at CID %d did not respond within %s", cid, timeout)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func (p *Provider) pingAgent(ctx context.Context, cid uint32) error {
+	client, err := p.dialAgent(cid)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Ping(2 * time.Second)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
+}

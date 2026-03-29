@@ -39,7 +39,7 @@ func startTestServer(t *testing.T) (string, *worker.Dispatcher) {
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), mock, bus, disp,
+		store.SessionStore(), mock, bus, disp, "mock",
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),

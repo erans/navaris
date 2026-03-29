@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/navaris/navaris/pkg/client"
@@ -58,6 +59,9 @@ func TestImageRegisterListGetDelete(t *testing.T) {
 }
 
 func TestImagePromoteFromSnapshot(t *testing.T) {
+	if os.Getenv("NAVARIS_SKIP_SNAPSHOTS") == "1" {
+		t.Skip("snapshots not supported by this backend")
+	}
 	c := newClient()
 	ctx := context.Background()
 

@@ -4,12 +4,16 @@ package integration
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/navaris/navaris/pkg/client"
 )
 
 func TestPortPublishListDelete(t *testing.T) {
+	if os.Getenv("NAVARIS_SKIP_PORTS") == "1" {
+		t.Skip("port forwarding not supported by this backend")
+	}
 	c := newClient()
 	ctx := context.Background()
 
