@@ -53,18 +53,18 @@ func (ss *snapshotStore) ListBySandbox(ctx context.Context, sandboxID string) ([
 		created_at, updated_at, parent_image_id, publishable, consistency_mode, metadata
 		FROM snapshots WHERE sandbox_id = ? ORDER BY created_at`, sandboxID)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var snaps []*domain.Snapshot
 	for rows.Next() {
 		snap, err := scanSnapshotRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		snaps = append(snaps, snap)
 	}
-	return snaps, rows.Err()
+	return snaps, mapError(rows.Err())
 }
 
 func (ss *snapshotStore) Update(ctx context.Context, snap *domain.Snapshot) error {
@@ -93,7 +93,7 @@ func (ss *snapshotStore) Update(ctx context.Context, snap *domain.Snapshot) erro
 func (ss *snapshotStore) Delete(ctx context.Context, id string) error {
 	res, err := ss.db.ExecContext(ctx, `DELETE FROM snapshots WHERE snapshot_id = ?`, id)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -110,18 +110,18 @@ func (ss *snapshotStore) ListOrphaned(ctx context.Context) ([]*domain.Snapshot, 
 		)
 		AND s.state != 'deleted'`)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var snaps []*domain.Snapshot
 	for rows.Next() {
 		snap, err := scanSnapshotRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		snaps = append(snaps, snap)
 	}
-	return snaps, rows.Err()
+	return snaps, mapError(rows.Err())
 }
 
 func scanSnapshot(row *sql.Row) (*domain.Snapshot, error) {
@@ -137,7 +137,7 @@ func scanSnapshot(row *sql.Row) (*domain.Snapshot, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("snapshot: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	populateSnapshot(&snap, state, consistencyMode, createdAt, updatedAt, backendRef, parentImageID, publishable, meta)
 	return &snap, nil

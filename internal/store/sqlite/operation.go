@@ -74,18 +74,18 @@ func (os *operationStore) List(ctx context.Context, f domain.OperationFilter) ([
 	}
 	rows, err := os.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var ops []*domain.Operation
 	for rows.Next() {
 		op, err := scanOperationRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		ops = append(ops, op)
 	}
-	return ops, rows.Err()
+	return ops, mapError(rows.Err())
 }
 
 func (os *operationStore) Update(ctx context.Context, op *domain.Operation) error {
@@ -116,18 +116,18 @@ func (os *operationStore) ListStale(ctx context.Context, olderThan time.Time) ([
 		AND finished_at IS NOT NULL AND finished_at <= ?
 		ORDER BY finished_at`, olderThan.Format(time.RFC3339Nano))
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var ops []*domain.Operation
 	for rows.Next() {
 		op, err := scanOperationRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		ops = append(ops, op)
 	}
-	return ops, rows.Err()
+	return ops, mapError(rows.Err())
 }
 
 func (os *operationStore) ListByState(ctx context.Context, state domain.OperationState) ([]*domain.Operation, error) {
@@ -136,18 +136,18 @@ func (os *operationStore) ListByState(ctx context.Context, state domain.Operatio
 		type, state, started_at, finished_at, error_text, metadata
 		FROM operations WHERE state = ? ORDER BY started_at`, string(state))
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var ops []*domain.Operation
 	for rows.Next() {
 		op, err := scanOperationRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		ops = append(ops, op)
 	}
-	return ops, rows.Err()
+	return ops, mapError(rows.Err())
 }
 
 func scanOperation(row *sql.Row) (*domain.Operation, error) {
@@ -162,7 +162,7 @@ func scanOperation(row *sql.Row) (*domain.Operation, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("operation: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	populateOperation(&op, state, startedAt, sandboxID, snapshotID, finishedAt, errorText, meta)
 	return &op, nil

@@ -32,18 +32,18 @@ func (ps *portBindingStore) ListBySandbox(ctx context.Context, sandboxID string)
 		sandbox_id, target_port, published_port, host_address, created_at
 		FROM port_bindings WHERE sandbox_id = ? ORDER BY target_port`, sandboxID)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var bindings []*domain.PortBinding
 	for rows.Next() {
 		pb, err := scanPortBindingRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		bindings = append(bindings, pb)
 	}
-	return bindings, rows.Err()
+	return bindings, mapError(rows.Err())
 }
 
 func (ps *portBindingStore) Delete(ctx context.Context, sandboxID string, targetPort int) error {
@@ -51,7 +51,7 @@ func (ps *portBindingStore) Delete(ctx context.Context, sandboxID string, target
 		`DELETE FROM port_bindings WHERE sandbox_id = ? AND target_port = ?`,
 		sandboxID, targetPort)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -67,7 +67,7 @@ func (ps *portBindingStore) GetByPublishedPort(ctx context.Context, publishedPor
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("port binding: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	pb.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	return &pb, nil
@@ -90,11 +90,10 @@ func (ps *portBindingStore) NextAvailablePort(ctx context.Context, rangeStart, r
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("port range exhausted: %w", domain.ErrCapacityExceeded)
 		}
-		return 0, err
+		return 0, mapError(err)
 	}
 	return port, nil
 }
-
 func scanPortBindingRow(rows *sql.Rows) (*domain.PortBinding, error) {
 	var pb domain.PortBinding
 	var createdAt string

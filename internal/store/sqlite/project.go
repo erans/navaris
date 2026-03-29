@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/navaris/navaris/internal/domain"
+	sqlitedriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type projectStore struct {
@@ -50,18 +52,18 @@ func (ps *projectStore) List(ctx context.Context) ([]*domain.Project, error) {
 	rows, err := ps.db.QueryContext(ctx,
 		`SELECT project_id, name, created_at, updated_at, metadata FROM projects ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var projects []*domain.Project
 	for rows.Next() {
 		p, err := scanProjectRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		projects = append(projects, p)
 	}
-	return projects, rows.Err()
+	return projects, mapError(rows.Err())
 }
 
 func (ps *projectStore) Update(ctx context.Context, p *domain.Project) error {
@@ -81,7 +83,7 @@ func (ps *projectStore) Update(ctx context.Context, p *domain.Project) error {
 func (ps *projectStore) Delete(ctx context.Context, id string) error {
 	res, err := ps.db.ExecContext(ctx, `DELETE FROM projects WHERE project_id = ?`, id)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -95,7 +97,7 @@ func scanProject(row *sql.Row) (*domain.Project, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("project: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	p.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
@@ -137,6 +139,13 @@ func marshalJSON(v any) (sql.NullString, error) {
 func mapError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var sqliteErr *sqlitedriver.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() {
+		case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
+			return fmt.Errorf("%w: %s", domain.ErrBusy, sqliteErr.Error())
+		}
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "UNIQUE constraint failed") {

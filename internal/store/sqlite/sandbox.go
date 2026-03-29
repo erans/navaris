@@ -67,18 +67,18 @@ func (ss *sandboxStore) List(ctx context.Context, f domain.SandboxFilter) ([]*do
 	query += " ORDER BY created_at"
 	rows, err := ss.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var sandboxes []*domain.Sandbox
 	for rows.Next() {
 		sbx, err := scanSandboxRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		sandboxes = append(sandboxes, sbx)
 	}
-	return sandboxes, rows.Err()
+	return sandboxes, mapError(rows.Err())
 }
 
 func (ss *sandboxStore) Update(ctx context.Context, sbx *domain.Sandbox) error {
@@ -106,7 +106,7 @@ func (ss *sandboxStore) Update(ctx context.Context, sbx *domain.Sandbox) error {
 func (ss *sandboxStore) Delete(ctx context.Context, id string) error {
 	res, err := ss.db.ExecContext(ctx, `DELETE FROM sandboxes WHERE sandbox_id = ?`, id)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -118,18 +118,18 @@ func (ss *sandboxStore) ListExpired(ctx context.Context, now time.Time) ([]*doma
 		FROM sandboxes WHERE expires_at IS NOT NULL AND expires_at <= ? AND state != ?`,
 		now.Format(time.RFC3339Nano), string(domain.SandboxDestroyed))
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var sandboxes []*domain.Sandbox
 	for rows.Next() {
 		sbx, err := scanSandboxRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		sandboxes = append(sandboxes, sbx)
 	}
-	return sandboxes, rows.Err()
+	return sandboxes, mapError(rows.Err())
 }
 
 func scanSandbox(row *sql.Row) (*domain.Sandbox, error) {
@@ -145,7 +145,7 @@ func scanSandbox(row *sql.Row) (*domain.Sandbox, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("sandbox: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	return populateSandbox(&sbx, state, networkMode, createdAt, updatedAt, backendRef, hostID,
 		sourceImageID, parentSnapshotID, expiresAt, cpuLimit, memoryLimit, meta), nil

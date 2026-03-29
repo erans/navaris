@@ -53,18 +53,18 @@ func (ss *sessionStore) ListBySandbox(ctx context.Context, sandboxID string) ([]
 		created_at, updated_at, last_attached_at, idle_timeout_sec, metadata
 		FROM sessions WHERE sandbox_id = ? ORDER BY created_at`, sandboxID)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var sessions []*domain.Session
 	for rows.Next() {
 		sess, err := scanSessionRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		sessions = append(sessions, sess)
 	}
-	return sessions, rows.Err()
+	return sessions, mapError(rows.Err())
 }
 
 func (ss *sessionStore) Update(ctx context.Context, sess *domain.Session) error {
@@ -92,7 +92,7 @@ func (ss *sessionStore) Update(ctx context.Context, sess *domain.Session) error 
 func (ss *sessionStore) Delete(ctx context.Context, id string) error {
 	res, err := ss.db.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = ?`, id)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -109,7 +109,7 @@ func scanSession(row *sql.Row) (*domain.Session, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("session: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	populateSession(&sess, backing, state, createdAt, updatedAt, lastAttachedAt, idleTimeoutSec, meta)
 	return &sess, nil
