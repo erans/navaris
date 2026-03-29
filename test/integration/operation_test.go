@@ -106,8 +106,17 @@ func TestOperationCancel(t *testing.T) {
 		// Cancel was accepted but the operation had already finished — valid race.
 		t.Log("cancel accepted but operation already succeeded (race)")
 	case cancelErr != nil && finalOp.State == client.OpSucceeded:
-		// Cancel rejected because operation already completed.
-		t.Logf("cancel rejected (operation already complete): %v", cancelErr)
+		// Cancel rejected because operation already completed — verify it's
+		// an expected API error (409 conflict or 404 not found), not a
+		// transport/auth/unexpected error.
+		apiErr, ok := cancelErr.(*client.APIError)
+		if !ok {
+			t.Fatalf("cancel returned non-API error for completed operation: %T: %v", cancelErr, cancelErr)
+		}
+		if apiErr.StatusCode != 409 && apiErr.StatusCode != 404 {
+			t.Fatalf("unexpected cancel error status %d for completed operation: %v", apiErr.StatusCode, cancelErr)
+		}
+		t.Logf("cancel rejected (status %d, operation already complete)", apiErr.StatusCode)
 	case cancelErr != nil:
 		// Cancel failed AND operation didn't succeed — unexpected.
 		t.Fatalf("cancel error=%v with unexpected final state=%s", cancelErr, finalOp.State)
