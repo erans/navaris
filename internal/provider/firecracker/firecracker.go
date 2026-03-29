@@ -46,6 +46,7 @@ type Provider struct {
 	config    Config
 	subnets   *network.Allocator
 	uids      *jailer.UIDAllocator
+	portAlloc *network.PortAllocator
 	cidNext   uint32
 	cidMu     sync.Mutex
 	vms       map[string]*VMInfo
@@ -92,6 +93,7 @@ func New(cfg Config) (*Provider, error) {
 		config:    cfg,
 		subnets:   network.NewAllocator(),
 		uids:      jailer.NewUIDAllocator(10000),
+		portAlloc: network.NewPortAllocator(),
 		cidNext:   cfg.VsockCIDBase,
 		vms:       make(map[string]*VMInfo),
 		hostIface: hostIface,

@@ -297,7 +297,7 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 }
 
 func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
-	return domain.BackendRef{}, ErrNotImplemented
+	return domain.BackendRef{}, fmt.Errorf("firecracker: CreateSandboxFromSnapshot not implemented")
 }
 
 // Helper functions.
