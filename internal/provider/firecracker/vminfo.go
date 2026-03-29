@@ -8,14 +8,16 @@ import (
 )
 
 type VMInfo struct {
-	ID          string `json:"id"`
-	PID         int    `json:"pid,omitempty"`
-	CID         uint32 `json:"cid"`
-	TapDevice   string `json:"tap_device,omitempty"`
-	SubnetIdx   int    `json:"subnet_idx"`
-	UID         int    `json:"uid"`
-	NetworkMode string `json:"network_mode,omitempty"`
-	Stopping    bool   `json:"stopping,omitempty"`
+	ID                  string      `json:"id"`
+	PID                 int         `json:"pid,omitempty"`
+	CID                 uint32      `json:"cid"`
+	TapDevice           string      `json:"tap_device,omitempty"`
+	SubnetIdx           int         `json:"subnet_idx"`
+	UID                 int         `json:"uid"`
+	NetworkMode         string      `json:"network_mode,omitempty"`
+	Stopping            bool        `json:"stopping,omitempty"`
+	Ports               map[int]int `json:"ports,omitempty"`
+	RestoreFromSnapshot bool        `json:"restore_from_snapshot,omitempty"`
 }
 
 func (v *VMInfo) Write(path string) error {
@@ -63,6 +65,7 @@ func (v *VMInfo) ClearRuntime() {
 	v.TapDevice = ""
 	v.SubnetIdx = 0
 	v.Stopping = false
+	v.Ports = nil
 }
 
 func ReadVMInfo(path string) (*VMInfo, error) {
