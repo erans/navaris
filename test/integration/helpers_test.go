@@ -160,12 +160,13 @@ func parseCLIJSON(t *testing.T, result cliResult, v any) {
 // --- TestMain ---
 
 func TestMain(m *testing.M) {
-	// Warm up: verify API is reachable before running tests.
 	c := newClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 
-	health, err := c.Health(ctx)
+	// Short context for the health check.
+	healthCtx, healthCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer healthCancel()
+
+	health, err := c.Health(healthCtx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "health check failed (is navarisd running?): %v\n", err)
 		os.Exit(1)
@@ -177,31 +178,49 @@ func TestMain(m *testing.M) {
 	fmt.Printf("integration test warm-up: backend=%s healthy=%v latency=%dms\n",
 		health.Backend, health.Healthy, health.LatencyMS)
 
-	// Pre-pull the base image by creating and immediately destroying a sandbox.
-	// This ensures image download doesn't eat into individual test timeouts.
+	// Longer context for the image pre-pull (cold pulls can take minutes).
 	fmt.Printf("pre-pulling base image %s...\n", baseImage())
-	proj, err := c.CreateProject(ctx, client.CreateProjectRequest{
+	warmCtx, warmCancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer warmCancel()
+
+	proj, err := c.CreateProject(warmCtx, client.CreateProjectRequest{
 		Name: fmt.Sprintf("warmup-%d", time.Now().UnixNano()),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warmup: create project: %v\n", err)
 		os.Exit(1)
 	}
-	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
+
+	// Best-effort cleanup helper using a fresh context.
+	cleanupWarmup := func(sandboxID string) {
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cleanCancel()
+		if sandboxID != "" {
+			if _, err := c.DestroySandboxAndWait(cleanCtx, sandboxID, &client.WaitOptions{Timeout: 2 * time.Minute}); err != nil {
+				fmt.Fprintf(os.Stderr, "warmup: cleanup sandbox: %v\n", err)
+			}
+		}
+		if err := c.DeleteProject(cleanCtx, proj.ProjectID); err != nil {
+			fmt.Fprintf(os.Stderr, "warmup: cleanup project: %v\n", err)
+		}
+	}
+
+	op, err := c.CreateSandboxAndWait(warmCtx, client.CreateSandboxRequest{
 		ProjectID: proj.ProjectID,
 		Name:      "warmup",
 		ImageID:   baseImage(),
 	}, &client.WaitOptions{Timeout: 5 * time.Minute})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warmup: create sandbox: %v\n", err)
+		cleanupWarmup("")
 		os.Exit(1)
 	}
 	if op.State != client.OpSucceeded {
 		fmt.Fprintf(os.Stderr, "warmup: sandbox create failed: %s %s\n", op.State, op.ErrorText)
+		cleanupWarmup("")
 		os.Exit(1)
 	}
-	_, _ = c.DestroySandboxAndWait(ctx, op.ResourceID, &client.WaitOptions{Timeout: 2 * time.Minute})
-	_ = c.DeleteProject(ctx, proj.ProjectID)
+	cleanupWarmup(op.ResourceID)
 	fmt.Println("warm-up complete")
 
 	os.Exit(m.Run())

@@ -41,7 +41,7 @@ services:
     extends:
       service: navarisd
     ports:
-      - "${NAVARIS_HOST_PORT:?set NAVARIS_HOST_PORT}:8080"
+      - "${NAVARIS_HOST_PORT:-8080}:8080"
     profiles:
       - dev
 
