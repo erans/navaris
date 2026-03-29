@@ -14,7 +14,7 @@ Three subsystems, all using file-based storage with JSON metadata:
 
 1. **Snapshots** — file copy of rootfs + optional Firecracker memory snapshot for live mode
 2. **Images** — rootfs copied from snapshot, stored in image dir with metadata
-3. **Port forwarding** — iptables DNAT/SNAT rules on the host tap interface
+3. **Port forwarding** — iptables DNAT rules on the host tap interface
 
 ---
 
@@ -30,7 +30,7 @@ Three subsystems, all using file-based storage with JSON metadata:
 └── snapinfo.json        # Navaris metadata
 ```
 
-`snapinfo.json` schema:
+`snapinfo.json` schema (the `mode` field maps directly to `domain.ConsistencyMode` values):
 ```json
 {
   "id": "snapshot-id",
@@ -53,7 +53,7 @@ Three subsystems, all using file-based storage with JSON metadata:
 **Live mode (`ConsistencyLive`):**
 1. VM must be running.
 2. Derive the runtime socket path: `filepath.Join(vmDir, "root", "run", "firecracker.socket")` (the post-jailer path, same as `StopSandbox`).
-3. Connect to the VM's Firecracker API socket via `fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})`.
+3. Connect to the VM's Firecracker API socket via `fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})` — only `SocketPath` should be set (no JailerCfg, Drives, etc.) since this connects to an already-running VM, matching the pattern in `StopSandbox`.
 4. Pause the VM: `machine.PauseVM(ctx)`.
 5. Create Firecracker snapshot: `machine.CreateSnapshot(ctx, memFilePath, snapshotPath)` — the paths are relative to the jailer chroot root (`<chrootBase>/firecracker/<vmID>/root/`). Use paths like `/vmstate.bin` and `/snapshot.meta` (relative to chroot). The actual host paths will be `<vmDir>/root/vmstate.bin` etc.
 6. Copy `rootfs.ext4` from VM dir to snapshot dir (disk is consistent since VM is paused).
@@ -105,7 +105,7 @@ Flat-file convention matching Phase 1, where `ImageRef` resolves to `filepath.Jo
 └── <image-ref>.json     # Image metadata
 ```
 
-`imageinfo.json` schema:
+`<image-ref>.json` schema:
 ```json
 {
   "ref": "image-ref",
@@ -144,7 +144,7 @@ Currently stubbed in `sandbox.go`. The service layer passes the snapshot's `Back
 4. Return `BackendRef{Backend: "firecracker", Ref: vmID}`.
 5. The service layer then calls `StartSandbox`, which boots the VM normally from the copied rootfs.
 
-Note: even for live snapshots, `CreateSandboxFromSnapshot` always boots fresh. Live restore (resuming from memory state) only makes sense for `RestoreSnapshot` on the same VM.
+Note: even for live snapshots, `CreateSandboxFromSnapshot` always boots fresh. Live restore (resuming from memory state) only makes sense for `RestoreSnapshot` on the same VM. `SubnetIdx` is allocated at start time (in `StartSandbox`), not at create time.
 
 ---
 
@@ -168,7 +168,7 @@ Sequential from range 40000-49999. In-memory map tracked by the provider, recove
 # External traffic: forward to guest
 iptables -t nat -A PREROUTING -p tcp --dport <hostPort> -j DNAT --to-destination <guestIP>:<targetPort>
 # Local traffic: forward to guest (connections from the host itself)
-iptables -t nat -A OUTPUT -p tcp -o lo --dport <hostPort> -j DNAT --to-destination <guestIP>:<targetPort>
+iptables -t nat -A OUTPUT -p tcp --dport <hostPort> -j DNAT --to-destination <guestIP>:<targetPort>
 # Allow forwarded traffic through
 iptables -A FORWARD -p tcp -d <guestIP> --dport <targetPort> -j ACCEPT
 ```
@@ -215,11 +215,13 @@ func (a *PortAllocator) Release(port int)         // returns port to pool
 
 On provider init, scan all `vminfo.json` files:
 - For running VMs with `Ports`: re-establish iptables rules and mark ports as used in the allocator.
-- For dead VMs with `Ports`: clear the `Ports` map (iptables rules are ephemeral and already gone). The existing `recover()` does not call `ClearRuntime()` for dead VMs, so port cleanup must be handled explicitly during port recovery.
+- For dead VMs with `Ports`: best-effort remove any stale iptables rules (they persist until reboot or explicit removal), then clear the `Ports` map. Use `-D` calls that silently ignore "rule not found" errors. The existing `recover()` does not call `ClearRuntime()` for dead VMs, so port cleanup must be handled explicitly during port recovery.
 
 ### Cleanup
 
-The service layer already calls `UnpublishPort` for each port before `DestroySandbox`. No extra work needed in the provider. `ClearRuntime()` clears the Ports map when the VM stops.
+`StopSandbox` must iterate the `Ports` map and remove the iptables rules (PREROUTING, OUTPUT, FORWARD) for each published port before calling `ClearRuntime()`, then release ports back to the allocator. This prevents stale DNAT rules pointing to old guest IPs when the VM is restarted (since `SubnetIdx` is reallocated on each start).
+
+The service layer calls `UnpublishPort` for each port before `DestroySandbox`. `ClearRuntime()` clears the Ports map.
 
 ---
 
@@ -228,7 +230,7 @@ The service layer already calls `UnpublishPort` for each port before `DestroySan
 `StartSandbox` needs a small addition for live snapshot restore:
 
 1. Check `vminfo.json` for `RestoreFromSnapshot` flag.
-2. If set: build a `Config` with only `SocketPath`, `Drives` (rootfs), `VsockDevices`, `NetworkInterfaces`, and `JailerCfg` — omit `KernelImagePath`, `KernelArgs`, and `MachineCfg` (unused in snapshot-load mode). Call `fcsdk.NewMachine(ctx, cfg, fcsdk.WithSnapshot(memPath, snapPath))`. The SDK's `WithSnapshot` replaces the init handler list to call `PUT /snapshot/load` instead of normal boot. After successful start, clear the `RestoreFromSnapshot` flag and delete the snapshot files from the VM directory.
+2. If set: build a `Config` with only `SocketPath`, `Drives` (rootfs), `VsockDevices`, `NetworkInterfaces`, and `JailerCfg` — omit `KernelImagePath`, `KernelArgs`, and `MachineCfg` (unused in snapshot-load mode). Call `fcsdk.NewMachine(ctx, cfg, fcsdk.WithSnapshot(memPath, snapPath))`. The SDK's `WithSnapshot` replaces the init handler list to call `PUT /snapshot/load` instead of normal boot. The `SnapshotConfig` must set `ResumeVM: true` to resume the VM after loading the memory state (otherwise it loads but remains paused). After successful start, clear the `RestoreFromSnapshot` flag and delete the snapshot files from the VM directory.
 3. If not set: boot normally (existing path).
 
 ---
@@ -241,7 +243,7 @@ The service layer already calls `UnpublishPort` for each port before `DestroySan
 | `internal/provider/firecracker/image.go` | Create — PublishSnapshotAsImage, GetImageInfo, DeleteImage |
 | `internal/provider/firecracker/port.go` | Create — PublishPort, UnpublishPort |
 | `internal/provider/firecracker/network/port_allocator.go` | Create — PortAllocator type |
-| `internal/provider/firecracker/network/dnat.go` | Create — iptables DNAT/SNAT rule helpers |
+| `internal/provider/firecracker/network/dnat.go` | Create — iptables DNAT/FORWARD rule helpers |
 | `internal/provider/firecracker/stubs.go` | Delete — all methods move to their own files |
 | `internal/provider/firecracker/sandbox.go` | Modify — implement CreateSandboxFromSnapshot, add snapshot restore to StartSandbox |
 | `internal/provider/firecracker/vminfo.go` | Modify — add Ports and RestoreFromSnapshot fields |
