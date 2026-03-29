@@ -12,7 +12,7 @@ type VMInfo struct {
 	PID         int    `json:"pid,omitempty"`
 	CID         uint32 `json:"cid"`
 	TapDevice   string `json:"tap_device,omitempty"`
-	SubnetIdx   int    `json:"subnet_idx,omitempty"`
+	SubnetIdx   int    `json:"subnet_idx"`
 	UID         int    `json:"uid"`
 	NetworkMode string `json:"network_mode,omitempty"`
 	Stopping    bool   `json:"stopping,omitempty"`

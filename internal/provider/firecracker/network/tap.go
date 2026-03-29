@@ -18,7 +18,7 @@ func TapName(vmID string) string {
 	return "fc-" + suffix
 }
 
-func CreateTap(name string, hostIP string, mask string) error {
+func CreateTap(name string, hostIP string) error {
 	cmds := [][]string{
 		{"ip", "tuntap", "add", "dev", name, "mode", "tap"},
 		{"ip", "addr", "add", hostIP + "/30", "dev", name},

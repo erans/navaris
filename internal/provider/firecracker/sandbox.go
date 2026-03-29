@@ -75,7 +75,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) erro
 	tapName := network.TapName(vmID)
 	hostIP := p.subnets.HostIP(subnetIdx).String()
 
-	if err := network.CreateTap(tapName, hostIP, "255.255.255.252"); err != nil {
+	if err := network.CreateTap(tapName, hostIP); err != nil {
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker create tap %s: %w", vmID, err)
 	}
