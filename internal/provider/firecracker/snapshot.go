@@ -120,10 +120,13 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	}
 
 	// Ensure we resume even if something fails.
+	// Use a fresh context for cleanup so cancellation of the parent doesn't prevent resume.
 	var snapErr error
 	defer func() {
 		if snapErr != nil {
-			if rerr := machine.ResumeVM(ctx); rerr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if rerr := machine.ResumeVM(cleanupCtx); rerr != nil {
 				slog.Error("firecracker: failed to resume after snapshot error", "vm", vmID, "error", rerr)
 			}
 		}
