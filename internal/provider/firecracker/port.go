@@ -29,7 +29,7 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 	}
 
 	// Validate sandbox is running with valid networking.
-	if info.PID == 0 || info.SubnetIdx == 0 {
+	if info.PID == 0 || !processAlive(info.PID) || info.TapDevice == "" {
 		p.portAlloc.Release(hostPort)
 		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port %s: sandbox is not running", vmID)
 	}
