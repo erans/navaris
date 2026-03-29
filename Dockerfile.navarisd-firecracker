@@ -1,0 +1,71 @@
+# ---- Stage 1: Build Go binaries ----
+FROM golang:1.26-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -tags firecracker -o /navarisd ./cmd/navarisd
+RUN GOOS=linux CGO_ENABLED=0 go build -o /navaris-agent ./cmd/navaris-agent
+
+# ---- Stage 2: Build Alpine rootfs ext4 image ----
+FROM alpine:3.21 AS rootfs
+
+# Install OpenRC (init system) and e2fsprogs (mke2fs).
+RUN apk add --no-cache openrc e2fsprogs
+
+# Copy the agent binary.
+COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
+
+# Add OpenRC service for the agent.
+RUN printf '#!/sbin/openrc-run\nname="navaris-agent"\ndescription="Navaris guest agent"\ncommand="/usr/local/bin/navaris-agent"\ncommand_background="yes"\npidfile="/run/navaris-agent.pid"\n' \
+    > /etc/init.d/navaris-agent && \
+    chmod +x /etc/init.d/navaris-agent && \
+    rc-update add navaris-agent default
+
+# Configure OpenRC for container/VM use — suppress warnings about cgroups/mtab.
+RUN sed -i 's/^#rc_sys=""/rc_sys="lxc"/' /etc/rc.conf 2>/dev/null || true
+
+# Pack the entire Alpine rootfs into an ext4 image.
+# mke2fs -d populates the image from a directory without needing loop mount.
+# Write to /tmp first to avoid the output file being included in its own source tree.
+RUN mke2fs -t ext4 -d / -L rootfs /tmp/alpine-3.21.ext4 512M && \
+    mkdir -p /opt/firecracker/images && \
+    mv /tmp/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
+
+# ---- Stage 3: Runtime ----
+FROM debian:bookworm-slim
+
+# Pin Firecracker release version.
+ARG FC_VERSION=v1.12.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget iproute2 iptables e2fsprogs procps ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Download Firecracker and jailer binaries.
+RUN ARCH=$(uname -m) && \
+    wget -q "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz" \
+        -O /tmp/fc.tgz && \
+    tar -xzf /tmp/fc.tgz -C /tmp && \
+    mv /tmp/release-${FC_VERSION}-${ARCH}/firecracker-${FC_VERSION}-${ARCH} /usr/local/bin/firecracker && \
+    mv /tmp/release-${FC_VERSION}-${ARCH}/jailer-${FC_VERSION}-${ARCH} /usr/local/bin/jailer && \
+    chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer && \
+    rm -rf /tmp/fc.tgz /tmp/release-*
+
+# Download Firecracker-compatible kernel.
+RUN ARCH=$(uname -m) && \
+    wget -q "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/vmlinux-6.1-${ARCH}.bin" \
+        -O /opt/firecracker/vmlinux
+
+# Create image directory and copy rootfs from stage 2.
+RUN mkdir -p /opt/firecracker/images
+COPY --from=rootfs /opt/firecracker/images/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
+
+# Copy navarisd from build stage.
+COPY --from=build /navarisd /usr/local/bin/navarisd
+
+# Copy entrypoint script.
+COPY scripts/firecracker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
