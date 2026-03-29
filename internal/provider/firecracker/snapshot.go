@@ -94,9 +94,12 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 	// For live snapshots, preserve SubnetIdx for network-correct restore.
 	if mode == domain.ConsistencyLive {
 		infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
-		if info, err := ReadVMInfo(infoPath); err == nil {
-			si.SubnetIdx = info.SubnetIdx
+		info, err := ReadVMInfo(infoPath)
+		if err != nil {
+			os.RemoveAll(snapDir)
+			return domain.BackendRef{}, fmt.Errorf("firecracker snapshot read vminfo %s: %w", vmID, err)
 		}
+		si.SubnetIdx = info.SubnetIdx
 	}
 
 	if err := writeSnapInfo(p.snapInfoPath(snapID), si); err != nil {
