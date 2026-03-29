@@ -109,12 +109,14 @@ func (p *Provider) ExecDetached(ctx context.Context, ref domain.BackendRef, req 
 			n, err := stdinR.Read(buf)
 			if n > 0 {
 				data, _ := json.Marshal(fcvsock.DataPayload{Data: buf[:n]})
-				client.Send(&fcvsock.Message{
+				if sendErr := client.Send(&fcvsock.Message{
 					Version: fcvsock.ProtocolVersion,
 					Type:    fcvsock.TypeStdin,
 					ID:      execID,
 					Payload: data,
-				})
+				}); sendErr != nil {
+					return
+				}
 			}
 			if err != nil {
 				return

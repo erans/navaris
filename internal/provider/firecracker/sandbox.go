@@ -4,11 +4,13 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -20,11 +22,19 @@ import (
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
 )
 
+// validImageRef matches safe image reference names (alphanumeric, dots, dashes, underscores).
+var validImageRef = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
 func vmName() string {
 	return "nvrs-fc-" + uuid.NewString()[:8]
 }
 
 func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+	// Validate ImageRef to prevent path traversal.
+	if !validImageRef.MatchString(req.ImageRef) {
+		return domain.BackendRef{}, fmt.Errorf("firecracker: invalid image ref %q", req.ImageRef)
+	}
+
 	vmID := vmName()
 	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
 
@@ -192,6 +202,9 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 			deadline := time.After(30 * time.Second)
 			for processAlive(info.PID) {
 				select {
+				case <-ctx.Done():
+					syscall.Kill(info.PID, syscall.SIGKILL)
+					goto stopped
 				case <-deadline:
 					syscall.Kill(info.PID, syscall.SIGKILL)
 					goto stopped
@@ -205,8 +218,7 @@ stopped:
 	// Clean up networking.
 	if info.TapDevice != "" {
 		network.DeleteTap(info.TapDevice)
-		// Only remove masquerade if one was added (published mode only).
-		if info.TapDevice != "" && info.NetworkMode == string(domain.NetworkPublished) {
+		if info.NetworkMode == string(domain.NetworkPublished) {
 			guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 			network.RemoveMasquerade(guestIP, p.hostIface)
 		}
@@ -225,8 +237,10 @@ stopped:
 }
 
 func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) error {
-	// Stop first if running.
-	p.StopSandbox(ctx, ref, true)
+	// Stop first if running. Ignore "not found" errors (already stopped/cleaned).
+	if err := p.StopSandbox(ctx, ref, true); err != nil && !os.IsNotExist(errors.Unwrap(err)) {
+		return fmt.Errorf("firecracker destroy stop %s: %w", ref.Ref, err)
+	}
 
 	vmID := ref.Ref
 	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
@@ -254,7 +268,10 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
-		return domain.SandboxDestroyed, nil
+		if os.IsNotExist(errors.Unwrap(err)) {
+			return domain.SandboxDestroyed, nil
+		}
+		return "", fmt.Errorf("firecracker state %s: %w", vmID, err)
 	}
 
 	// Check if stopping.
@@ -292,8 +309,6 @@ func processAlive(pid int) bool {
 func (p *Provider) waitForAgent(ctx context.Context, cid uint32, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	for {
-		// Try to dial and ping -- reconnect on each attempt since the
-		// agent may not be listening yet during VM boot.
 		client, err := p.dialAgent(cid)
 		if err == nil {
 			pingErr := client.Ping(2 * time.Second)
@@ -303,6 +318,8 @@ func (p *Provider) waitForAgent(ctx context.Context, cid uint32, timeout time.Du
 			}
 		}
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-deadline:
 			return fmt.Errorf("agent at CID %d did not respond within %s", cid, timeout)
 		case <-time.After(500 * time.Millisecond):
