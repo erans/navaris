@@ -132,7 +132,7 @@ func (p *Provider) recover() error {
 		// Port recovery: re-establish or clean up port rules.
 		if len(info.Ports) > 0 {
 			alive := info.PID > 0 && processAlive(info.PID)
-			if alive && info.SubnetIdx > 0 {
+			if alive && info.TapDevice != "" {
 				// Running VM — re-establish iptables rules.
 				guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 				for hp, tp := range info.Ports {
@@ -143,7 +143,7 @@ func (p *Provider) recover() error {
 				}
 			} else {
 				// Dead VM — best-effort remove stale rules, clear ports.
-				if info.SubnetIdx > 0 {
+				if info.TapDevice != "" {
 					guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 					for hp, tp := range info.Ports {
 						network.RemoveDNAT(hp, guestIP, tp)
@@ -151,7 +151,9 @@ func (p *Provider) recover() error {
 				}
 				info.Ports = nil
 				infoPath := jailer.VMInfoPath(p.config.ChrootBase, info.ID)
-				info.Write(infoPath)
+				if err := info.Write(infoPath); err != nil {
+					slog.Warn("firecracker: recovery write vminfo", "vm", info.ID, "error", err)
+				}
 			}
 		}
 	}

@@ -323,7 +323,7 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 stopped:
 
 	// Clean up port forwarding rules.
-	if len(info.Ports) > 0 && info.SubnetIdx > 0 {
+	if len(info.Ports) > 0 && info.TapDevice != "" {
 		guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 		for hp, tp := range info.Ports {
 			network.RemoveDNAT(hp, guestIP, tp)
