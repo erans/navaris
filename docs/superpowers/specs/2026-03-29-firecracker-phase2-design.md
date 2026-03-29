@@ -89,7 +89,7 @@ On provider init, scan `<snapshot-dir>/` for `snapinfo.json` files. No runtime s
 
 ### Configuration
 
-New CLI flag: `--snapshot-dir` (default: `/srv/firecracker/snapshots`). Added to `ProviderConfig`.
+New CLI flag: `--snapshot-dir` (default: `/srv/firecracker/snapshots`). Added to `firecracker.Config`.
 
 ---
 
@@ -207,7 +207,7 @@ type PortAllocator struct {
     next int // starts at 40000
 }
 
-func (a *PortAllocator) Allocate() (int, error)  // returns next free port, or ErrNoPortsAvailable if range exhausted
+func (a *PortAllocator) Allocate() (int, error)  // returns next free port, or domain.ErrCapacityExceeded if range exhausted
 func (a *PortAllocator) Release(port int)         // returns port to pool
 ```
 
