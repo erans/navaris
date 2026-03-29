@@ -33,7 +33,7 @@ This is a one-time step that adds the Incus Go SDK to `go.mod`/`go.sum`. The Inc
 
 **CGO note**: The navarisd binary can be built with `CGO_ENABLED=0`. Both the SQLite driver (`modernc.org/sqlite`, pure Go) and the Incus Go client are CGO-free.
 
-## 4. Architecture
+## 5. Architecture
 
 ```
 Docker Compose
@@ -56,7 +56,7 @@ Docker Compose
     └── exit code = test result
 ```
 
-### 4.1 Container dependencies
+### 5.1 Container dependencies
 
 ```
 incus (healthy) --> navarisd (healthy) --> test-runner (runs tests)
@@ -64,16 +64,16 @@ incus (healthy) --> navarisd (healthy) --> test-runner (runs tests)
 
 Each container waits for its dependency's health check before starting.
 
-### 4.2 Shared volumes
+### 5.2 Shared volumes
 
 | Volume | Purpose | Mounted by |
 |--------|---------|------------|
 | `incus-socket` | `/var/lib/incus/` — contains `unix.socket` for incusd communication | incus (rw), navarisd (ro) |
 | `incus-data` | Incus storage pool + cached container images | incus only |
 
-## 5. Incus Container
+## 6. Incus Container
 
-### 5.1 Image
+### 6.1 Image
 
 `Dockerfile.incus` based on Ubuntu 24.04 with the Zabbly Incus PPA:
 
@@ -83,7 +83,7 @@ Each container waits for its dependency's health check before starting.
 
 The Zabbly-packaged incusd places its socket at `/var/lib/incus/unix.socket`. The entrypoint script must ensure incusd is fully started before the health check passes.
 
-### 5.2 Docker privileges
+### 6.2 Docker privileges
 
 ```yaml
 privileged: true
@@ -95,7 +95,7 @@ volumes:
 
 Required because Incus manages cgroups, mount namespaces, and network devices for system containers.
 
-### 5.3 Health check
+### 6.3 Health check
 
 ```yaml
 healthcheck:
@@ -108,13 +108,13 @@ healthcheck:
 
 `incus query /1.0` directly hits the incusd REST API and is more reliable than `incus info`, which may require a configured project.
 
-### 5.4 Image caching
+### 6.4 Image caching
 
 The `incus-data` named volume persists the storage pool across local runs. First run pulls `images:alpine/3.19` (~30s); subsequent runs reuse the cache. In CI the volume is ephemeral — the cold-start cost is accepted.
 
-## 6. navarisd Container
+## 7. navarisd Container
 
-### 6.1 Image
+### 7.1 Image
 
 `Dockerfile.navarisd` — multi-stage build:
 
@@ -123,7 +123,7 @@ The `incus-data` named volume persists the storage pool across local runs. First
 
 Note: `CGO_ENABLED=0` works because both `modernc.org/sqlite` (pure Go) and the Incus Go client are CGO-free.
 
-### 6.2 Configuration
+### 7.2 Configuration
 
 ```yaml
 command:
@@ -136,7 +136,7 @@ volumes:
   - incus-socket:/var/lib/incus:ro
 ```
 
-### 6.3 Health check
+### 7.3 Health check
 
 ```yaml
 healthcheck:
@@ -144,11 +144,12 @@ healthcheck:
   interval: 2s
   timeout: 5s
   retries: 15
+  start_period: 5s
 ```
 
-## 7. Test Runner Container
+## 8. Test Runner Container
 
-### 7.1 Image
+### 8.1 Image
 
 `Dockerfile.test` — multi-stage build producing two binaries:
 
@@ -157,7 +158,7 @@ healthcheck:
 
 Runtime image: `debian:bookworm-slim` with both binaries.
 
-### 7.2 Environment
+### 8.2 Environment
 
 ```yaml
 environment:
@@ -167,7 +168,7 @@ environment:
   NAVARIS_CLI: /usr/local/bin/navaris
 ```
 
-### 7.3 Entrypoint
+### 8.3 Entrypoint
 
 Runs the compiled test binary with verbose output:
 
@@ -175,11 +176,11 @@ Runs the compiled test binary with verbose output:
 /integration.test -test.v -test.timeout 10m
 ```
 
-## 8. Test Suite
+## 9. Test Suite
 
 All test files live in `test/integration/`, behind the `integration` build tag. Note: the `integration` build tag is for test files; the `incus` build tag is for the Incus provider source code. They serve different purposes — test binaries do not need the `incus` tag.
 
-### 8.1 Test files
+### 9.1 Test files
 
 | File | Coverage |
 |------|----------|
@@ -194,13 +195,13 @@ All test files live in `test/integration/`, behind the `integration` build tag. 
 | `concurrent_test.go` | Parallel sandbox creation, concurrent operations, no races |
 | `events_test.go` | WebSocket `/v1/events`: subscribe, create sandbox, verify lifecycle events arrive |
 | `error_test.go` | 404 on missing resources, 400 on bad input, 409 on duplicate names |
-| `helpers_test.go` | Shared utilities: client setup, CLI runner, cleanup helpers |
+| `helpers_test.go` | Shared utilities: client setup, CLI runner, cleanup helpers (move existing helpers from `e2e_test.go` here) |
 
-### 8.2 TestMain warm-up
+### 9.2 TestMain warm-up
 
 `TestMain` pre-pulls the base container image before any tests run, so individual test timeouts are not consumed by the image download.
 
-### 8.3 CLI testing approach
+### 9.3 CLI testing approach
 
 A `cliRunner` helper that:
 1. Shells out to the `navaris` binary (path from `NAVARIS_CLI` env var)
@@ -208,13 +209,13 @@ A `cliRunner` helper that:
 3. Captures stdout, stderr, and exit code
 4. Parses JSON output for assertions
 
-### 8.4 Test isolation
+### 9.4 Test isolation
 
 Each test creates its own project with a unique timestamped name. No shared sandbox state between tests. Cleanup via `defer` in each test function.
 
-## 9. CI Integration
+## 10. CI Integration
 
-### 9.1 GitHub Actions
+### 10.1 GitHub Actions
 
 `.github/workflows/integration.yml`:
 
@@ -236,7 +237,7 @@ jobs:
 
 GitHub Actions `ubuntu-latest` runners support privileged Docker containers natively.
 
-### 9.2 Makefile targets
+### 10.2 Makefile targets
 
 | Target | Description |
 |--------|-------------|
@@ -245,7 +246,7 @@ GitHub Actions `ubuntu-latest` runners support privileged Docker containers nati
 | `make integration-env-down` | Tear down the dev environment. |
 | `make integration-logs` | Tail logs from all integration containers. |
 
-### 9.3 `make integration-test` implementation
+### 10.3 `make integration-test` implementation
 
 ```makefile
 COMPOSE_FILE := docker-compose.integration.yml
@@ -260,7 +261,7 @@ integration-test:
 
 The exit code capture ensures `down -v` always runs (even on test failure) and the final exit code reflects the test result.
 
-### 9.4 `make integration-env` implementation
+### 10.4 `make integration-env` implementation
 
 ```makefile
 integration-env:
@@ -278,7 +279,7 @@ integration-logs:
 
 **Port mapping via Compose profiles**: The navarisd service has a `ports: ["8080:8080"]` section gated behind the `dev` profile. In CI mode (no profile), the test-runner connects via the Docker network (`http://navarisd:8080`) and no host port is published. In dev mode (`--profile dev`), port 8080 is published to the host so tests can run from the host machine.
 
-## 10. Local Dev Workflow
+## 11. Local Dev Workflow
 
 1. `make integration-env` — starts Incus + navarisd in Docker
 2. Run specific tests from host:
@@ -292,7 +293,7 @@ integration-logs:
    ```
 4. `make integration-env-down` when done
 
-## 11. Error Handling & Edge Cases
+## 12. Error Handling & Edge Cases
 
 **Incus image pull latency**: First run pulls base container images (~30-60s). Mitigated by `TestMain` warm-up and the persistent `incus-data` volume for local runs.
 
@@ -312,7 +313,7 @@ integration-logs:
 - Test execution: ~3-5 minutes
 - Total: ~7-10 minutes (well within the 15-minute GHA timeout)
 
-## 12. Files to Create/Modify
+## 13. Files to Create/Modify
 
 | File | Action |
 |------|--------|
