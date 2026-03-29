@@ -125,6 +125,21 @@ func run(cfg config) error {
 
 	// Start dispatcher and GC
 	disp.Start()
+
+	// Reconcile stale state from previous run
+	reconciler := service.NewReconciler(store.SandboxStore(), store.OperationStore(), prov, logger)
+	result := reconciler.Run(context.Background())
+	if len(result.Errors) > 0 {
+		logger.Warn("reconciliation completed with errors", "errors", len(result.Errors))
+	}
+	if result.TransitionalFixed+result.StaleOpsFailed+result.DriftFixed > 0 {
+		logger.Info("reconciliation results",
+			"transitional_fixed", result.TransitionalFixed,
+			"stale_ops_failed", result.StaleOpsFailed,
+			"drift_fixed", result.DriftFixed,
+		)
+	}
+
 	gc := worker.NewGC(store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), prov, worker.GCConfig{
 		Interval: cfg.gcInterval,
 	})

@@ -83,6 +83,9 @@ func (d *Dispatcher) Enqueue(op *domain.Operation) {
 
 	select {
 	case d.queue <- op:
+	case <-d.done:
+		d.wg.Done()
+		slog.Warn("dispatcher: enqueue during shutdown, dropping operation", "operation_id", op.OperationID)
 	default:
 		d.wg.Done()
 		slog.Warn("dispatcher: queue full, dropping operation", "operation_id", op.OperationID)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
 )
