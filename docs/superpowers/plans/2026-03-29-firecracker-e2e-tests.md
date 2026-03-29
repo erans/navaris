@@ -338,7 +338,7 @@ if os.Getenv("NAVARIS_SKIP_SNAPSHOTS") == "1" {
 }
 ```
 
-The file already imports `"os"` — no import change needed. (Verify: check the imports in the file. If `"os"` is not imported, add it.)
+The file does NOT import `"os"` — add it to the import block.
 
 - [ ] **Step 2: Add skip guard to `test/integration/e2e_test.go`**
 
@@ -463,7 +463,7 @@ Expected: All non-skipped tests pass. Skipped tests show `--- SKIP:` with the ex
 In the test output, confirm these skip messages are present:
 - `snapshots not supported by this backend` (from snapshot_test.go, image_test.go)
 - `port forwarding not supported by this backend` (from port_test.go)
-- `skipping snapshot/from-snapshot section` (from e2e_test.go)
+- `end-to-end lifecycle test passed (snapshot section skipped)` (from e2e_test.go, in verbose output — this is a `t.Log`, not a `t.Skip`)
 
 - [ ] **Step 4: Verify health log confirms Firecracker backend**
 
