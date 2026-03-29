@@ -12,11 +12,12 @@ import (
 )
 
 type operationStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) OperationStore() domain.OperationStore {
-	return &operationStore{db: s.db}
+	return &operationStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (os *operationStore) Create(ctx context.Context, op *domain.Operation) error {
@@ -28,7 +29,7 @@ func (os *operationStore) Create(ctx context.Context, op *domain.Operation) erro
 	if op.FinishedAt != nil {
 		finishedAt = sql.NullString{String: op.FinishedAt.Format(time.RFC3339Nano), Valid: true}
 	}
-	_, err = os.db.ExecContext(ctx, `INSERT INTO operations
+	_, err = os.writeDB.ExecContext(ctx, `INSERT INTO operations
 		(operation_id, resource_type, resource_id, sandbox_id, snapshot_id,
 		 type, state, started_at, finished_at, error_text, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -40,7 +41,7 @@ func (os *operationStore) Create(ctx context.Context, op *domain.Operation) erro
 }
 
 func (os *operationStore) Get(ctx context.Context, id string) (*domain.Operation, error) {
-	row := os.db.QueryRowContext(ctx, `SELECT
+	row := os.readDB.QueryRowContext(ctx, `SELECT
 		operation_id, resource_type, resource_id, sandbox_id, snapshot_id,
 		type, state, started_at, finished_at, error_text, metadata
 		FROM operations WHERE operation_id = ?`, id)
@@ -72,20 +73,20 @@ func (os *operationStore) List(ctx context.Context, f domain.OperationFilter) ([
 	if f.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", f.Limit)
 	}
-	rows, err := os.db.QueryContext(ctx, query, args...)
+	rows, err := os.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var ops []*domain.Operation
 	for rows.Next() {
 		op, err := scanOperationRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		ops = append(ops, op)
 	}
-	return ops, rows.Err()
+	return ops, mapError(rows.Err())
 }
 
 func (os *operationStore) Update(ctx context.Context, op *domain.Operation) error {
@@ -97,7 +98,7 @@ func (os *operationStore) Update(ctx context.Context, op *domain.Operation) erro
 	if op.FinishedAt != nil {
 		finishedAt = sql.NullString{String: op.FinishedAt.Format(time.RFC3339Nano), Valid: true}
 	}
-	res, err := os.db.ExecContext(ctx, `UPDATE operations SET
+	res, err := os.writeDB.ExecContext(ctx, `UPDATE operations SET
 		state = ?, finished_at = ?, error_text = ?, metadata = ?
 		WHERE operation_id = ?`,
 		string(op.State), finishedAt, nullString(op.ErrorText), meta, op.OperationID)
@@ -108,7 +109,7 @@ func (os *operationStore) Update(ctx context.Context, op *domain.Operation) erro
 }
 
 func (os *operationStore) ListStale(ctx context.Context, olderThan time.Time) ([]*domain.Operation, error) {
-	rows, err := os.db.QueryContext(ctx, `SELECT
+	rows, err := os.readDB.QueryContext(ctx, `SELECT
 		operation_id, resource_type, resource_id, sandbox_id, snapshot_id,
 		type, state, started_at, finished_at, error_text, metadata
 		FROM operations
@@ -116,38 +117,38 @@ func (os *operationStore) ListStale(ctx context.Context, olderThan time.Time) ([
 		AND finished_at IS NOT NULL AND finished_at <= ?
 		ORDER BY finished_at`, olderThan.Format(time.RFC3339Nano))
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var ops []*domain.Operation
 	for rows.Next() {
 		op, err := scanOperationRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		ops = append(ops, op)
 	}
-	return ops, rows.Err()
+	return ops, mapError(rows.Err())
 }
 
 func (os *operationStore) ListByState(ctx context.Context, state domain.OperationState) ([]*domain.Operation, error) {
-	rows, err := os.db.QueryContext(ctx, `SELECT
+	rows, err := os.readDB.QueryContext(ctx, `SELECT
 		operation_id, resource_type, resource_id, sandbox_id, snapshot_id,
 		type, state, started_at, finished_at, error_text, metadata
 		FROM operations WHERE state = ? ORDER BY started_at`, string(state))
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var ops []*domain.Operation
 	for rows.Next() {
 		op, err := scanOperationRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		ops = append(ops, op)
 	}
-	return ops, rows.Err()
+	return ops, mapError(rows.Err())
 }
 
 func scanOperation(row *sql.Row) (*domain.Operation, error) {
@@ -162,7 +163,7 @@ func scanOperation(row *sql.Row) (*domain.Operation, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("operation: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	populateOperation(&op, state, startedAt, sandboxID, snapshotID, finishedAt, errorText, meta)
 	return &op, nil

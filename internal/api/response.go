@@ -41,13 +41,20 @@ func respondError(w http.ResponseWriter, err error) {
 	code := mapErrorCode(err)
 	resp := errorResponse{}
 	resp.Error.Code = code
-	if code >= 500 {
+	switch {
+	case code == http.StatusServiceUnavailable:
+		resp.Error.Message = "service temporarily unavailable"
+		slog.Warn("api error", "status", code, "error", err.Error())
+	case code >= 500:
 		resp.Error.Message = "internal server error"
 		slog.Error("api error", "status", code, "error", err.Error())
-	} else {
+	default:
 		resp.Error.Message = err.Error()
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if code == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", "1")
+	}
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(resp)
 }
@@ -64,6 +71,9 @@ func mapErrorCode(err error) int {
 	}
 	if errors.Is(err, domain.ErrUnauthorized) {
 		return http.StatusUnauthorized
+	}
+	if errors.Is(err, domain.ErrBusy) {
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
 }

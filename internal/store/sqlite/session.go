@@ -12,11 +12,12 @@ import (
 )
 
 type sessionStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) SessionStore() domain.SessionStore {
-	return &sessionStore{db: s.db}
+	return &sessionStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (ss *sessionStore) Create(ctx context.Context, sess *domain.Session) error {
@@ -28,7 +29,7 @@ func (ss *sessionStore) Create(ctx context.Context, sess *domain.Session) error 
 	if sess.IdleTimeout != nil {
 		idleTimeoutSec = sql.NullInt64{Int64: int64(sess.IdleTimeout.Seconds()), Valid: true}
 	}
-	_, err = ss.db.ExecContext(ctx, `INSERT INTO sessions
+	_, err = ss.writeDB.ExecContext(ctx, `INSERT INTO sessions
 		(session_id, sandbox_id, backing, shell, state,
 		 created_at, updated_at, last_attached_at, idle_timeout_sec, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -40,7 +41,7 @@ func (ss *sessionStore) Create(ctx context.Context, sess *domain.Session) error 
 }
 
 func (ss *sessionStore) Get(ctx context.Context, id string) (*domain.Session, error) {
-	row := ss.db.QueryRowContext(ctx, `SELECT
+	row := ss.readDB.QueryRowContext(ctx, `SELECT
 		session_id, sandbox_id, backing, shell, state,
 		created_at, updated_at, last_attached_at, idle_timeout_sec, metadata
 		FROM sessions WHERE session_id = ?`, id)
@@ -48,23 +49,23 @@ func (ss *sessionStore) Get(ctx context.Context, id string) (*domain.Session, er
 }
 
 func (ss *sessionStore) ListBySandbox(ctx context.Context, sandboxID string) ([]*domain.Session, error) {
-	rows, err := ss.db.QueryContext(ctx, `SELECT
+	rows, err := ss.readDB.QueryContext(ctx, `SELECT
 		session_id, sandbox_id, backing, shell, state,
 		created_at, updated_at, last_attached_at, idle_timeout_sec, metadata
 		FROM sessions WHERE sandbox_id = ? ORDER BY created_at`, sandboxID)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var sessions []*domain.Session
 	for rows.Next() {
 		sess, err := scanSessionRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		sessions = append(sessions, sess)
 	}
-	return sessions, rows.Err()
+	return sessions, mapError(rows.Err())
 }
 
 func (ss *sessionStore) Update(ctx context.Context, sess *domain.Session) error {
@@ -76,7 +77,7 @@ func (ss *sessionStore) Update(ctx context.Context, sess *domain.Session) error 
 	if sess.IdleTimeout != nil {
 		idleTimeoutSec = sql.NullInt64{Int64: int64(sess.IdleTimeout.Seconds()), Valid: true}
 	}
-	res, err := ss.db.ExecContext(ctx, `UPDATE sessions SET
+	res, err := ss.writeDB.ExecContext(ctx, `UPDATE sessions SET
 		backing = ?, shell = ?, state = ?, updated_at = ?,
 		last_attached_at = ?, idle_timeout_sec = ?, metadata = ?
 		WHERE session_id = ?`,
@@ -90,9 +91,9 @@ func (ss *sessionStore) Update(ctx context.Context, sess *domain.Session) error 
 }
 
 func (ss *sessionStore) Delete(ctx context.Context, id string) error {
-	res, err := ss.db.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = ?`, id)
+	res, err := ss.writeDB.ExecContext(ctx, `DELETE FROM sessions WHERE session_id = ?`, id)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -109,7 +110,7 @@ func scanSession(row *sql.Row) (*domain.Session, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("session: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	populateSession(&sess, backing, state, createdAt, updatedAt, lastAttachedAt, idleTimeoutSec, meta)
 	return &sess, nil

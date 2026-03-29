@@ -12,11 +12,12 @@ import (
 )
 
 type imageStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) ImageStore() domain.ImageStore {
-	return &imageStore{db: s.db}
+	return &imageStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (is *imageStore) Create(ctx context.Context, img *domain.BaseImage) error {
@@ -24,7 +25,7 @@ func (is *imageStore) Create(ctx context.Context, img *domain.BaseImage) error {
 	if err != nil {
 		return err
 	}
-	_, err = is.db.ExecContext(ctx, `INSERT INTO base_images
+	_, err = is.writeDB.ExecContext(ctx, `INSERT INTO base_images
 		(image_id, project_scope, name, version, source_type, source_snapshot_id,
 		 backend, backend_ref, architecture, state, created_at, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -36,7 +37,7 @@ func (is *imageStore) Create(ctx context.Context, img *domain.BaseImage) error {
 }
 
 func (is *imageStore) Get(ctx context.Context, id string) (*domain.BaseImage, error) {
-	row := is.db.QueryRowContext(ctx, `SELECT
+	row := is.readDB.QueryRowContext(ctx, `SELECT
 		image_id, project_scope, name, version, source_type, source_snapshot_id,
 		backend, backend_ref, architecture, state, created_at, metadata
 		FROM base_images WHERE image_id = ?`, id)
@@ -61,20 +62,20 @@ func (is *imageStore) List(ctx context.Context, f domain.ImageFilter) ([]*domain
 		args = append(args, string(*f.State))
 	}
 	query += " ORDER BY name, version"
-	rows, err := is.db.QueryContext(ctx, query, args...)
+	rows, err := is.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, mapError(err)
 	}
 	defer rows.Close()
 	var images []*domain.BaseImage
 	for rows.Next() {
 		img, err := scanImageRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, mapError(err)
 		}
 		images = append(images, img)
 	}
-	return images, rows.Err()
+	return images, mapError(rows.Err())
 }
 
 func (is *imageStore) Update(ctx context.Context, img *domain.BaseImage) error {
@@ -82,7 +83,7 @@ func (is *imageStore) Update(ctx context.Context, img *domain.BaseImage) error {
 	if err != nil {
 		return err
 	}
-	res, err := is.db.ExecContext(ctx, `UPDATE base_images SET
+	res, err := is.writeDB.ExecContext(ctx, `UPDATE base_images SET
 		project_scope = ?, name = ?, version = ?, source_type = ?, source_snapshot_id = ?,
 		backend_ref = ?, architecture = ?, state = ?, metadata = ?
 		WHERE image_id = ?`,
@@ -97,9 +98,9 @@ func (is *imageStore) Update(ctx context.Context, img *domain.BaseImage) error {
 }
 
 func (is *imageStore) Delete(ctx context.Context, id string) error {
-	res, err := is.db.ExecContext(ctx, `DELETE FROM base_images WHERE image_id = ?`, id)
+	res, err := is.writeDB.ExecContext(ctx, `DELETE FROM base_images WHERE image_id = ?`, id)
 	if err != nil {
-		return err
+		return mapError(err)
 	}
 	return checkRowsAffected(res)
 }
@@ -116,7 +117,7 @@ func scanImage(row *sql.Row) (*domain.BaseImage, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("image: %w", domain.ErrNotFound)
 		}
-		return nil, err
+		return nil, mapError(err)
 	}
 	populateImage(&img, sourceType, state, createdAt, projectScope, sourceSnapshotID, backendRef, meta)
 	return &img, nil
