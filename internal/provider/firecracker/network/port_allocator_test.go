@@ -63,6 +63,22 @@ func TestPortAllocatorCapacityExceeded(t *testing.T) {
 	}
 }
 
+func TestPortAllocatorSequentialExhaustion(t *testing.T) {
+	a := NewPortAllocator()
+	// Allocate every port sequentially via Allocate() (not MarkUsed).
+	for i := portMin; i <= portMax; i++ {
+		_, err := a.Allocate()
+		if err != nil {
+			t.Fatalf("unexpected error at port index %d: %v", i, err)
+		}
+	}
+	// The next call must push a.next past portMax, then wrap and find all used.
+	_, err := a.Allocate()
+	if !errors.Is(err, domain.ErrCapacityExceeded) {
+		t.Errorf("got %v, want ErrCapacityExceeded after sequential exhaustion", err)
+	}
+}
+
 func TestPortAllocatorWrapAround(t *testing.T) {
 	a := NewPortAllocator()
 	// Allocate up to the last port.

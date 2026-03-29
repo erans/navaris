@@ -31,12 +31,13 @@ func (a *PortAllocator) Allocate() (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// Normalize before capturing start so the sentinel comparison is valid.
+	if a.next > portMax {
+		a.next = portMin
+	}
 	// Scan from next through the range, wrapping once.
 	start := a.next
 	for {
-		if a.next > portMax {
-			a.next = portMin
-		}
 		if !a.used[a.next] {
 			port := a.next
 			a.used[port] = true
