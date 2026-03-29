@@ -322,6 +322,15 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 	}
 stopped:
 
+	// Clean up port forwarding rules.
+	if len(info.Ports) > 0 && info.SubnetIdx > 0 {
+		guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
+		for hp, tp := range info.Ports {
+			network.RemoveDNAT(hp, guestIP, tp)
+			p.portAlloc.Release(hp)
+		}
+	}
+
 	// Clean up networking.
 	if info.TapDevice != "" {
 		network.DeleteTap(info.TapDevice)
