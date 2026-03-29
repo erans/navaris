@@ -1,0 +1,21 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/opt/incus/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/incus/lib"
+
+# Install Incus from Zabbly PPA
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl gpg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt/keyrings/zabbly.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/zabbly.gpg] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo ${VERSION_CODENAME}) main" \
+        > /etc/apt/sources.list.d/zabbly-incus.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends incus && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/incus-entrypoint.sh /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

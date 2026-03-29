@@ -1,0 +1,7 @@
+.git
+bin/
+*.db
+*.db-journal
+docs/
+.github/
+.claude/

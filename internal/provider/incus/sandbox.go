@@ -163,8 +163,19 @@ func (p *IncusProvider) CreateSandboxFromSnapshot(ctx context.Context, snapshotR
 	if err != nil {
 		return domain.BackendRef{}, fmt.Errorf("incus copy snapshot: %w", err)
 	}
-	if err := op.WaitContext(ctx); err != nil {
-		return domain.BackendRef{}, fmt.Errorf("incus copy snapshot wait: %w", err)
+	// RemoteOperation only exposes Wait() (no WaitContext). Wrap it so
+	// context cancellation still propagates and we attempt to cancel the
+	// backend operation when the caller gives up.
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- op.Wait() }()
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			return domain.BackendRef{}, fmt.Errorf("incus copy snapshot wait: %w", err)
+		}
+	case <-ctx.Done():
+		_ = op.CancelTarget()
+		return domain.BackendRef{}, fmt.Errorf("incus copy snapshot wait: %w", ctx.Err())
 	}
 
 	// Apply resource limits after copy if any were specified.

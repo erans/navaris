@@ -4,41 +4,11 @@ package integration
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 )
-
-func apiURL() string {
-	if v := os.Getenv("NAVARIS_API_URL"); v != "" {
-		return v
-	}
-	return "http://localhost:8080"
-}
-
-func apiToken() string {
-	return os.Getenv("NAVARIS_TOKEN")
-}
-
-func baseImage() string {
-	if v := os.Getenv("NAVARIS_BASE_IMAGE"); v != "" {
-		return v
-	}
-	return "images:alpine/3.19"
-}
-
-func newClient() *client.Client {
-	return client.NewClient(
-		client.WithURL(apiURL()),
-		client.WithToken(apiToken()),
-	)
-}
-
-func waitOpts() *client.WaitOptions {
-	return &client.WaitOptions{Timeout: 3 * time.Minute}
-}
 
 // TestEndToEndLifecycle exercises the full sandbox lifecycle through the SDK:
 //
@@ -199,6 +169,15 @@ func TestEndToEndLifecycle(t *testing.T) {
 	t.Logf("sandbox-from-snapshot %s is running", sandbox2ID)
 
 	// --- Step 7: Destroy everything ---
+	// Stop sandbox2 first — Incus won't delete a running instance.
+	stopOp2, err := c.StopSandboxAndWait(ctx, sandbox2ID, client.StopSandboxRequest{Force: true}, waitOpts())
+	if err != nil {
+		t.Fatalf("stop sandbox 2: %v", err)
+	}
+	if stopOp2.State != client.OpSucceeded {
+		t.Fatalf("stop sandbox 2 failed: state=%s error=%s", stopOp2.State, stopOp2.ErrorText)
+	}
+
 	destroyOp2, err := c.DestroySandboxAndWait(ctx, sandbox2ID, waitOpts())
 	if err != nil {
 		t.Fatalf("destroy sandbox 2: %v", err)
