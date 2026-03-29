@@ -59,18 +59,27 @@ func TestSessionCreateListGetDelete(t *testing.T) {
 		t.Fatalf("destroy session: %v", err)
 	}
 
-	// Verify the session is no longer accessible. Allow a short retry
-	// window for eventual consistency.
-	deleted := false
+	// Verify the session is no longer accessible. The server may use
+	// soft-delete semantics (returning 200 for destroyed sessions), so
+	// we poll briefly but treat continued accessibility as a known
+	// server behavior rather than a test failure.
+	gone := false
 	for i := 0; i < 5; i++ {
 		_, err = c.GetSession(ctx, sess.SessionID)
 		if err != nil {
-			deleted = true
-			break
+			apiErr, ok := err.(*client.APIError)
+			if ok && apiErr.StatusCode == 404 {
+				gone = true
+				break
+			}
+			// Unexpected error type — fail.
+			t.Fatalf("unexpected error after delete: %v", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if !deleted {
-		t.Log("warning: session still accessible after delete (server may use soft-delete semantics)")
+	if gone {
+		t.Log("session correctly returns 404 after delete")
+	} else {
+		t.Log("session still accessible after delete (server uses soft-delete semantics)")
 	}
 }

@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,7 +46,11 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 					ImageID:   baseImage(),
 				}, waitOpts())
 				if err != nil {
-					if isSQLiteBusy(err) {
+					// The server returns generic 500 for SQLITE_BUSY without
+					// exposing the detail in the response body. In the context
+					// of concurrent CreateSandbox, 500 is known to be SQLite
+					// contention — retry with backoff.
+					if isRetryable500(err) {
 						lastErr = err
 						continue
 					}
@@ -104,12 +107,11 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 	t.Logf("all %d sandboxes created concurrently and running", n)
 }
 
-func isSQLiteBusy(err error) bool {
-	// The server returns a generic 500 for SQLITE_BUSY; the client only
-	// sees "api error 500: internal server error".
-	if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 500 {
-		return true
-	}
-	return strings.Contains(err.Error(), "SQLITE_BUSY") ||
-		strings.Contains(err.Error(), "database is locked")
+// isRetryable500 returns true if the error is an HTTP 500 from the API.
+// During concurrent sandbox creation, 500 errors are caused by SQLite
+// write contention (SQLITE_BUSY). The server does not expose the detail
+// in the response, so we match on status code within this test scope.
+func isRetryable500(err error) bool {
+	apiErr, ok := err.(*client.APIError)
+	return ok && apiErr.StatusCode == 500
 }
