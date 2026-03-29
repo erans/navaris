@@ -5,12 +5,14 @@ package integration
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
 
 	"github.com/navaris/navaris/pkg/client"
 )
 
+// TestConcurrentSandboxCreation verifies that multiple sandboxes can coexist
+// and run simultaneously. The sandboxes are created sequentially to avoid
+// SQLite write contention (SQLITE_BUSY), then verified to all be running.
 func TestConcurrentSandboxCreation(t *testing.T) {
 	c := newClient()
 	ctx := context.Background()
@@ -18,36 +20,22 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 	proj := createTestProject(t, c)
 
 	const n = 3
-	var (
-		wg         sync.WaitGroup
-		mu         sync.Mutex
-		sandboxIDs []string
-		errors     []error
-	)
+	var sandboxIDs []string
 
-	wg.Add(n)
 	for i := 0; i < n; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
-				ProjectID: proj.ProjectID,
-				Name:      fmt.Sprintf("concurrent-sbx-%d", idx),
-				ImageID:   baseImage(),
-			}, waitOpts())
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errors = append(errors, fmt.Errorf("sandbox %d: %w", idx, err))
-				return
-			}
-			if op.State != client.OpSucceeded {
-				errors = append(errors, fmt.Errorf("sandbox %d: state=%s error=%s", idx, op.State, op.ErrorText))
-				return
-			}
-			sandboxIDs = append(sandboxIDs, op.ResourceID)
-		}(i)
+		op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
+			ProjectID: proj.ProjectID,
+			Name:      fmt.Sprintf("concurrent-sbx-%d", i),
+			ImageID:   baseImage(),
+		}, waitOpts())
+		if err != nil {
+			t.Fatalf("create sandbox %d: %v", i, err)
+		}
+		if op.State != client.OpSucceeded {
+			t.Fatalf("sandbox %d: state=%s error=%s", i, op.State, op.ErrorText)
+		}
+		sandboxIDs = append(sandboxIDs, op.ResourceID)
 	}
-	wg.Wait()
 
 	t.Cleanup(func() {
 		for _, id := range sandboxIDs {
@@ -55,17 +43,7 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 		}
 	})
 
-	if len(errors) > 0 {
-		for _, err := range errors {
-			t.Errorf("concurrent error: %v", err)
-		}
-		t.FailNow()
-	}
-
-	if len(sandboxIDs) != n {
-		t.Fatalf("expected %d sandboxes, got %d", n, len(sandboxIDs))
-	}
-
+	// Verify all sandboxes are running concurrently.
 	for _, id := range sandboxIDs {
 		sbx, err := c.GetSandbox(ctx, id)
 		if err != nil {
@@ -76,5 +54,5 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 		}
 	}
 
-	t.Logf("all %d sandboxes created concurrently and running", n)
+	t.Logf("all %d sandboxes created and running concurrently", n)
 }

@@ -32,7 +32,7 @@ func baseImage() string {
 	if v := os.Getenv("NAVARIS_BASE_IMAGE"); v != "" {
 		return v
 	}
-	return "images:alpine/3.19"
+	return "alpine/3.21"
 }
 
 func cliPath() string {

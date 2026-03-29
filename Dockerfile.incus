@@ -1,6 +1,8 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/opt/incus/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/incus/lib"
 
 # Install Incus from Zabbly PPA
 RUN apt-get update && \
