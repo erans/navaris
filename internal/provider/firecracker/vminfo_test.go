@@ -80,9 +80,9 @@ func TestScanVMDirs(t *testing.T) {
 		info.Write(filepath.Join(dir, "vminfo.json"))
 	}
 
-	infos, err := ScanVMDirs(base)
-	if err != nil {
-		t.Fatal(err)
+	infos, errs := ScanVMDirs(base)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
 	}
 	if len(infos) != 2 {
 		t.Fatalf("expected 2 VMs, got %d", len(infos))

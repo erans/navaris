@@ -23,8 +23,27 @@ func (v *VMInfo) Write(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal vminfo: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// Atomic write: temp file + fsync + rename to prevent corruption on crash.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".vminfo-*.tmp")
+	if err != nil {
+		return fmt.Errorf("write vminfo tmp %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
 		return fmt.Errorf("write vminfo %s: %w", path, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("sync vminfo %s: %w", path, err)
+	}
+	tmp.Close()
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("rename vminfo %s: %w", path, err)
 	}
 	return nil
 }
@@ -48,20 +67,22 @@ func ReadVMInfo(path string) (*VMInfo, error) {
 	return &info, nil
 }
 
-func ScanVMDirs(base string) ([]*VMInfo, error) {
+func ScanVMDirs(base string) ([]*VMInfo, []error) {
 	pattern := filepath.Join(base, "firecracker", "nvrs-fc-*")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("scan VM dirs: %w", err)
+		return nil, []error{fmt.Errorf("scan VM dirs: %w", err)}
 	}
 	var infos []*VMInfo
+	var errs []error
 	for _, dir := range matches {
 		path := filepath.Join(dir, "vminfo.json")
 		info, err := ReadVMInfo(path)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("scan %s: %w", dir, err))
 			continue
 		}
 		infos = append(infos, info)
 	}
-	return infos, nil
+	return infos, errs
 }

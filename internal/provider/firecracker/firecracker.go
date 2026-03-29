@@ -98,9 +98,9 @@ func New(cfg Config) (*Provider, error) {
 }
 
 func (p *Provider) recover() error {
-	infos, err := ScanVMDirs(p.config.ChrootBase)
-	if err != nil {
-		return err
+	infos, errs := ScanVMDirs(p.config.ChrootBase)
+	for _, e := range errs {
+		slog.Warn("firecracker: recovery skip", "error", e)
 	}
 	for _, info := range infos {
 		p.vmMu.Lock()
