@@ -1,0 +1,59 @@
+services:
+  incus:
+    build:
+      context: .
+      dockerfile: Dockerfile.incus
+    privileged: true
+    cgroupns: host
+    volumes:
+      - incus-socket:/var/lib/incus
+      - incus-data:/var/lib/incus/storage-pools
+    healthcheck:
+      test: ["CMD", "incus", "query", "/1.0"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  navarisd:
+    build:
+      context: .
+      dockerfile: Dockerfile.navarisd
+    command:
+      - --listen=:8080
+      - --db-path=/tmp/navaris.db
+      - --incus-socket=/var/lib/incus/unix.socket
+      - --auth-token=test-token
+      - --log-level=debug
+    ports:
+      - "${NAVARIS_HOST_PORT:-}:8080"
+    volumes:
+      - incus-socket:/var/lib/incus:ro
+    depends_on:
+      incus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--header", "Authorization: Bearer test-token", "http://localhost:8080/v1/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      NAVARIS_API_URL: http://navarisd:8080
+      NAVARIS_TOKEN: test-token
+      NAVARIS_BASE_IMAGE: images:alpine/3.19
+      NAVARIS_CLI: /usr/local/bin/navaris
+    depends_on:
+      navarisd:
+        condition: service_healthy
+    profiles:
+      - test
+
+volumes:
+  incus-socket:
+  incus-data:
