@@ -12,11 +12,12 @@ import (
 )
 
 type snapshotStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) SnapshotStore() domain.SnapshotStore {
-	return &snapshotStore{db: s.db}
+	return &snapshotStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (ss *snapshotStore) Create(ctx context.Context, snap *domain.Snapshot) error {
@@ -28,7 +29,7 @@ func (ss *snapshotStore) Create(ctx context.Context, snap *domain.Snapshot) erro
 	if snap.Publishable {
 		publishable = 1
 	}
-	_, err = ss.db.ExecContext(ctx, `INSERT INTO snapshots
+	_, err = ss.writeDB.ExecContext(ctx, `INSERT INTO snapshots
 		(snapshot_id, sandbox_id, backend, backend_ref, label, state,
 		 created_at, updated_at, parent_image_id, publishable, consistency_mode, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -40,7 +41,7 @@ func (ss *snapshotStore) Create(ctx context.Context, snap *domain.Snapshot) erro
 }
 
 func (ss *snapshotStore) Get(ctx context.Context, id string) (*domain.Snapshot, error) {
-	row := ss.db.QueryRowContext(ctx, `SELECT
+	row := ss.readDB.QueryRowContext(ctx, `SELECT
 		snapshot_id, sandbox_id, backend, backend_ref, label, state,
 		created_at, updated_at, parent_image_id, publishable, consistency_mode, metadata
 		FROM snapshots WHERE snapshot_id = ?`, id)
@@ -48,7 +49,7 @@ func (ss *snapshotStore) Get(ctx context.Context, id string) (*domain.Snapshot, 
 }
 
 func (ss *snapshotStore) ListBySandbox(ctx context.Context, sandboxID string) ([]*domain.Snapshot, error) {
-	rows, err := ss.db.QueryContext(ctx, `SELECT
+	rows, err := ss.readDB.QueryContext(ctx, `SELECT
 		snapshot_id, sandbox_id, backend, backend_ref, label, state,
 		created_at, updated_at, parent_image_id, publishable, consistency_mode, metadata
 		FROM snapshots WHERE sandbox_id = ? ORDER BY created_at`, sandboxID)
@@ -76,7 +77,7 @@ func (ss *snapshotStore) Update(ctx context.Context, snap *domain.Snapshot) erro
 	if snap.Publishable {
 		publishable = 1
 	}
-	res, err := ss.db.ExecContext(ctx, `UPDATE snapshots SET
+	res, err := ss.writeDB.ExecContext(ctx, `UPDATE snapshots SET
 		backend_ref = ?, label = ?, state = ?, updated_at = ?,
 		parent_image_id = ?, publishable = ?, consistency_mode = ?, metadata = ?
 		WHERE snapshot_id = ?`,
@@ -91,7 +92,7 @@ func (ss *snapshotStore) Update(ctx context.Context, snap *domain.Snapshot) erro
 }
 
 func (ss *snapshotStore) Delete(ctx context.Context, id string) error {
-	res, err := ss.db.ExecContext(ctx, `DELETE FROM snapshots WHERE snapshot_id = ?`, id)
+	res, err := ss.writeDB.ExecContext(ctx, `DELETE FROM snapshots WHERE snapshot_id = ?`, id)
 	if err != nil {
 		return mapError(err)
 	}
@@ -99,7 +100,7 @@ func (ss *snapshotStore) Delete(ctx context.Context, id string) error {
 }
 
 func (ss *snapshotStore) ListOrphaned(ctx context.Context) ([]*domain.Snapshot, error) {
-	rows, err := ss.db.QueryContext(ctx, `SELECT s.snapshot_id, s.sandbox_id, s.backend, s.backend_ref,
+	rows, err := ss.readDB.QueryContext(ctx, `SELECT s.snapshot_id, s.sandbox_id, s.backend, s.backend_ref,
 		s.label, s.state, s.created_at, s.updated_at, s.parent_image_id,
 		s.publishable, s.consistency_mode, s.metadata
 		FROM snapshots s

@@ -11,15 +11,16 @@ import (
 )
 
 type portBindingStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) PortBindingStore() domain.PortBindingStore {
-	return &portBindingStore{db: s.db}
+	return &portBindingStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (ps *portBindingStore) Create(ctx context.Context, pb *domain.PortBinding) error {
-	_, err := ps.db.ExecContext(ctx, `INSERT INTO port_bindings
+	_, err := ps.writeDB.ExecContext(ctx, `INSERT INTO port_bindings
 		(sandbox_id, target_port, published_port, host_address, created_at)
 		VALUES (?, ?, ?, ?, ?)`,
 		pb.SandboxID, pb.TargetPort, pb.PublishedPort, pb.HostAddress,
@@ -28,7 +29,7 @@ func (ps *portBindingStore) Create(ctx context.Context, pb *domain.PortBinding) 
 }
 
 func (ps *portBindingStore) ListBySandbox(ctx context.Context, sandboxID string) ([]*domain.PortBinding, error) {
-	rows, err := ps.db.QueryContext(ctx, `SELECT
+	rows, err := ps.readDB.QueryContext(ctx, `SELECT
 		sandbox_id, target_port, published_port, host_address, created_at
 		FROM port_bindings WHERE sandbox_id = ? ORDER BY target_port`, sandboxID)
 	if err != nil {
@@ -47,7 +48,7 @@ func (ps *portBindingStore) ListBySandbox(ctx context.Context, sandboxID string)
 }
 
 func (ps *portBindingStore) Delete(ctx context.Context, sandboxID string, targetPort int) error {
-	res, err := ps.db.ExecContext(ctx,
+	res, err := ps.writeDB.ExecContext(ctx,
 		`DELETE FROM port_bindings WHERE sandbox_id = ? AND target_port = ?`,
 		sandboxID, targetPort)
 	if err != nil {
@@ -57,7 +58,7 @@ func (ps *portBindingStore) Delete(ctx context.Context, sandboxID string, target
 }
 
 func (ps *portBindingStore) GetByPublishedPort(ctx context.Context, publishedPort int) (*domain.PortBinding, error) {
-	row := ps.db.QueryRowContext(ctx, `SELECT
+	row := ps.readDB.QueryRowContext(ctx, `SELECT
 		sandbox_id, target_port, published_port, host_address, created_at
 		FROM port_bindings WHERE published_port = ?`, publishedPort)
 	var pb domain.PortBinding
@@ -75,7 +76,7 @@ func (ps *portBindingStore) GetByPublishedPort(ctx context.Context, publishedPor
 
 func (ps *portBindingStore) NextAvailablePort(ctx context.Context, rangeStart, rangeEnd int) (int, error) {
 	// Find the lowest port in [rangeStart, rangeEnd] not already used
-	row := ps.db.QueryRowContext(ctx, `
+	row := ps.writeDB.QueryRowContext(ctx, `
 		WITH RECURSIVE candidates(port) AS (
 			SELECT ?
 			UNION ALL

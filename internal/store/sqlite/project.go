@@ -15,11 +15,12 @@ import (
 )
 
 type projectStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) ProjectStore() domain.ProjectStore {
-	return &projectStore{db: s.db}
+	return &projectStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (ps *projectStore) Create(ctx context.Context, p *domain.Project) error {
@@ -27,7 +28,7 @@ func (ps *projectStore) Create(ctx context.Context, p *domain.Project) error {
 	if err != nil {
 		return err
 	}
-	_, err = ps.db.ExecContext(ctx,
+	_, err = ps.writeDB.ExecContext(ctx,
 		`INSERT INTO projects (project_id, name, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?)`,
 		p.ProjectID, p.Name, p.CreatedAt.Format(time.RFC3339Nano), p.UpdatedAt.Format(time.RFC3339Nano), meta)
 	if err != nil {
@@ -37,19 +38,19 @@ func (ps *projectStore) Create(ctx context.Context, p *domain.Project) error {
 }
 
 func (ps *projectStore) Get(ctx context.Context, id string) (*domain.Project, error) {
-	row := ps.db.QueryRowContext(ctx,
+	row := ps.readDB.QueryRowContext(ctx,
 		`SELECT project_id, name, created_at, updated_at, metadata FROM projects WHERE project_id = ?`, id)
 	return scanProject(row)
 }
 
 func (ps *projectStore) GetByName(ctx context.Context, name string) (*domain.Project, error) {
-	row := ps.db.QueryRowContext(ctx,
+	row := ps.readDB.QueryRowContext(ctx,
 		`SELECT project_id, name, created_at, updated_at, metadata FROM projects WHERE name = ?`, name)
 	return scanProject(row)
 }
 
 func (ps *projectStore) List(ctx context.Context) ([]*domain.Project, error) {
-	rows, err := ps.db.QueryContext(ctx,
+	rows, err := ps.readDB.QueryContext(ctx,
 		`SELECT project_id, name, created_at, updated_at, metadata FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, mapError(err)
@@ -71,7 +72,7 @@ func (ps *projectStore) Update(ctx context.Context, p *domain.Project) error {
 	if err != nil {
 		return err
 	}
-	res, err := ps.db.ExecContext(ctx,
+	res, err := ps.writeDB.ExecContext(ctx,
 		`UPDATE projects SET name = ?, updated_at = ?, metadata = ? WHERE project_id = ?`,
 		p.Name, p.UpdatedAt.Format(time.RFC3339Nano), meta, p.ProjectID)
 	if err != nil {
@@ -81,7 +82,7 @@ func (ps *projectStore) Update(ctx context.Context, p *domain.Project) error {
 }
 
 func (ps *projectStore) Delete(ctx context.Context, id string) error {
-	res, err := ps.db.ExecContext(ctx, `DELETE FROM projects WHERE project_id = ?`, id)
+	res, err := ps.writeDB.ExecContext(ctx, `DELETE FROM projects WHERE project_id = ?`, id)
 	if err != nil {
 		return mapError(err)
 	}

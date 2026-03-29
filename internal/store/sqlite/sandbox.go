@@ -12,11 +12,12 @@ import (
 )
 
 type sandboxStore struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
 func (s *Store) SandboxStore() domain.SandboxStore {
-	return &sandboxStore{db: s.db}
+	return &sandboxStore{readDB: s.readDB, writeDB: s.writeDB}
 }
 
 func (ss *sandboxStore) Create(ctx context.Context, sbx *domain.Sandbox) error {
@@ -24,7 +25,7 @@ func (ss *sandboxStore) Create(ctx context.Context, sbx *domain.Sandbox) error {
 	if err != nil {
 		return err
 	}
-	_, err = ss.db.ExecContext(ctx, `INSERT INTO sandboxes
+	_, err = ss.writeDB.ExecContext(ctx, `INSERT INTO sandboxes
 		(sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		 source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
 		 cpu_limit, memory_limit_mb, network_mode, metadata)
@@ -39,7 +40,7 @@ func (ss *sandboxStore) Create(ctx context.Context, sbx *domain.Sandbox) error {
 }
 
 func (ss *sandboxStore) Get(ctx context.Context, id string) (*domain.Sandbox, error) {
-	row := ss.db.QueryRowContext(ctx, `SELECT
+	row := ss.readDB.QueryRowContext(ctx, `SELECT
 		sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
 		cpu_limit, memory_limit_mb, network_mode, metadata
@@ -65,7 +66,7 @@ func (ss *sandboxStore) List(ctx context.Context, f domain.SandboxFilter) ([]*do
 		args = append(args, *f.Backend)
 	}
 	query += " ORDER BY created_at"
-	rows, err := ss.db.QueryContext(ctx, query, args...)
+	rows, err := ss.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -86,7 +87,7 @@ func (ss *sandboxStore) Update(ctx context.Context, sbx *domain.Sandbox) error {
 	if err != nil {
 		return err
 	}
-	res, err := ss.db.ExecContext(ctx, `UPDATE sandboxes SET
+	res, err := ss.writeDB.ExecContext(ctx, `UPDATE sandboxes SET
 		name = ?, state = ?, backend_ref = ?, host_id = ?,
 		source_image_id = ?, parent_snapshot_id = ?,
 		updated_at = ?, expires_at = ?, cpu_limit = ?, memory_limit_mb = ?,
@@ -104,7 +105,7 @@ func (ss *sandboxStore) Update(ctx context.Context, sbx *domain.Sandbox) error {
 }
 
 func (ss *sandboxStore) Delete(ctx context.Context, id string) error {
-	res, err := ss.db.ExecContext(ctx, `DELETE FROM sandboxes WHERE sandbox_id = ?`, id)
+	res, err := ss.writeDB.ExecContext(ctx, `DELETE FROM sandboxes WHERE sandbox_id = ?`, id)
 	if err != nil {
 		return mapError(err)
 	}
@@ -112,7 +113,7 @@ func (ss *sandboxStore) Delete(ctx context.Context, id string) error {
 }
 
 func (ss *sandboxStore) ListExpired(ctx context.Context, now time.Time) ([]*domain.Sandbox, error) {
-	rows, err := ss.db.QueryContext(ctx, `SELECT sandbox_id, project_id, name, state, backend, backend_ref, host_id,
+	rows, err := ss.readDB.QueryContext(ctx, `SELECT sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
 		cpu_limit, memory_limit_mb, network_mode, metadata
 		FROM sandboxes WHERE expires_at IS NOT NULL AND expires_at <= ? AND state != ?`,
