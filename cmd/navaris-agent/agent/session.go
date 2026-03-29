@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
-	"net"
 	"os"
 	"os/exec"
 	"syscall"
@@ -27,13 +27,22 @@ func (p *ptyFile) Write(buf []byte) (int, error) {
 	return p.master.Write(buf)
 }
 
-// Close closes the PTY master and kills the child process.
-func (p *ptyFile) Close() error {
-	err := p.master.Close()
+// Close closes the PTY master, kills the child process, and waits for it to
+// prevent zombie processes. Returns the shell's exit code.
+func (p *ptyFile) Close() int {
+	_ = p.master.Close()
 	if p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
 	}
-	return err
+	exitCode := 0
+	if err := p.cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	return exitCode
 }
 
 // Resize sets the PTY window size using the TIOCSWINSZ ioctl.
@@ -88,13 +97,11 @@ func itoa(n int) string {
 // device path. It uses TIOCGPTN to find the slave number and TIOCSPTLCK
 // to unlock it.
 func openPTY() (*os.File, string, error) {
-	// Open the master multiplexer.
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// Retrieve the slave PTY number.
 	var n uint32
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -107,7 +114,6 @@ func openPTY() (*os.File, string, error) {
 		return nil, "", errno
 	}
 
-	// Unlock the slave PTY (set lock to 0).
 	lock := int32(0)
 	_, _, errno = syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -131,7 +137,6 @@ func allocPTY(shell string) (*ptyFile, error) {
 		return nil, err
 	}
 
-	// Open the slave end of the PTY.
 	slave, err := os.OpenFile(slavePath, os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		master.Close()
@@ -146,7 +151,7 @@ func allocPTY(shell string) (*ptyFile, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
-		Ctty:    0, // fd index in child's file descriptors (stdin = 0)
+		Ctty:    0,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -158,8 +163,9 @@ func allocPTY(shell string) (*ptyFile, error) {
 }
 
 // HandleSession allocates a PTY, spawns a shell, then bridges the vsock
-// connection to the PTY with full stdin/stdout streaming and resize support.
-func HandleSession(req *vsock.Message, send SendFunc, conn net.Conn) {
+// connection to the PTY. Messages arrive via the inbox channel (routed by
+// the server's single decode loop), avoiding concurrent reads from the conn.
+func HandleSession(ctx context.Context, req *vsock.Message, send SendFunc, inbox <-chan *vsock.Message) {
 	var payload vsock.SessionPayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
 		sendExit(send, req.ID, -1)
@@ -186,43 +192,41 @@ func HandleSession(req *vsock.Message, send SendFunc, conn net.Conn) {
 		streamOutput(req.ID, vsock.TypeStdout, pty, send)
 	}()
 
-	// Main loop: read messages from the shared connection, skip those not
-	// belonging to this session's correlation ID.
+	// Main loop: receive messages from the routed inbox channel.
 	for {
-		msg, err := vsock.Decode(conn)
-		if err != nil {
-			break
-		}
-
-		// Skip messages that belong to a different correlation ID.
-		if msg.ID != req.ID {
-			continue
-		}
-
-		switch msg.Type {
-		case vsock.TypeStdin:
-			var dp vsock.DataPayload
-			if err := json.Unmarshal(msg.Payload, &dp); err != nil {
-				continue
-			}
-			if _, err := pty.Write(dp.Data); err != nil {
+		select {
+		case <-ctx.Done():
+			goto cleanup
+		case msg, ok := <-inbox:
+			if !ok {
+				// Channel closed — connection lost.
 				goto cleanup
 			}
+			switch msg.Type {
+			case vsock.TypeStdin:
+				var dp vsock.DataPayload
+				if err := json.Unmarshal(msg.Payload, &dp); err != nil {
+					continue
+				}
+				if _, err := pty.Write(dp.Data); err != nil {
+					goto cleanup
+				}
 
-		case vsock.TypeResize:
-			var rp vsock.ResizePayload
-			if err := json.Unmarshal(msg.Payload, &rp); err != nil {
-				continue
+			case vsock.TypeResize:
+				var rp vsock.ResizePayload
+				if err := json.Unmarshal(msg.Payload, &rp); err != nil {
+					continue
+				}
+				_ = pty.Resize(rp.Width, rp.Height)
+
+			case vsock.TypeSignal:
+				goto cleanup
 			}
-			_ = pty.Resize(rp.Width, rp.Height)
-
-		case vsock.TypeSignal:
-			goto cleanup
 		}
 	}
 
 cleanup:
-	pty.Close()
+	exitCode := pty.Close()
 	<-done
-	sendExit(send, req.ID, 0)
+	sendExit(send, req.ID, exitCode)
 }

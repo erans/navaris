@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestHandleExec(t *testing.T) {
 		return nil
 	})
 
-	HandleExec(req, send)
+	HandleExec(context.Background(), req, send)
 
 	// Verify we received at least one stdout message and an exit message.
 	var foundHello bool
@@ -84,7 +85,7 @@ func TestHandleExecFailure(t *testing.T) {
 		return nil
 	})
 
-	HandleExec(req, send)
+	HandleExec(context.Background(), req, send)
 
 	var exitCode *int
 	for _, msg := range responses {

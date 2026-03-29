@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 
@@ -15,7 +17,8 @@ type SendFunc func(msg *vsock.Message) error
 
 // HandleExec unmarshals an ExecPayload from req, runs the command, streams
 // stdout/stderr as DataPayload messages, then sends an ExitPayload.
-func HandleExec(req *vsock.Message, send SendFunc) {
+// The command is cancelled when ctx is done (e.g. connection closed).
+func HandleExec(ctx context.Context, req *vsock.Message, send SendFunc) {
 	var payload vsock.ExecPayload
 	if err := json.Unmarshal(req.Payload, &payload); err != nil {
 		sendExit(send, req.ID, -1)
@@ -31,14 +34,17 @@ func HandleExec(req *vsock.Message, send SendFunc) {
 	if len(payload.Command) > 1 {
 		args = payload.Command[1:]
 	}
-	cmd := exec.Command(payload.Command[0], args...)
+	cmd := exec.CommandContext(ctx, payload.Command[0], args...)
 
 	if payload.WorkDir != "" {
 		cmd.Dir = payload.WorkDir
 	}
 
-	for k, v := range payload.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	if len(payload.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range payload.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -98,7 +104,7 @@ func sendExit(send SendFunc, id string, code int) {
 }
 
 // streamOutput reads from r in 32KB chunks and sends each chunk as a
-// DataPayload message of the given msgType.
+// DataPayload message. Stops on read error or send failure.
 func streamOutput(id, msgType string, r io.Reader, send SendFunc) {
 	buf := make([]byte, 32*1024)
 	for {
@@ -108,12 +114,14 @@ func streamOutput(id, msgType string, r io.Reader, send SendFunc) {
 			copy(data, buf[:n])
 			payload, merr := json.Marshal(vsock.DataPayload{Data: data})
 			if merr == nil {
-				_ = send(&vsock.Message{
+				if serr := send(&vsock.Message{
 					Version: vsock.ProtocolVersion,
 					Type:    msgType,
 					ID:      id,
 					Payload: json.RawMessage(payload),
-				})
+				}); serr != nil {
+					return
+				}
 			}
 		}
 		if err != nil {
