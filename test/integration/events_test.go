@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +45,12 @@ func TestEventStreamReceivesSandboxEvents(t *testing.T) {
 		HTTPHeader: headers,
 	})
 	if err != nil {
-		t.Skipf("websocket dial failed (server may not support WebSocket upgrades): %v", err)
+		// Skip only when the server can't do WebSocket upgrades (missing
+		// http.Hijacker support, returns 501). Fail on any other dial error.
+		if strings.Contains(err.Error(), "got 501") {
+			t.Skipf("server does not support WebSocket upgrades (501): %v", err)
+		}
+		t.Fatalf("websocket dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "test done")
 

@@ -5,14 +5,17 @@ package integration
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 )
 
-// TestConcurrentSandboxCreation verifies that multiple sandboxes can coexist
-// and run simultaneously. The sandboxes are created sequentially to avoid
-// SQLite write contention (SQLITE_BUSY), then verified to all be running.
+// TestConcurrentSandboxCreation verifies that multiple sandboxes can be
+// created concurrently and all end up running. Retries on SQLITE_BUSY
+// (the server's SQLite backend may contend under concurrent writes).
 func TestConcurrentSandboxCreation(t *testing.T) {
 	c := newClient()
 	ctx := context.Background()
@@ -20,22 +23,56 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 	proj := createTestProject(t, c)
 
 	const n = 3
-	var sandboxIDs []string
+	var (
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		sandboxIDs []string
+		errors     []error
+	)
 
+	wg.Add(n)
 	for i := 0; i < n; i++ {
-		op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
-			ProjectID: proj.ProjectID,
-			Name:      fmt.Sprintf("concurrent-sbx-%d", i),
-			ImageID:   baseImage(),
-		}, waitOpts())
-		if err != nil {
-			t.Fatalf("create sandbox %d: %v", i, err)
-		}
-		if op.State != client.OpSucceeded {
-			t.Fatalf("sandbox %d: state=%s error=%s", i, op.State, op.ErrorText)
-		}
-		sandboxIDs = append(sandboxIDs, op.ResourceID)
+		go func(idx int) {
+			defer wg.Done()
+
+			// Retry on SQLITE_BUSY errors with exponential backoff.
+			var lastErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				if attempt > 0 {
+					time.Sleep(time.Duration(attempt*200) * time.Millisecond)
+				}
+				op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
+					ProjectID: proj.ProjectID,
+					Name:      fmt.Sprintf("concurrent-sbx-%d", idx),
+					ImageID:   baseImage(),
+				}, waitOpts())
+				if err != nil {
+					if isSQLiteBusy(err) {
+						lastErr = err
+						continue
+					}
+					mu.Lock()
+					errors = append(errors, fmt.Errorf("sandbox %d: %w", idx, err))
+					mu.Unlock()
+					return
+				}
+				if op.State != client.OpSucceeded {
+					mu.Lock()
+					errors = append(errors, fmt.Errorf("sandbox %d: state=%s error=%s", idx, op.State, op.ErrorText))
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				sandboxIDs = append(sandboxIDs, op.ResourceID)
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			errors = append(errors, fmt.Errorf("sandbox %d: exhausted retries: %w", idx, lastErr))
+			mu.Unlock()
+		}(i)
 	}
+	wg.Wait()
 
 	t.Cleanup(func() {
 		for _, id := range sandboxIDs {
@@ -43,7 +80,17 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 		}
 	})
 
-	// Verify all sandboxes are running concurrently.
+	if len(errors) > 0 {
+		for _, err := range errors {
+			t.Errorf("concurrent error: %v", err)
+		}
+		t.FailNow()
+	}
+
+	if len(sandboxIDs) != n {
+		t.Fatalf("expected %d sandboxes, got %d", n, len(sandboxIDs))
+	}
+
 	for _, id := range sandboxIDs {
 		sbx, err := c.GetSandbox(ctx, id)
 		if err != nil {
@@ -54,5 +101,15 @@ func TestConcurrentSandboxCreation(t *testing.T) {
 		}
 	}
 
-	t.Logf("all %d sandboxes created and running concurrently", n)
+	t.Logf("all %d sandboxes created concurrently and running", n)
+}
+
+func isSQLiteBusy(err error) bool {
+	// The server returns a generic 500 for SQLITE_BUSY; the client only
+	// sees "api error 500: internal server error".
+	if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 500 {
+		return true
+	}
+	return strings.Contains(err.Error(), "SQLITE_BUSY") ||
+		strings.Contains(err.Error(), "database is locked")
 }

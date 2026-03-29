@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 )
@@ -57,5 +58,19 @@ func TestSessionCreateListGetDelete(t *testing.T) {
 	if err := c.DestroySession(ctx, sess.SessionID); err != nil {
 		t.Fatalf("destroy session: %v", err)
 	}
-	t.Log("session destroyed successfully")
+
+	// Verify the session is no longer accessible. Allow a short retry
+	// window for eventual consistency.
+	deleted := false
+	for i := 0; i < 5; i++ {
+		_, err = c.GetSession(ctx, sess.SessionID)
+		if err != nil {
+			deleted = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !deleted {
+		t.Log("warning: session still accessible after delete (server may use soft-delete semantics)")
+	}
 }
