@@ -12,18 +12,6 @@ import (
 // ErrNotImplemented is returned by Phase 2 stub methods.
 var ErrNotImplemented = errors.New("firecracker provider: operation not implemented (phase 2)")
 
-func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (domain.BackendRef, error) {
-	return domain.BackendRef{}, ErrNotImplemented
-}
-
-func (p *Provider) DeleteImage(ctx context.Context, imageRef domain.BackendRef) error {
-	return ErrNotImplemented
-}
-
-func (p *Provider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef) (domain.ImageInfo, error) {
-	return domain.ImageInfo{}, ErrNotImplemented
-}
-
 func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (domain.PublishedEndpoint, error) {
 	return domain.PublishedEndpoint{}, ErrNotImplemented
 }
