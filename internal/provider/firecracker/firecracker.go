@@ -26,6 +26,7 @@ type Config struct {
 	ChrootBase     string
 	VsockCIDBase   uint32
 	HostInterface  string
+	SnapshotDir    string
 }
 
 func (c *Config) defaults() {
@@ -34,6 +35,9 @@ func (c *Config) defaults() {
 	}
 	if c.VsockCIDBase == 0 {
 		c.VsockCIDBase = 100
+	}
+	if c.SnapshotDir == "" {
+		c.SnapshotDir = "/srv/firecracker/snapshots"
 	}
 }
 
@@ -52,6 +56,10 @@ type Provider struct {
 // New creates a Firecracker provider and recovers any orphaned VMs.
 func New(cfg Config) (*Provider, error) {
 	cfg.defaults()
+
+	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
+		return nil, fmt.Errorf("firecracker: create snapshot dir: %w", err)
+	}
 
 	// Validate required fields.
 	for _, check := range []struct{ name, val string }{
