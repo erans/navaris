@@ -1,6 +1,7 @@
 package sqlite_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/navaris/navaris/internal/store/sqlite"
@@ -8,7 +9,8 @@ import (
 
 func newTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := sqlite.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
