@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +50,11 @@ func TestConcurrentWrites(t *testing.T) {
 	const n = 20
 	errs := make(chan error, n)
 
+	// Start barrier — all goroutines begin Create at the same time.
+	var ready sync.WaitGroup
+	ready.Add(n)
+	start := make(chan struct{})
+
 	for i := 0; i < n; i++ {
 		go func(idx int) {
 			p := &domain.Project{
@@ -57,23 +63,22 @@ func TestConcurrentWrites(t *testing.T) {
 				CreatedAt: time.Now().UTC(),
 				UpdatedAt: time.Now().UTC(),
 			}
+			ready.Done()
+			<-start
 			errs <- ps.Create(t.Context(), p)
 		}(i)
 	}
+	ready.Wait()
+	close(start)
 
-	var busy int
 	for i := 0; i < n; i++ {
 		if err := <-errs; err != nil {
 			if errors.Is(err, domain.ErrBusy) {
-				busy++
-			} else if !errors.Is(err, domain.ErrConflict) {
+				t.Errorf("got ErrBusy — single-writer pool should prevent this: %v", err)
+			} else {
 				t.Errorf("unexpected error: %v", err)
 			}
 		}
-	}
-
-	if busy > 0 {
-		t.Errorf("got %d ErrBusy errors — single-writer pool should prevent this", busy)
 	}
 
 	list, err := ps.List(t.Context())

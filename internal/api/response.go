@@ -44,6 +44,7 @@ func respondError(w http.ResponseWriter, err error) {
 	switch {
 	case code == http.StatusServiceUnavailable:
 		resp.Error.Message = "service temporarily unavailable"
+		slog.Warn("api error", "status", code, "error", err.Error())
 	case code >= 500:
 		resp.Error.Message = "internal server error"
 		slog.Error("api error", "status", code, "error", err.Error())
