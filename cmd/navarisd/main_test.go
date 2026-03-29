@@ -34,7 +34,7 @@ func TestDaemonStartsAndServesHealth(t *testing.T) {
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), prov, bus, disp,
+		store.SessionStore(), prov, bus, disp, "mock",
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),

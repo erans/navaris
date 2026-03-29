@@ -43,7 +43,7 @@ func newServiceEnv(t *testing.T) *serviceEnv {
 	projSvc := service.NewProjectService(s.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		s.SandboxStore(), s.SnapshotStore(), s.OperationStore(), s.PortBindingStore(),
-		s.SessionStore(), mock, bus, disp,
+		s.SessionStore(), mock, bus, disp, "mock",
 	)
 
 	proj, err := projSvc.Create(t.Context(), "test-project-"+uuid.NewString()[:8], nil)

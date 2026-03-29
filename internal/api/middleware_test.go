@@ -30,7 +30,7 @@ func newTestEnvWithAuth(t *testing.T, token string) *testEnv {
 	projSvc := service.NewProjectService(s.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		s.SandboxStore(), s.SnapshotStore(), s.OperationStore(), s.PortBindingStore(),
-		s.SessionStore(), mock, bus, disp,
+		s.SessionStore(), mock, bus, disp, "mock",
 	)
 	snapSvc := service.NewSnapshotService(
 		s.SnapshotStore(), s.SandboxStore(), s.OperationStore(),

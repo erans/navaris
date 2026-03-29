@@ -91,9 +91,13 @@ func run(cfg config) error {
 
 	// Services
 	projSvc := service.NewProjectService(store.ProjectStore())
+	backendName := "mock"
+	if cfg.incusSocket != "" {
+		backendName = "incus"
+	}
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), prov, bus, disp,
+		store.SessionStore(), prov, bus, disp, backendName,
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),

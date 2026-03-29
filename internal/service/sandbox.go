@@ -19,14 +19,15 @@ type CreateSandboxOpts struct {
 }
 
 type SandboxService struct {
-	sandboxes domain.SandboxStore
-	snapshots domain.SnapshotStore
-	ops       domain.OperationStore
-	ports     domain.PortBindingStore
-	sessions  domain.SessionStore
-	provider  domain.Provider
-	events    domain.EventBus
-	workers   *worker.Dispatcher
+	sandboxes      domain.SandboxStore
+	snapshots      domain.SnapshotStore
+	ops            domain.OperationStore
+	ports          domain.PortBindingStore
+	sessions       domain.SessionStore
+	provider       domain.Provider
+	events         domain.EventBus
+	workers        *worker.Dispatcher
+	defaultBackend string
 }
 
 func NewSandboxService(
@@ -38,16 +39,18 @@ func NewSandboxService(
 	provider domain.Provider,
 	events domain.EventBus,
 	workers *worker.Dispatcher,
+	defaultBackend string,
 ) *SandboxService {
 	svc := &SandboxService{
-		sandboxes: sandboxes,
-		snapshots: snapshots,
-		ops:       ops,
-		ports:     ports,
-		sessions:  sessions,
-		provider:  provider,
-		events:    events,
-		workers:   workers,
+		sandboxes:      sandboxes,
+		snapshots:      snapshots,
+		ops:            ops,
+		ports:          ports,
+		sessions:       sessions,
+		provider:       provider,
+		events:         events,
+		workers:        workers,
+		defaultBackend: defaultBackend,
 	}
 	svc.registerHandlers()
 	return svc
@@ -72,7 +75,7 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		ProjectID:     projectID,
 		Name:          name,
 		State:         domain.SandboxPending,
-		Backend:       "incus",
+		Backend:       s.defaultBackend,
 		SourceImageID: imageID,
 		NetworkMode:   networkMode,
 		CPULimit:      opts.CPULimit,
@@ -116,7 +119,7 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		ProjectID:        projectID,
 		Name:             name,
 		State:            domain.SandboxPending,
-		Backend:          "incus",
+		Backend:          s.defaultBackend,
 		ParentSnapshotID: snapshotID,
 		NetworkMode:      networkMode,
 		CPULimit:         opts.CPULimit,
