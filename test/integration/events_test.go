@@ -23,7 +23,12 @@ func TestEventStreamReceivesSandboxEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse API URL: %v", err)
 	}
-	u.Scheme = "ws"
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	default:
+		u.Scheme = "ws"
+	}
 	u.Path = "/v1/events"
 	wsURL := u.String()
 

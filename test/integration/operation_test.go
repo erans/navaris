@@ -78,11 +78,12 @@ func TestOperationCancel(t *testing.T) {
 		t.Fatalf("create sandbox: %v", err)
 	}
 
-	err = c.CancelOperation(ctx, op.OperationID)
+	// Try to cancel. This may or may not succeed depending on timing.
+	cancelErr := c.CancelOperation(ctx, op.OperationID)
 
-	finalOp, err2 := c.WaitForOperation(ctx, op.OperationID, waitOpts())
-	if err2 != nil {
-		t.Fatalf("wait: %v", err2)
+	finalOp, err := c.WaitForOperation(ctx, op.OperationID, waitOpts())
+	if err != nil {
+		t.Fatalf("wait: %v", err)
 	}
 
 	if finalOp.State == client.OpSucceeded && finalOp.ResourceID != "" {
@@ -91,5 +92,18 @@ func TestOperationCancel(t *testing.T) {
 		})
 	}
 
-	t.Logf("cancel err=%v, final state=%s", err, finalOp.State)
+	// If cancel succeeded (no error), the operation must be in a terminal state
+	// that isn't "succeeded" — it should be cancelled or failed.
+	// If the operation completed before cancel, cancel may return an error
+	// (already completed) or the state is succeeded — both are acceptable races.
+	if cancelErr == nil && finalOp.State == client.OpSucceeded {
+		t.Log("cancel returned nil but operation succeeded — race between cancel and completion (acceptable)")
+	} else if cancelErr == nil {
+		if !finalOp.State.Terminal() {
+			t.Fatalf("cancel succeeded but operation is not terminal: state=%s", finalOp.State)
+		}
+		t.Logf("cancel succeeded, final state=%s", finalOp.State)
+	} else {
+		t.Logf("cancel returned error (likely already completed): %v, final state=%s", cancelErr, finalOp.State)
+	}
 }

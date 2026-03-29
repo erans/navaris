@@ -47,7 +47,7 @@ func TestAuthWrongToken(t *testing.T) {
 
 func TestAuthValidToken(t *testing.T) {
 	c := newClient()
-	_, err := c.Health(context.Background())
+	_, err := c.ListProjects(context.Background())
 	if err != nil {
 		t.Fatalf("expected success with valid token: %v", err)
 	}

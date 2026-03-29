@@ -212,12 +212,16 @@ func TestMain(m *testing.M) {
 	}, &client.WaitOptions{Timeout: 5 * time.Minute})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warmup: create sandbox: %v\n", err)
-		cleanupWarmup("")
+		resID := ""
+		if op != nil {
+			resID = op.ResourceID
+		}
+		cleanupWarmup(resID)
 		os.Exit(1)
 	}
 	if op.State != client.OpSucceeded {
 		fmt.Fprintf(os.Stderr, "warmup: sandbox create failed: %s %s\n", op.State, op.ErrorText)
-		cleanupWarmup("")
+		cleanupWarmup(op.ResourceID)
 		os.Exit(1)
 	}
 	cleanupWarmup(op.ResourceID)
