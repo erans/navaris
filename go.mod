@@ -3,6 +3,7 @@ module github.com/navaris/navaris
 go 1.26.1
 
 require (
+	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/google/uuid v1.6.0
 	github.com/lxc/incus/v6 v6.23.0
 	github.com/mattn/go-isatty v0.0.20
@@ -29,7 +30,6 @@ require (
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
