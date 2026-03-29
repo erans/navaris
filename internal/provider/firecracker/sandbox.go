@@ -80,6 +80,13 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) erro
 		return nil
 	}
 
+	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+
+	// Check for live snapshot restore.
+	if info.RestoreFromSnapshot {
+		return p.startFromSnapshot(ctx, vmID, vmDir, info, infoPath)
+	}
+
 	// Allocate networking.
 	subnetIdx := p.subnets.Allocate()
 	tapName := network.TapName(vmID)
@@ -91,7 +98,6 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) erro
 	}
 
 	// Build Firecracker config.
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
 	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off " + p.subnets.KernelBootArg(subnetIdx)
 
@@ -171,6 +177,107 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) erro
 	// Wait for agent health check.
 	if err := p.waitForAgent(ctx, info.CID, 30*time.Second); err != nil {
 		// Agent didn't respond -- leave VM running, caller can retry or destroy.
+		return fmt.Errorf("firecracker agent timeout %s: %w", vmID, err)
+	}
+
+	return nil
+}
+
+func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, info *VMInfo, infoPath string) error {
+	// Allocate networking.
+	subnetIdx := p.subnets.Allocate()
+	tapName := network.TapName(vmID)
+	hostIP := p.subnets.HostIP(subnetIdx).String()
+
+	if err := network.CreateTap(tapName, hostIP); err != nil {
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker snapshot restore create tap %s: %w", vmID, err)
+	}
+
+	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
+	chrootRoot := filepath.Join(vmDir, "root")
+	memPath := filepath.Join(chrootRoot, "vmstate.bin")
+	snapPath := filepath.Join(chrootRoot, "snapshot.meta")
+
+	// Build config for snapshot restore — omit KernelImagePath, KernelArgs, MachineCfg.
+	fcCfg := fcsdk.Config{
+		SocketPath: filepath.Join(vmDir, "firecracker.sock"),
+		Drives: []models.Drive{
+			{
+				DriveID:      fcsdk.String("rootfs"),
+				PathOnHost:   fcsdk.String(rootfsPath),
+				IsRootDevice: fcsdk.Bool(true),
+				IsReadOnly:   fcsdk.Bool(false),
+			},
+		},
+		NetworkInterfaces: fcsdk.NetworkInterfaces{
+			{
+				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
+					MacAddress:  fmt.Sprintf("02:FC:00:00:%02x:%02x", subnetIdx>>8, subnetIdx&0xFF),
+					HostDevName: tapName,
+				},
+			},
+		},
+		VsockDevices: []fcsdk.VsockDevice{
+			{Path: "vsock", CID: uint32(info.CID)},
+		},
+		JailerCfg: &fcsdk.JailerConfig{
+			GID:            fcsdk.Int(info.UID),
+			UID:            fcsdk.Int(info.UID),
+			ID:             vmID,
+			NumaNode:       fcsdk.Int(0),
+			ExecFile:       p.config.FirecrackerBin,
+			JailerBinary:   p.config.JailerBin,
+			ChrootBaseDir:  p.config.ChrootBase,
+			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
+		},
+	}
+
+	machine, err := fcsdk.NewMachine(ctx, fcCfg, fcsdk.WithSnapshot(memPath, snapPath, func(cfg *fcsdk.SnapshotConfig) {
+		cfg.ResumeVM = true
+	}))
+	if err != nil {
+		network.DeleteTap(tapName)
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker snapshot restore new machine %s: %w", vmID, err)
+	}
+
+	if err := machine.Start(ctx); err != nil {
+		network.DeleteTap(tapName)
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker snapshot restore start %s: %w", vmID, err)
+	}
+
+	// Update vminfo with runtime state.
+	pid, pidErr := machine.PID()
+	if pidErr != nil {
+		slog.Warn("firecracker: could not get PID", "vm", vmID, "error", pidErr)
+	}
+	info.PID = pid
+	info.TapDevice = tapName
+	info.SubnetIdx = subnetIdx
+	info.RestoreFromSnapshot = false // Clear the flag.
+	info.Write(infoPath)
+
+	// Register in memory.
+	p.vmMu.Lock()
+	p.vms[vmID] = info
+	p.vmMu.Unlock()
+
+	// Add masquerade for published mode.
+	if info.NetworkMode == string(domain.NetworkPublished) {
+		guestIP := p.subnets.GuestIP(subnetIdx).String()
+		if err := network.AddMasquerade(guestIP, p.hostIface); err != nil {
+			slog.Warn("firecracker: masquerade failed", "vm", vmID, "error", err)
+		}
+	}
+
+	// Clean up snapshot files from chroot.
+	os.Remove(memPath)
+	os.Remove(snapPath)
+
+	// Wait for agent health check.
+	if err := p.waitForAgent(ctx, info.CID, 30*time.Second); err != nil {
 		return fmt.Errorf("firecracker agent timeout %s: %w", vmID, err)
 	}
 
@@ -297,7 +404,37 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 }
 
 func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
-	return domain.BackendRef{}, fmt.Errorf("firecracker: CreateSandboxFromSnapshot not implemented")
+	snapID := snapshotRef.Ref
+	snapDir := p.snapshotDir(snapID)
+
+	vmID := vmName()
+	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+
+	// Create VM directory.
+	if err := os.MkdirAll(vmDir, 0o755); err != nil {
+		return domain.BackendRef{}, fmt.Errorf("firecracker create dir %s: %w", vmID, err)
+	}
+
+	// Copy rootfs from snapshot.
+	src := filepath.Join(snapDir, "rootfs.ext4")
+	dst := filepath.Join(vmDir, "rootfs.ext4")
+	if err := copyFile(src, dst); err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker copy snapshot rootfs %s: %w", vmID, err)
+	}
+
+	// Allocate resources.
+	cid := p.allocateCID()
+	uid := p.uids.Allocate()
+
+	// Write vminfo.json.
+	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
+	if err := info.Write(jailer.VMInfoPath(p.config.ChrootBase, vmID)); err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
+	}
+
+	return domain.BackendRef{Backend: backendName, Ref: vmID}, nil
 }
 
 // Helper functions.
