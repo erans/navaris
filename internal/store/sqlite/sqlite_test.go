@@ -84,3 +84,49 @@ func TestConcurrentWrites(t *testing.T) {
 		t.Errorf("expected %d projects, got %d", n, len(list))
 	}
 }
+
+func TestMapErrorConflict(t *testing.T) {
+	s := newTestStore(t)
+	ps := s.ProjectStore()
+
+	p := &domain.Project{
+		ProjectID: uuid.NewString(),
+		Name:      "duplicate",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := ps.Create(t.Context(), p); err != nil {
+		t.Fatal(err)
+	}
+
+	dup := &domain.Project{
+		ProjectID: uuid.NewString(),
+		Name:      "duplicate",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	err := ps.Create(t.Context(), dup)
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected ErrConflict, got: %v", err)
+	}
+}
+
+func TestMapErrorNotFound(t *testing.T) {
+	s := newTestStore(t)
+	ps := s.ProjectStore()
+
+	_, err := ps.Get(t.Context(), "nonexistent")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestMapErrorDeleteNotFound(t *testing.T) {
+	s := newTestStore(t)
+	ps := s.ProjectStore()
+
+	err := ps.Delete(t.Context(), "nonexistent")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound from delete, got: %v", err)
+	}
+}

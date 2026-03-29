@@ -143,7 +143,9 @@ func mapError(err error) error {
 	}
 	var sqliteErr *sqlitedriver.Error
 	if errors.As(err, &sqliteErr) {
-		switch sqliteErr.Code() {
+		// Normalize to primary code to catch extended variants
+		// (e.g. SQLITE_LOCKED_SHAREDCACHE).
+		switch sqliteErr.Code() & 0xFF {
 		case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
 			return fmt.Errorf("%w: %s", domain.ErrBusy, sqliteErr.Error())
 		}
