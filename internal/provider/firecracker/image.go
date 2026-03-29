@@ -5,14 +5,24 @@ package firecracker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 )
+
+// validateRef rejects refs containing path separators or traversal.
+func validateRef(ref string) error {
+	if strings.ContainsAny(ref, "/\\") || strings.Contains(ref, "..") || ref == "" {
+		return fmt.Errorf("invalid ref %q", ref)
+	}
+	return nil
+}
 
 type imageInfo struct {
 	Ref            string `json:"ref"`
@@ -33,6 +43,9 @@ func (p *Provider) imageMetaPath(ref string) string {
 
 func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (domain.BackendRef, error) {
 	snapID := snapshotRef.Ref
+	if err := validateRef(snapID); err != nil {
+		return domain.BackendRef{}, fmt.Errorf("firecracker publish image: %w", err)
+	}
 	snapDir := p.snapshotDir(snapID)
 
 	imgRef := "img-" + uuid.NewString()[:8]
@@ -74,6 +87,9 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 }
 
 func (p *Provider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef) (domain.ImageInfo, error) {
+	if err := validateRef(imageRef.Ref); err != nil {
+		return domain.ImageInfo{}, fmt.Errorf("firecracker get image info: %w", err)
+	}
 	data, err := os.ReadFile(p.imageMetaPath(imageRef.Ref))
 	if err != nil {
 		return domain.ImageInfo{}, fmt.Errorf("firecracker get image info %s: %w", imageRef.Ref, err)
@@ -90,7 +106,15 @@ func (p *Provider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef)
 
 func (p *Provider) DeleteImage(ctx context.Context, imageRef domain.BackendRef) error {
 	ref := imageRef.Ref
-	os.Remove(p.imageExtPath(ref))
-	os.Remove(p.imageMetaPath(ref))
-	return nil
+	if err := validateRef(ref); err != nil {
+		return fmt.Errorf("firecracker delete image: %w", err)
+	}
+	var errs []error
+	if err := os.Remove(p.imageExtPath(ref)); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, err)
+	}
+	if err := os.Remove(p.imageMetaPath(ref)); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }

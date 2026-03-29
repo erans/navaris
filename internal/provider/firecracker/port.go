@@ -27,6 +27,13 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 		p.portAlloc.Release(hostPort)
 		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port read vminfo %s: %w", vmID, err)
 	}
+
+	// Validate sandbox is running with valid networking.
+	if info.PID == 0 || info.SubnetIdx == 0 {
+		p.portAlloc.Release(hostPort)
+		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port %s: sandbox is not running", vmID)
+	}
+
 	guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 
 	// Add iptables rules.
