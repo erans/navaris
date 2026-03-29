@@ -4,41 +4,11 @@ package integration
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 )
-
-func apiURL() string {
-	if v := os.Getenv("NAVARIS_API_URL"); v != "" {
-		return v
-	}
-	return "http://localhost:8080"
-}
-
-func apiToken() string {
-	return os.Getenv("NAVARIS_TOKEN")
-}
-
-func baseImage() string {
-	if v := os.Getenv("NAVARIS_BASE_IMAGE"); v != "" {
-		return v
-	}
-	return "images:alpine/3.19"
-}
-
-func newClient() *client.Client {
-	return client.NewClient(
-		client.WithURL(apiURL()),
-		client.WithToken(apiToken()),
-	)
-}
-
-func waitOpts() *client.WaitOptions {
-	return &client.WaitOptions{Timeout: 3 * time.Minute}
-}
 
 // TestEndToEndLifecycle exercises the full sandbox lifecycle through the SDK:
 //
