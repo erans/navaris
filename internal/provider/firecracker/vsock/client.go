@@ -16,7 +16,7 @@ type Client struct {
 	conn      net.Conn
 	mu        sync.Mutex // write lock
 	handlers  map[string]chan *Message
-	handlerMu sync.RWMutex
+	handlerMu sync.Mutex
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -49,46 +49,57 @@ func (c *Client) Send(msg *Message) error {
 	return Encode(c.conn, msg)
 }
 
-// send is the internal alias used by the package.
 func (c *Client) send(msg *Message) error {
 	return c.Send(msg)
 }
 
-// register creates and stores a buffered channel for the given correlation ID.
 func (c *Client) register(id string) chan *Message {
-	ch := make(chan *Message, 16)
+	ch := make(chan *Message, 32)
 	c.handlerMu.Lock()
 	c.handlers[id] = ch
 	c.handlerMu.Unlock()
 	return ch
 }
 
-// unregister removes the channel for the given correlation ID.
 func (c *Client) unregister(id string) {
 	c.handlerMu.Lock()
 	delete(c.handlers, id)
 	c.handlerMu.Unlock()
 }
 
-// readLoop reads messages from the connection and dispatches them to the
-// appropriate per-ID channel. It exits when the connection is closed or done.
+// closeAllHandlers closes all registered channels to signal disconnect to
+// every in-flight operation.
+func (c *Client) closeAllHandlers() {
+	c.handlerMu.Lock()
+	for id, ch := range c.handlers {
+		close(ch)
+		delete(c.handlers, id)
+	}
+	c.handlerMu.Unlock()
+}
+
+// readLoop reads messages and dispatches them to per-ID channels. On exit
+// (connection closed or error), it closes all handler channels so in-flight
+// operations unblock with an error instead of hanging.
 func (c *Client) readLoop() {
+	defer c.closeAllHandlers()
 	for {
 		msg, err := Decode(c.conn)
 		if err != nil {
-			// Connection closed or read error — drain is handled by callers
-			// watching their channels after Close().
 			return
 		}
-		c.handlerMu.RLock()
+		c.handlerMu.Lock()
 		ch, ok := c.handlers[msg.ID]
-		c.handlerMu.RUnlock()
-		if ok {
-			select {
-			case ch <- msg:
-			default:
-				// Drop if the consumer is not keeping up; prevents readLoop stall.
-			}
+		c.handlerMu.Unlock()
+		if !ok {
+			continue
+		}
+		// Block until delivered or client closed. Guarantees TypeExit
+		// is never silently dropped.
+		select {
+		case ch <- msg:
+		case <-c.done:
+			return
 		}
 	}
 }
@@ -104,7 +115,10 @@ func (c *Client) Ping(timeout time.Duration) error {
 	}
 
 	select {
-	case msg := <-ch:
+	case msg, ok := <-ch:
+		if !ok {
+			return fmt.Errorf("vsock ping: connection lost")
+		}
 		if msg.Type != TypePong {
 			return fmt.Errorf("vsock ping: unexpected message type %q", msg.Type)
 		}
@@ -166,28 +180,57 @@ func (c *Client) Exec(payload ExecPayload) (*ExecHandle, error) {
 		errCh:  errCh,
 	}
 
+	// Dedicated pipe-writer goroutines. Decoupled from message dispatch so
+	// slow readers cannot block TypeExit processing.
+	stdoutData := make(chan []byte, 256)
+	stderrData := make(chan []byte, 256)
+	go func() {
+		defer stdoutW.Close()
+		for data := range stdoutData {
+			if _, err := stdoutW.Write(data); err != nil {
+				// Drain remaining to unblock sender.
+				for range stdoutData {
+				}
+				return
+			}
+		}
+	}()
+	go func() {
+		defer stderrW.Close()
+		for data := range stderrData {
+			if _, err := stderrW.Write(data); err != nil {
+				for range stderrData {
+				}
+				return
+			}
+		}
+	}()
+
+	// Message dispatch — reads from handler channel and routes data to the
+	// pipe-writer goroutines. TypeExit is processed directly, unblocked by
+	// pipe write speed.
 	go func() {
 		defer c.unregister(id)
-		defer stdoutW.Close()
-		defer stderrW.Close()
+		defer close(stdoutData)
+		defer close(stderrData)
 
 		for {
 			select {
 			case msg, ok := <-ch:
 				if !ok {
-					errCh <- fmt.Errorf("vsock exec: channel closed")
+					errCh <- fmt.Errorf("vsock exec: connection lost")
 					return
 				}
 				switch msg.Type {
 				case TypeStdout:
 					var d DataPayload
 					if err := json.Unmarshal(msg.Payload, &d); err == nil {
-						stdoutW.Write(d.Data) //nolint:errcheck
+						stdoutData <- d.Data
 					}
 				case TypeStderr:
 					var d DataPayload
 					if err := json.Unmarshal(msg.Payload, &d); err == nil {
-						stderrW.Write(d.Data) //nolint:errcheck
+						stderrData <- d.Data
 					}
 				case TypeExit:
 					var ep ExitPayload
@@ -235,7 +278,7 @@ func (c *Client) Session(payload SessionPayload) (*SessionHandle, error) {
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
 
-	// stdin forwarding: read from caller's writer, send as TypeStdin messages
+	// stdin forwarding: read from caller's writer, send as TypeStdin messages.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -252,10 +295,23 @@ func (c *Client) Session(payload SessionPayload) (*SessionHandle, error) {
 		}
 	}()
 
-	// stdout routing: dispatch inbound messages to the caller's reader
+	// Dedicated pipe-writer for stdout, decoupled from message dispatch.
+	stdoutData := make(chan []byte, 256)
+	go func() {
+		defer stdoutW.Close()
+		for data := range stdoutData {
+			if _, err := stdoutW.Write(data); err != nil {
+				for range stdoutData {
+				}
+				return
+			}
+		}
+	}()
+
+	// Message dispatch — routes stdout data to pipe-writer goroutine.
 	go func() {
 		defer c.unregister(id)
-		defer stdoutW.Close()
+		defer close(stdoutData)
 
 		for {
 			select {
@@ -267,7 +323,7 @@ func (c *Client) Session(payload SessionPayload) (*SessionHandle, error) {
 				case TypeStdout:
 					var d DataPayload
 					if err := json.Unmarshal(msg.Payload, &d); err == nil {
-						stdoutW.Write(d.Data) //nolint:errcheck
+						stdoutData <- d.Data
 					}
 				case TypeExit:
 					return
