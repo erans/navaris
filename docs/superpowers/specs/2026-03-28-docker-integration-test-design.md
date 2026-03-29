@@ -140,7 +140,7 @@ volumes:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/v1/health"]
+  test: ["CMD", "wget", "-q", "--spider", "--header", "Authorization: Bearer test-token", "http://localhost:8080/v1/health"]
   interval: 2s
   timeout: 5s
   retries: 15
