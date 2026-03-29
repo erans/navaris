@@ -184,8 +184,15 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) erro
 }
 
 func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, info *VMInfo, infoPath string) error {
-	// Allocate networking.
-	subnetIdx := p.subnets.Allocate()
+	// For live restore, reuse the original subnet so the guest's in-memory
+	// network config matches the host-side routing.
+	var subnetIdx int
+	if info.RestoreSubnetIdx > 0 || info.RestoreFromSnapshot {
+		subnetIdx = info.RestoreSubnetIdx
+		p.subnets.Reserve(subnetIdx)
+	} else {
+		subnetIdx = p.subnets.Allocate()
+	}
 	tapName := network.TapName(vmID)
 	hostIP := p.subnets.HostIP(subnetIdx).String()
 
@@ -257,7 +264,10 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	info.TapDevice = tapName
 	info.SubnetIdx = subnetIdx
 	info.RestoreFromSnapshot = false // Clear the flag.
-	info.Write(infoPath)
+	info.RestoreSubnetIdx = 0
+	if err := info.Write(infoPath); err != nil {
+		slog.Warn("firecracker: failed to write vminfo after snapshot restore", "vm", vmID, "error", err)
+	}
 
 	// Register in memory.
 	p.vmMu.Lock()
@@ -414,6 +424,9 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 
 func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
 	snapID := snapshotRef.Ref
+	if err := validateRef(snapID); err != nil {
+		return domain.BackendRef{}, fmt.Errorf("firecracker create from snapshot: %w", err)
+	}
 	snapDir := p.snapshotDir(snapID)
 
 	vmID := vmName()

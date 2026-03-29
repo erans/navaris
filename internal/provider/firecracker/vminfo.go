@@ -18,6 +18,7 @@ type VMInfo struct {
 	Stopping            bool        `json:"stopping,omitempty"`
 	Ports               map[int]int `json:"ports,omitempty"`
 	RestoreFromSnapshot bool        `json:"restore_from_snapshot,omitempty"`
+	RestoreSubnetIdx    int         `json:"restore_subnet_idx,omitempty"` // original subnet for live restore
 }
 
 func (v *VMInfo) Write(path string) error {

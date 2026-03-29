@@ -22,6 +22,7 @@ type snapInfo struct {
 	SourceVM  string                `json:"source_vm"`
 	Label     string                `json:"label"`
 	Mode      domain.ConsistencyMode `json:"mode"`
+	SubnetIdx int                   `json:"subnet_idx,omitempty"` // preserved for live restore
 	CreatedAt time.Time             `json:"created_at"`
 }
 
@@ -89,6 +90,15 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 		Mode:      mode,
 		CreatedAt: time.Now().UTC(),
 	}
+
+	// For live snapshots, preserve SubnetIdx for network-correct restore.
+	if mode == domain.ConsistencyLive {
+		infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+		if info, err := ReadVMInfo(infoPath); err == nil {
+			si.SubnetIdx = info.SubnetIdx
+		}
+	}
+
 	if err := writeSnapInfo(p.snapInfoPath(snapID), si); err != nil {
 		os.RemoveAll(snapDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write snapinfo: %w", err)
@@ -197,13 +207,14 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 			}
 		}
 
-		// Set restore flag in vminfo.
+		// Set restore flag in vminfo, preserving original subnet for network-correct restore.
 		infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
 		info, err := ReadVMInfo(infoPath)
 		if err != nil {
 			return fmt.Errorf("firecracker restore read vminfo: %w", err)
 		}
 		info.RestoreFromSnapshot = true
+		info.RestoreSubnetIdx = si.SubnetIdx
 		if err := info.Write(infoPath); err != nil {
 			return fmt.Errorf("firecracker restore write vminfo: %w", err)
 		}
