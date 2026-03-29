@@ -88,3 +88,72 @@ func TestScanVMDirs(t *testing.T) {
 		t.Fatalf("expected 2 VMs, got %d", len(infos))
 	}
 }
+
+func TestSubnetIdxZeroPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vminfo.json")
+
+	info := &VMInfo{
+		ID:        "nvrs-fc-zeroidx",
+		CID:       100,
+		UID:       10000,
+		SubnetIdx: 0,
+		TapDevice: "fc-zeroidx",
+	}
+	if err := info.Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadVMInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SubnetIdx != 0 {
+		t.Errorf("SubnetIdx=0 not persisted, got %d", got.SubnetIdx)
+	}
+	if got.TapDevice != "fc-zeroidx" {
+		t.Errorf("TapDevice mismatch: %s", got.TapDevice)
+	}
+}
+
+func TestReadVMInfoMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vminfo.json")
+
+	os.WriteFile(path, []byte("{corrupted"), 0o600)
+	_, err := ReadVMInfo(path)
+	if err == nil {
+		t.Error("expected error for malformed JSON, got nil")
+	}
+}
+
+func TestReadVMInfoMissing(t *testing.T) {
+	_, err := ReadVMInfo("/tmp/nonexistent-vminfo-test.json")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+func TestScanVMDirsWithCorruptEntry(t *testing.T) {
+	base := t.TempDir()
+	fcDir := filepath.Join(base, "firecracker")
+
+	// Create one valid VM.
+	goodDir := filepath.Join(fcDir, "nvrs-fc-goodgood")
+	os.MkdirAll(goodDir, 0o755)
+	good := &VMInfo{ID: "nvrs-fc-goodgood", CID: 100, UID: 10000}
+	good.Write(filepath.Join(goodDir, "vminfo.json"))
+
+	// Create one corrupt VM.
+	badDir := filepath.Join(fcDir, "nvrs-fc-badbadbb")
+	os.MkdirAll(badDir, 0o755)
+	os.WriteFile(filepath.Join(badDir, "vminfo.json"), []byte("{corrupt"), 0o600)
+
+	infos, errs := ScanVMDirs(base)
+	if len(infos) != 1 {
+		t.Errorf("expected 1 valid VM, got %d", len(infos))
+	}
+	if len(errs) != 1 {
+		t.Errorf("expected 1 error for corrupt VM, got %d", len(errs))
+	}
+}

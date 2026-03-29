@@ -51,7 +51,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.dbPath, "db-path", "navaris.db", "path to SQLite database")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.authToken, "auth-token", "", "bearer token for API authentication (empty = no auth)")
-	flag.StringVar(&cfg.incusSocket, "incus-socket", "", "path to Incus socket (empty = mock provider)")
+	flag.StringVar(&cfg.incusSocket, "incus-socket", "", "path to Incus socket (Firecracker > Incus > mock)")
 	flag.DurationVar(&cfg.gcInterval, "gc-interval", 5*time.Minute, "garbage collection sweep interval")
 	flag.IntVar(&cfg.concurrency, "concurrency", 8, "max concurrent operations")
 	flag.StringVar(&cfg.firecrackerBin, "firecracker-bin", "", "path to Firecracker binary")

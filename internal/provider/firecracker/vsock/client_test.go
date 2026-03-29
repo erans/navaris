@@ -62,3 +62,50 @@ func TestClientExec(t *testing.T) {
 		t.Errorf("exit code: got %d, want 0", code)
 	}
 }
+
+func TestClientPingDisconnect(t *testing.T) {
+	server, client := net.Pipe()
+	c := NewClientFromConn(client)
+
+	// Close server immediately — simulates peer disconnect.
+	server.Close()
+
+	err := c.Ping(time.Second)
+	if err == nil {
+		t.Fatal("expected error on disconnect, got nil")
+	}
+	c.Close()
+}
+
+func TestClientExecDisconnect(t *testing.T) {
+	server, client := net.Pipe()
+	go func() {
+		// Read the exec request then close — simulates crash after receiving.
+		Decode(server)
+		server.Close()
+	}()
+	c := NewClientFromConn(client)
+	defer c.Close()
+
+	handle, err := c.Exec(ExecPayload{Command: []string{"sleep", "10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait should return an error instead of hanging.
+	done := make(chan struct{})
+	go func() {
+		_, waitErr := handle.Wait()
+		if waitErr == nil {
+			t.Error("expected error from Wait on disconnect, got nil")
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — Wait returned.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait() hung on disconnect")
+	}
+}
