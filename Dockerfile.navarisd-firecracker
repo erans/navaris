@@ -32,6 +32,7 @@ RUN mkdir /staging && \
     for d in bin etc home lib media mnt opt root run sbin srv usr var; do \
         [ -d "/$d" ] && cp -a "/$d" /staging/; \
     done && \
+    mkdir -p /staging/tmp && chmod 1777 /staging/tmp && \
     mke2fs -t ext4 -d /staging -L rootfs /tmp/alpine-3.21.ext4 512M && \
     mkdir -p /opt/firecracker/images && \
     mv /tmp/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
