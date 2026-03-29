@@ -68,21 +68,21 @@ func (r *msgRouter) unregister(id string) {
 	r.mu.Unlock()
 }
 
-// route delivers msg to the registered handler. Returns true if delivered.
+// route delivers msg to the registered handler. Returns true if a route
+// exists (even if the channel is full and the message is dropped).
 func (r *msgRouter) route(msg *vsock.Message) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	ch, ok := r.routes[msg.ID]
-	r.mu.Unlock()
 	if !ok {
 		return false
 	}
 	select {
 	case ch <- msg:
-		return true
 	default:
 		log.Printf("agent: message dropped for %s (channel full)", msg.ID)
-		return false
 	}
+	return true
 }
 
 // closeAll closes all registered channels, signalling disconnect to handlers.

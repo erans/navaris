@@ -128,7 +128,7 @@ func TestReadVMInfoMalformedJSON(t *testing.T) {
 }
 
 func TestReadVMInfoMissing(t *testing.T) {
-	_, err := ReadVMInfo("/tmp/nonexistent-vminfo-test.json")
+	_, err := ReadVMInfo(filepath.Join(t.TempDir(), "missing.json"))
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
 	}

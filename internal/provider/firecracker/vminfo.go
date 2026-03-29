@@ -45,6 +45,16 @@ func (v *VMInfo) Write(path string) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("rename vminfo %s: %w", path, err)
 	}
+	// Sync the directory to ensure the rename is durable.
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open dir for sync %s: %w", dir, err)
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return fmt.Errorf("sync dir %s: %w", dir, err)
+	}
+	d.Close()
 	return nil
 }
 

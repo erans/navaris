@@ -115,6 +115,7 @@ func (p *Provider) ExecDetached(ctx context.Context, ref domain.BackendRef, req 
 					ID:      execID,
 					Payload: data,
 				}); sendErr != nil {
+					stdinR.CloseWithError(sendErr)
 					return
 				}
 			}
