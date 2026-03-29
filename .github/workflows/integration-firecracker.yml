@@ -13,6 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Enable KVM
-        run: sudo chmod 666 /dev/kvm
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::KVM not available on this runner"
+            exit 1
+          fi
+          sudo chmod 666 /dev/kvm
       - name: Run integration tests
         run: make integration-test-firecracker

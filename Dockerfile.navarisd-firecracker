@@ -25,10 +25,14 @@ RUN printf '#!/sbin/openrc-run\nname="navaris-agent"\ndescription="Navaris guest
 # Configure OpenRC for container/VM use — suppress warnings about cgroups/mtab.
 RUN sed -i 's/^#rc_sys=""/rc_sys="lxc"/' /etc/rc.conf 2>/dev/null || true
 
-# Pack the entire Alpine rootfs into an ext4 image.
-# mke2fs -d populates the image from a directory without needing loop mount.
-# Write to /tmp first to avoid the output file being included in its own source tree.
-RUN mke2fs -t ext4 -d / -L rootfs /tmp/alpine-3.21.ext4 512M && \
+# Pack the Alpine rootfs into an ext4 image.
+# Use a staging directory to avoid mke2fs including the output file (self-reference)
+# and to exclude pseudo-filesystem dirs (/proc, /sys, /dev, /tmp).
+RUN mkdir /staging && \
+    for d in bin etc home lib media mnt opt root run sbin srv usr var; do \
+        [ -d "/$d" ] && cp -a "/$d" /staging/; \
+    done && \
+    mke2fs -t ext4 -d /staging -L rootfs /tmp/alpine-3.21.ext4 512M && \
     mkdir -p /opt/firecracker/images && \
     mv /tmp/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
 
