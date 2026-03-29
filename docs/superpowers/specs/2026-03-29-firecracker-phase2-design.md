@@ -48,20 +48,22 @@ Three subsystems, all using file-based storage with JSON metadata:
 2. Create snapshot directory under `<snapshot-dir>/<snapshot-id>/`.
 3. Copy the VM's `rootfs.ext4` to the snapshot directory.
 4. Write `snapinfo.json` with `mode: "stopped"`.
-5. Return `BackendRef{Ref: snapshot-id}`.
+5. Return `BackendRef{Backend: "firecracker", Ref: snapshot-id}`.
 
 **Live mode (`ConsistencyLive`):**
 1. VM must be running.
-2. Connect to the VM's Firecracker API socket via `fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})`.
-3. Pause the VM: `machine.PauseVM(ctx)`.
-4. Create Firecracker snapshot: `machine.CreateSnapshot(ctx, memFilePath, snapshotPath)` — writes `vmstate.bin` and `snapshot.meta` inside the VM directory.
-5. Copy `rootfs.ext4` from VM dir to snapshot dir (disk is consistent since VM is paused).
-6. Move `vmstate.bin` and `snapshot.meta` from VM dir to snapshot dir.
-7. Resume the VM: `machine.ResumeVM(ctx)`.
-8. Write `snapinfo.json` with `mode: "live"`.
-9. Return `BackendRef{Ref: snapshot-id}`.
+2. Derive the runtime socket path: `filepath.Join(vmDir, "root", "run", "firecracker.socket")` (the post-jailer path, same as `StopSandbox`).
+3. Connect to the VM's Firecracker API socket via `fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})`.
+4. Pause the VM: `machine.PauseVM(ctx)`.
+5. Create Firecracker snapshot: `machine.CreateSnapshot(ctx, memFilePath, snapshotPath)` — the paths are relative to the jailer chroot root (`<chrootBase>/firecracker/<vmID>/root/`). Use paths like `/vmstate.bin` and `/snapshot.meta` (relative to chroot). The actual host paths will be `<vmDir>/root/vmstate.bin` etc.
+6. Copy `rootfs.ext4` from VM dir to snapshot dir (disk is consistent since VM is paused).
+7. Copy `vmstate.bin` and `snapshot.meta` from `<vmDir>/root/` to snapshot dir (cross-device, so copy rather than rename).
+8. Resume the VM: `machine.ResumeVM(ctx)`.
+9. Clean up the snapshot files from the VM's chroot dir.
+10. Write `snapinfo.json` with `mode: "live"`.
+11. Return `BackendRef{Backend: "firecracker", Ref: snapshot-id}`.
 
-If any step after pause fails, resume the VM before returning the error.
+If any step after pause fails, resume the VM before returning the error. If the process crashes mid-copy, recovery will find a partial snapshot directory — `DeleteSnapshot` handles cleanup.
 
 ### RestoreSnapshot
 
@@ -73,9 +75,9 @@ VM must be stopped. Two paths based on snapshot mode:
 
 **Live snapshot:**
 1. Copy snapshot's `rootfs.ext4` to the VM directory.
-2. Copy snapshot's `vmstate.bin` and `snapshot.meta` to the VM directory.
+2. Copy snapshot's `vmstate.bin` and `snapshot.meta` to the VM's chroot root (`<vmDir>/root/`).
 3. Update `vminfo.json` to set a `RestoreFromSnapshot: true` flag.
-4. Next `StartSandbox` detects the flag and uses `fcsdk.WithSnapshot(memFilePath, snapshotPath)` instead of normal boot, then clears the flag. The VM resumes from the exact memory state captured at snapshot time.
+4. Next `StartSandbox` detects the flag and uses `fcsdk.WithSnapshot(memFilePath, snapshotPath)` instead of normal boot. The `Config` for snapshot restore should include `SocketPath`, `Drives` (rootfs), `VsockDevices`, `NetworkInterfaces`, and `JailerCfg` — but omit `KernelImagePath`, `KernelArgs`, and `MachineCfg` (these are ignored in snapshot-load mode). After successful start, clear the flag and delete the snapshot files from the VM directory.
 
 ### DeleteSnapshot
 
@@ -95,16 +97,15 @@ New CLI flag: `--snapshot-dir` (default: `/srv/firecracker/snapshots`). Added to
 
 ### Storage Layout
 
+Flat-file convention matching Phase 1, where `ImageRef` resolves to `filepath.Join(imageDir, imageRef+".ext4")`:
+
 ```
-<image-dir>/<image-ref>/
-└── rootfs.ext4          # The image file
+<image-dir>/
+├── <image-ref>.ext4     # The rootfs image file
+└── <image-ref>.json     # Image metadata
 ```
 
-Plus an `imageinfo.json` alongside:
-```
-<image-dir>/<image-ref>.json
-```
-
+`imageinfo.json` schema:
 ```json
 {
   "ref": "image-ref",
@@ -116,8 +117,6 @@ Plus an `imageinfo.json` alongside:
 }
 ```
 
-Note: this keeps the flat-file convention established in Phase 1, where `ImageRef` resolves to `filepath.Join(imageDir, imageRef+".ext4")`. The metadata file sits alongside at `imageRef+".json"`.
-
 ### PublishSnapshotAsImage
 
 1. Generate an image ref (e.g., `img-<uuid-prefix>`).
@@ -125,7 +124,7 @@ Note: this keeps the flat-file convention established in Phase 1, where `ImageRe
 3. Get file size of the copied ext4.
 4. Get architecture via `runtime.GOARCH` (all VMs share host arch).
 5. Write `<image-dir>/<image-ref>.json` with metadata.
-6. Return `BackendRef{Ref: image-ref}`.
+6. Return `BackendRef{Backend: "firecracker", Ref: image-ref}`.
 
 ### GetImageInfo
 
@@ -137,12 +136,12 @@ Remove `<image-dir>/<image-ref>.ext4` and `<image-dir>/<image-ref>.json`.
 
 ### CreateSandboxFromSnapshot
 
-Currently stubbed in `sandbox.go`. The service layer passes the snapshot's `BackendRef`.
+Currently stubbed in `sandbox.go`. The service layer passes the snapshot's `BackendRef` and a `CreateSandboxRequest`.
 
 1. Generate new VM ID, create VM directory.
 2. Copy snapshot's `rootfs.ext4` to `<vmDir>/rootfs.ext4`.
-3. Allocate CID and UID, write `vminfo.json`.
-4. Return `BackendRef{Ref: vmID}`.
+3. Allocate CID and UID, write `vminfo.json` (include `NetworkMode` from the request, same as `CreateSandbox`).
+4. Return `BackendRef{Backend: "firecracker", Ref: vmID}`.
 5. The service layer then calls `StartSandbox`, which boots the VM normally from the copied rootfs.
 
 Note: even for live snapshots, `CreateSandboxFromSnapshot` always boots fresh. Live restore (resuming from memory state) only makes sense for `RestoreSnapshot` on the same VM.
@@ -153,7 +152,7 @@ Note: even for live snapshots, `CreateSandboxFromSnapshot` always boots fresh. L
 
 ### Mechanism
 
-iptables DNAT + SNAT rules forwarding host ports to guest IPs on the tap network.
+iptables DNAT rules forwarding host ports to guest IPs on the tap network. Return traffic is handled by the existing masquerade rule added in `StartSandbox` via `network.AddMasquerade()`.
 
 ### Port Allocation
 
@@ -208,13 +207,15 @@ type PortAllocator struct {
     next int // starts at 40000
 }
 
-func (a *PortAllocator) Allocate() (int, error)  // returns next free port
+func (a *PortAllocator) Allocate() (int, error)  // returns next free port, or ErrNoPortsAvailable if range exhausted
 func (a *PortAllocator) Release(port int)         // returns port to pool
 ```
 
 ### Recovery
 
-On provider init, scan all `vminfo.json` files. For running VMs with `Ports`, re-establish iptables rules and mark ports as used in the allocator.
+On provider init, scan all `vminfo.json` files:
+- For running VMs with `Ports`: re-establish iptables rules and mark ports as used in the allocator.
+- For dead VMs with `Ports`: clear the `Ports` map (iptables rules are ephemeral and already gone). The existing `recover()` does not call `ClearRuntime()` for dead VMs, so port cleanup must be handled explicitly during port recovery.
 
 ### Cleanup
 
@@ -227,7 +228,7 @@ The service layer already calls `UnpublishPort` for each port before `DestroySan
 `StartSandbox` needs a small addition for live snapshot restore:
 
 1. Check `vminfo.json` for `RestoreFromSnapshot` flag.
-2. If set: use `fcsdk.NewMachine(ctx, cfg, fcsdk.WithSnapshot(memPath, snapPath))` instead of normal boot. After successful start, clear the flag and delete the snapshot files from the VM directory.
+2. If set: build a `Config` with only `SocketPath`, `Drives` (rootfs), `VsockDevices`, `NetworkInterfaces`, and `JailerCfg` — omit `KernelImagePath`, `KernelArgs`, and `MachineCfg` (unused in snapshot-load mode). Call `fcsdk.NewMachine(ctx, cfg, fcsdk.WithSnapshot(memPath, snapPath))`. The SDK's `WithSnapshot` replaces the init handler list to call `PUT /snapshot/load` instead of normal boot. After successful start, clear the `RestoreFromSnapshot` flag and delete the snapshot files from the VM directory.
 3. If not set: boot normally (existing path).
 
 ---
