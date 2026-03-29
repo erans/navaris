@@ -13,10 +13,11 @@ func AddDNAT(hostPort int, guestIP string, targetPort int) error {
 	hp := strconv.Itoa(hostPort)
 	tp := strconv.Itoa(targetPort)
 
+	comment := "navaris:" + hp
 	rules := [][]string{
-		{"iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", hp, "-j", "DNAT", "--to-destination", dest},
-		{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", hp, "-j", "DNAT", "--to-destination", dest},
-		{"iptables", "-A", "FORWARD", "-p", "tcp", "-d", guestIP, "--dport", tp, "-j", "ACCEPT"},
+		{"iptables", "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", hp, "-j", "DNAT", "--to-destination", dest, "-m", "comment", "--comment", comment},
+		{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-m", "addrtype", "--dst-type", "LOCAL", "--dport", hp, "-j", "DNAT", "--to-destination", dest, "-m", "comment", "--comment", comment},
+		{"iptables", "-A", "FORWARD", "-p", "tcp", "-d", guestIP, "--dport", tp, "-j", "ACCEPT", "-m", "comment", "--comment", comment},
 	}
 
 	for _, args := range rules {
@@ -36,10 +37,11 @@ func RemoveDNAT(hostPort int, guestIP string, targetPort int) {
 	hp := strconv.Itoa(hostPort)
 	tp := strconv.Itoa(targetPort)
 
+	comment := "navaris:" + hp
 	rules := [][]string{
-		{"iptables", "-t", "nat", "-D", "PREROUTING", "-p", "tcp", "--dport", hp, "-j", "DNAT", "--to-destination", dest},
-		{"iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "--dport", hp, "-j", "DNAT", "--to-destination", dest},
-		{"iptables", "-D", "FORWARD", "-p", "tcp", "-d", guestIP, "--dport", tp, "-j", "ACCEPT"},
+		{"iptables", "-t", "nat", "-D", "PREROUTING", "-p", "tcp", "--dport", hp, "-j", "DNAT", "--to-destination", dest, "-m", "comment", "--comment", comment},
+		{"iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-m", "addrtype", "--dst-type", "LOCAL", "--dport", hp, "-j", "DNAT", "--to-destination", dest, "-m", "comment", "--comment", comment},
+		{"iptables", "-D", "FORWARD", "-p", "tcp", "-d", guestIP, "--dport", tp, "-j", "ACCEPT", "-m", "comment", "--comment", comment},
 	}
 
 	for _, args := range rules {
