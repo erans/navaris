@@ -206,7 +206,7 @@ stopped:
 	if info.TapDevice != "" {
 		network.DeleteTap(info.TapDevice)
 		// Only remove masquerade if one was added (published mode only).
-		if info.SubnetIdx > 0 && info.NetworkMode == string(domain.NetworkPublished) {
+		if info.TapDevice != "" && info.NetworkMode == string(domain.NetworkPublished) {
 			guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 			network.RemoveMasquerade(guestIP, p.hostIface)
 		}

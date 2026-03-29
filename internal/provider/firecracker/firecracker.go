@@ -114,7 +114,7 @@ func (p *Provider) recover() error {
 		}
 		p.cidMu.Unlock()
 		p.uids.InitPast(info.UID)
-		if info.SubnetIdx > 0 {
+		if info.TapDevice != "" {
 			p.subnets.InitPast(info.SubnetIdx)
 		}
 		slog.Info("firecracker: recovered VM", "id", info.ID, "pid", info.PID)
