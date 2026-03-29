@@ -22,13 +22,19 @@ import (
 )
 
 type config struct {
-	listen      string
-	dbPath      string
-	logLevel    string
-	authToken   string
-	incusSocket string
-	gcInterval  time.Duration
-	concurrency int
+	listen         string
+	dbPath         string
+	logLevel       string
+	authToken      string
+	incusSocket    string
+	gcInterval     time.Duration
+	concurrency    int
+	firecrackerBin string
+	jailerBin      string
+	kernelPath     string
+	imageDir       string
+	chrootBase     string
+	hostInterface  string
 }
 
 func main() {
@@ -48,6 +54,12 @@ func parseFlags() config {
 	flag.StringVar(&cfg.incusSocket, "incus-socket", "", "path to Incus socket (empty = mock provider)")
 	flag.DurationVar(&cfg.gcInterval, "gc-interval", 5*time.Minute, "garbage collection sweep interval")
 	flag.IntVar(&cfg.concurrency, "concurrency", 8, "max concurrent operations")
+	flag.StringVar(&cfg.firecrackerBin, "firecracker-bin", "", "path to Firecracker binary")
+	flag.StringVar(&cfg.jailerBin, "jailer-bin", "", "path to jailer binary")
+	flag.StringVar(&cfg.kernelPath, "kernel-path", "", "path to vmlinux kernel")
+	flag.StringVar(&cfg.imageDir, "image-dir", "", "directory containing rootfs images")
+	flag.StringVar(&cfg.chrootBase, "chroot-base", "/srv/firecracker", "jailer chroot base directory")
+	flag.StringVar(&cfg.hostInterface, "host-interface", "", "network interface for masquerade (auto-detect if empty)")
 	flag.Parse()
 	return cfg
 }
@@ -77,24 +89,32 @@ func run(cfg config) error {
 
 	// Provider
 	var prov domain.Provider
-	if cfg.incusSocket != "" {
+	var backendName string
+	switch {
+	case cfg.firecrackerBin != "":
+		p, err := newFirecrackerProvider(cfg)
+		if err != nil {
+			return fmt.Errorf("firecracker provider: %w", err)
+		}
+		prov = p
+		backendName = "firecracker"
+		logger.Info("using firecracker provider")
+	case cfg.incusSocket != "":
 		p, err := newIncusProvider(cfg.incusSocket)
 		if err != nil {
 			return fmt.Errorf("incus provider: %w", err)
 		}
 		prov = p
+		backendName = "incus"
 		logger.Info("using incus provider", "socket", cfg.incusSocket)
-	} else {
+	default:
 		prov = provider.NewMock()
+		backendName = "mock"
 		logger.Info("using mock provider")
 	}
 
 	// Services
 	projSvc := service.NewProjectService(store.ProjectStore())
-	backendName := "mock"
-	if cfg.incusSocket != "" {
-		backendName = "incus"
-	}
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
 		store.SessionStore(), prov, bus, disp, backendName,
