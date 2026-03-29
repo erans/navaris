@@ -1,0 +1,18 @@
+name: Integration Tests (Firecracker)
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    # Pin to ubuntu-24.04 — KVM is available on GitHub-hosted runners
+    # but not guaranteed on all ubuntu-latest aliases or self-hosted runners.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: sudo chmod 666 /dev/kvm
+      - name: Run integration tests
+        run: make integration-test-firecracker
