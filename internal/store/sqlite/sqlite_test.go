@@ -1,9 +1,14 @@
 package sqlite_test
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/store/sqlite"
 )
 
@@ -34,5 +39,48 @@ func TestOpen(t *testing.T) {
 	expected := []string{"base_images", "operations", "port_bindings", "projects", "sandboxes", "schema_migrations", "sessions", "snapshots"}
 	if len(tables) != len(expected) {
 		t.Fatalf("expected %d tables, got %d: %v", len(expected), len(tables), tables)
+	}
+}
+
+func TestConcurrentWrites(t *testing.T) {
+	s := newTestStore(t)
+	ps := s.ProjectStore()
+
+	const n = 20
+	errs := make(chan error, n)
+
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			p := &domain.Project{
+				ProjectID: uuid.NewString(),
+				Name:      fmt.Sprintf("concurrent-%d", idx),
+				CreatedAt: time.Now().UTC(),
+				UpdatedAt: time.Now().UTC(),
+			}
+			errs <- ps.Create(t.Context(), p)
+		}(i)
+	}
+
+	var busy int
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			if errors.Is(err, domain.ErrBusy) {
+				busy++
+			} else if !errors.Is(err, domain.ErrConflict) {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}
+	}
+
+	if busy > 0 {
+		t.Errorf("got %d ErrBusy errors — single-writer pool should prevent this", busy)
+	}
+
+	list, err := ps.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != n {
+		t.Errorf("expected %d projects, got %d", n, len(list))
 	}
 }
