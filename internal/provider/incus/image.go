@@ -49,9 +49,11 @@ func (p *IncusProvider) PublishSnapshotAsImage(ctx context.Context, snapshotRef 
 	// Create an alias for the image so it can be addressed by name.
 	aliasPost := incusapi.ImageAliasesPost{
 		ImageAliasesEntry: incusapi.ImageAliasesEntry{
-			Name:        alias,
-			Description: fmt.Sprintf("navaris image %s", alias),
-			Target:      fingerprint,
+			Name: alias,
+			ImageAliasesEntryPut: incusapi.ImageAliasesEntryPut{
+				Description: fmt.Sprintf("navaris image %s", alias),
+				Target:      fingerprint,
+			},
 		},
 	}
 	if err := p.client.CreateImageAlias(aliasPost); err != nil {

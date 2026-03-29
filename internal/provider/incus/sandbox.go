@@ -163,7 +163,7 @@ func (p *IncusProvider) CreateSandboxFromSnapshot(ctx context.Context, snapshotR
 	if err != nil {
 		return domain.BackendRef{}, fmt.Errorf("incus copy snapshot: %w", err)
 	}
-	if err := op.WaitContext(ctx); err != nil {
+	if err := op.Wait(); err != nil {
 		return domain.BackendRef{}, fmt.Errorf("incus copy snapshot wait: %w", err)
 	}
 
