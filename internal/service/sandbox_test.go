@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ type serviceEnv struct {
 
 func newServiceEnv(t *testing.T) *serviceEnv {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 )
 
 func TestDaemonStartsAndServesHealth(t *testing.T) {
-	store, err := sqlite.Open(":memory:")
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

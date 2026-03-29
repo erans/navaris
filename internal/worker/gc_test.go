@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 
 func newTestStoreForGC(t *testing.T) *sqlite.Store {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

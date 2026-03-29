@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/navaris/navaris/internal/domain"
@@ -11,7 +12,7 @@ import (
 
 func newProjectService(t *testing.T) *service.ProjectService {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

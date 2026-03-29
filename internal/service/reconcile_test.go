@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ type reconcileEnv struct {
 
 func newReconcileEnv(t *testing.T) *reconcileEnv {
 	t.Helper()
-	s, err := sqlite.Open(":memory:")
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
