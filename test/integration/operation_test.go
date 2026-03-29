@@ -78,7 +78,8 @@ func TestOperationCancel(t *testing.T) {
 		t.Fatalf("create sandbox: %v", err)
 	}
 
-	// Try to cancel. This may or may not succeed depending on timing.
+	// Try to cancel. This is inherently racy — the operation may complete
+	// before the cancel request arrives.
 	cancelErr := c.CancelOperation(ctx, op.OperationID)
 
 	finalOp, err := c.WaitForOperation(ctx, op.OperationID, waitOpts())
@@ -92,18 +93,23 @@ func TestOperationCancel(t *testing.T) {
 		})
 	}
 
-	// If cancel succeeded (no error), the operation must be in a terminal state
-	// that isn't "succeeded" — it should be cancelled or failed.
-	// If the operation completed before cancel, cancel may return an error
-	// (already completed) or the state is succeeded — both are acceptable races.
-	if cancelErr == nil && finalOp.State == client.OpSucceeded {
-		t.Log("cancel returned nil but operation succeeded — race between cancel and completion (acceptable)")
-	} else if cancelErr == nil {
-		if !finalOp.State.Terminal() {
-			t.Fatalf("cancel succeeded but operation is not terminal: state=%s", finalOp.State)
-		}
-		t.Logf("cancel succeeded, final state=%s", finalOp.State)
-	} else {
-		t.Logf("cancel returned error (likely already completed): %v, final state=%s", cancelErr, finalOp.State)
+	// The operation must always reach a terminal state.
+	if !finalOp.State.Terminal() {
+		t.Fatalf("operation not terminal after cancel+wait: state=%s", finalOp.State)
+	}
+
+	switch {
+	case cancelErr == nil && (finalOp.State == client.OpCancelled || finalOp.State == client.OpFailed):
+		// Cancel accepted and operation was actually cancelled/failed — the ideal outcome.
+		t.Logf("cancel worked: final state=%s", finalOp.State)
+	case cancelErr == nil && finalOp.State == client.OpSucceeded:
+		// Cancel was accepted but the operation had already finished — valid race.
+		t.Log("cancel accepted but operation already succeeded (race)")
+	case cancelErr != nil && finalOp.State == client.OpSucceeded:
+		// Cancel rejected because operation already completed.
+		t.Logf("cancel rejected (operation already complete): %v", cancelErr)
+	case cancelErr != nil:
+		// Cancel failed AND operation didn't succeed — unexpected.
+		t.Fatalf("cancel error=%v with unexpected final state=%s", cancelErr, finalOp.State)
 	}
 }
