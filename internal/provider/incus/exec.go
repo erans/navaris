@@ -40,28 +40,37 @@ func (p *IncusProvider) Exec(ctx context.Context, ref domain.BackendRef, req dom
 		return domain.ExecHandle{}, fmt.Errorf("incus exec %s: %w", ref.Ref, err)
 	}
 
+	// Wait in background so pipe writers close when exec finishes,
+	// allowing readers to receive EOF without circular dependency.
+	type waitResult struct {
+		exitCode int
+		err      error
+	}
+	waitCh := make(chan waitResult, 1)
+	go func() {
+		err := op.WaitContext(ctx)
+		stdoutW.Close()
+		stderrW.Close()
+		if err != nil {
+			waitCh <- waitResult{-1, err}
+			return
+		}
+		opAPI := op.Get()
+		exitCode := 0
+		if code, ok := opAPI.Metadata["return"].(float64); ok {
+			exitCode = int(code)
+		}
+		waitCh <- waitResult{exitCode, nil}
+	}()
+
 	handle := domain.ExecHandle{
 		Stdout: stdoutR,
 		Stderr: stderrR,
 		Wait: func() (int, error) {
-			if err := op.WaitContext(ctx); err != nil {
-				stdoutW.Close()
-				stderrW.Close()
-				return -1, err
-			}
-			stdoutW.Close()
-			stderrW.Close()
-
-			opAPI := op.Get()
-			exitCode := 0
-			if code, ok := opAPI.Metadata["return"].(float64); ok {
-				exitCode = int(code)
-			}
-			return exitCode, nil
+			res := <-waitCh
+			return res.exitCode, res.err
 		},
 		Cancel: func() error {
-			stdoutW.Close()
-			stderrW.Close()
 			return op.Cancel()
 		},
 	}

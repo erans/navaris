@@ -100,7 +100,10 @@ func (s *Server) deletePort(w http.ResponseWriter, r *http.Request) {
 
 	if publishedPort > 0 {
 		ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
-		s.cfg.Provider.UnpublishPort(r.Context(), ref, publishedPort)
+		if err := s.cfg.Provider.UnpublishPort(r.Context(), ref, publishedPort); err != nil {
+			respondError(w, err)
+			return
+		}
 	}
 
 	if err := s.cfg.Ports.Delete(r.Context(), sandboxID, targetPort); err != nil {

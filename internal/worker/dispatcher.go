@@ -105,20 +105,32 @@ func (d *Dispatcher) WaitIdle() {
 
 func (d *Dispatcher) loop() {
 	for {
+		// Check done first to prevent starting new work after stop
 		select {
 		case <-d.done:
-			// Drain remaining queued items so wg accounting balances
-			for {
-				select {
-				case <-d.queue:
-					d.wg.Done()
-				default:
-					return
-				}
-			}
+			d.drain()
+			return
+		default:
+		}
+
+		select {
+		case <-d.done:
+			d.drain()
+			return
 		case op := <-d.queue:
 			d.sem <- struct{}{} // acquire
 			go d.run(op)
+		}
+	}
+}
+
+func (d *Dispatcher) drain() {
+	for {
+		select {
+		case <-d.queue:
+			d.wg.Done()
+		default:
+			return
 		}
 	}
 }

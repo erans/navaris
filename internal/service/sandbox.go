@@ -97,6 +97,7 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		Metadata:     map[string]any{"image_id": imageID},
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		s.sandboxes.Delete(ctx, sbx.SandboxID)
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -140,6 +141,7 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		Metadata:     map[string]any{"snapshot_id": snapshotID},
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		s.sandboxes.Delete(ctx, sbx.SandboxID)
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -159,8 +161,9 @@ func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operatio
 	if err != nil {
 		return nil, err
 	}
-	if !sbx.State.CanTransitionTo(domain.SandboxStarting) {
-		return nil, fmt.Errorf("cannot start sandbox in state %s: %w", sbx.State, domain.ErrInvalidState)
+	prevState := sbx.State
+	if !prevState.CanTransitionTo(domain.SandboxStarting) {
+		return nil, fmt.Errorf("cannot start sandbox in state %s: %w", prevState, domain.ErrInvalidState)
 	}
 
 	// Transition to starting before enqueue to prevent duplicate operations
@@ -181,6 +184,10 @@ func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operatio
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		// Rollback sandbox state
+		sbx.State = prevState
+		sbx.UpdatedAt = time.Now().UTC()
+		s.sandboxes.Update(ctx, sbx)
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -192,8 +199,9 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 	if err != nil {
 		return nil, err
 	}
-	if !sbx.State.CanTransitionTo(domain.SandboxStopping) {
-		return nil, fmt.Errorf("cannot stop sandbox in state %s: %w", sbx.State, domain.ErrInvalidState)
+	prevState := sbx.State
+	if !prevState.CanTransitionTo(domain.SandboxStopping) {
+		return nil, fmt.Errorf("cannot stop sandbox in state %s: %w", prevState, domain.ErrInvalidState)
 	}
 
 	// Transition to stopping before enqueue to prevent duplicate operations
@@ -215,6 +223,10 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 		Metadata:     map[string]any{"force": force},
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		// Rollback sandbox state
+		sbx.State = prevState
+		sbx.UpdatedAt = time.Now().UTC()
+		s.sandboxes.Update(ctx, sbx)
 		return nil, err
 	}
 	s.workers.Enqueue(op)
