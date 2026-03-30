@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -43,14 +43,50 @@ func main() {
 		log.Fatalf("agent: listen vsock: %v", err)
 	}
 
-	// Wrap the raw fd into a net.Listener so the agent package can use it.
-	f := os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d", port))
-	ln, err := net.FileListener(f)
-	f.Close() // FileListener dup's the fd; close our copy.
-	if err != nil {
-		log.Fatalf("agent: wrap fd as listener: %v", err)
-	}
-
 	log.Printf("agent: listening on vsock port %d", port)
-	agent.NewServer(ln).Serve()
+	agent.NewServer(&vsockListener{fd: fd}).Serve()
 }
+
+// vsockListener implements net.Listener for AF_VSOCK sockets.
+// Go's net.FileListener does not support AF_VSOCK, so we accept directly.
+type vsockListener struct {
+	fd int
+}
+
+func (l *vsockListener) Accept() (net.Conn, error) {
+	nfd, _, err := unix.Accept(l.fd)
+	if err != nil {
+		return nil, err
+	}
+	unix.SetNonblock(nfd, true)
+	f := os.NewFile(uintptr(nfd), "vsock-conn")
+	return &vsockConn{f: f}, nil
+}
+
+func (l *vsockListener) Close() error {
+	return unix.Close(l.fd)
+}
+
+func (l *vsockListener) Addr() net.Addr {
+	return vsockAddr{}
+}
+
+// vsockConn wraps an os.File as a net.Conn for AF_VSOCK connections.
+type vsockConn struct {
+	f *os.File
+}
+
+func (c *vsockConn) Read(b []byte) (int, error)  { return c.f.Read(b) }
+func (c *vsockConn) Write(b []byte) (int, error) { return c.f.Write(b) }
+func (c *vsockConn) Close() error                { return c.f.Close() }
+func (c *vsockConn) LocalAddr() net.Addr          { return vsockAddr{} }
+func (c *vsockConn) RemoteAddr() net.Addr         { return vsockAddr{} }
+
+func (c *vsockConn) SetDeadline(t time.Time) error      { return c.f.SetDeadline(t) }
+func (c *vsockConn) SetReadDeadline(t time.Time) error   { return c.f.SetReadDeadline(t) }
+func (c *vsockConn) SetWriteDeadline(t time.Time) error  { return c.f.SetWriteDeadline(t) }
+
+type vsockAddr struct{}
+
+func (vsockAddr) Network() string { return "vsock" }
+func (vsockAddr) String() string  { return "vsock" }
