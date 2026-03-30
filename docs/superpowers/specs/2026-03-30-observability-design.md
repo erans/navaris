@@ -6,7 +6,7 @@ Add OpenTelemetry-based metrics and distributed tracing to navarisd, exported vi
 
 ## Success Criteria
 
-- `--otlp-endpoint` flag enables telemetry export; omitting it keeps current behavior
+- `-otlp-endpoint` flag enables telemetry export; omitting it keeps current behavior
 - Grafana or Jaeger shows HTTP request latency, error rates, and trace waterfalls
 - Provider operation timing is visible per-backend
 - Dispatcher queue depth and operation throughput are tracked
@@ -26,13 +26,13 @@ New package: `internal/telemetry`
 
 ### Configuration
 
-Three new CLI flags in `cmd/navarisd/main.go`:
+Three new CLI flags in `cmd/navarisd/main.go` (using Go stdlib `flag` single-dash convention):
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--otlp-endpoint` | `""` (disabled) | OTLP collector endpoint (e.g., `localhost:4317`) |
-| `--otlp-protocol` | `grpc` | Transport protocol: `grpc` or `http` |
-| `--service-name` | `navarisd` | Service name in telemetry data |
+| `-otlp-endpoint` | `""` (disabled) | OTLP collector endpoint (e.g., `localhost:4317`) |
+| `-otlp-protocol` | `grpc` | Transport protocol: `grpc` or `http` |
+| `-service-name` | `navarisd` | Service name in telemetry data |
 
 ### Init / Shutdown
 
@@ -48,7 +48,7 @@ When `cfg.Endpoint` is empty, sets global OTel providers to no-op and returns a 
 6. Set W3C trace context propagator via `otel.SetTextMapPropagator`.
 7. Return a shutdown function that flushes and stops both providers.
 
-`main.go` calls `Init` after flag parsing and defers `shutdown`.
+`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** the dispatcher has been stopped (after `disp.Stop()` returns), not via a bare `defer`. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down. Sequence: `disp.Stop()` → `telemetry.Shutdown()` → exit.
 
 ### Dependencies (new direct)
 
@@ -77,11 +77,17 @@ New file: `internal/api/metrics.go`
 | `http.server.active_requests` | UpDownCounter | `method` | In-flight request count |
 | `http.server.request.size` | Histogram (bytes) | `method`, `route` | Request body size distribution |
 
+`http.server.response.size` is intentionally omitted — response bodies are typically small JSON and tracking them adds complexity (wrapping `ResponseWriter`) with little diagnostic value. Can be added later if needed.
+
 ### Behavior
 
 The middleware wraps the handler, recording start time and incrementing the active counter before the request, and recording duration/size and decrementing the counter after.
 
-The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the actual URL path, to prevent high-cardinality label explosion. Extract this from the request's `http.ServeMux` pattern (Go 1.22+ stores it in the request via `r.Pattern`).
+### Endpoint Exclusions
+
+The `/v1/events` WebSocket endpoint and `/v1/sandboxes/{id}/exec` streaming endpoint are excluded from both metrics and tracing middleware. These long-lived connections would create misleading latency data and unbounded spans. If observability for these endpoints is needed later, dedicated instrumentation (e.g., connection count gauge, message throughput counter) should be added separately.
+
+The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the actual URL path, to prevent high-cardinality label explosion. Extract this from the request's `http.ServeMux` pattern (Go 1.23+ stores it in the request via `r.Pattern`).
 
 ### Registration
 
@@ -109,7 +115,7 @@ The W3C `traceparent` propagator (set in Init) extracts incoming trace context f
 
 ### Registration
 
-Same gating as metrics middleware. Inserted before the metrics middleware so the span wraps the entire request lifecycle.
+Same gating as metrics middleware. Inserted before the metrics middleware so the span wraps the entire request lifecycle. Same endpoint exclusions apply (WebSocket `/v1/events` and streaming `/v1/sandboxes/{id}/exec`).
 
 ---
 
@@ -138,10 +144,12 @@ if err != nil {
 ```
 
 Key attributes added to spans where relevant:
-- `sandbox.id`, `snapshot.id`, `image.ref` — for correlation
+- `sandbox.id`, `snapshot.id`, `image.ref` — for correlation (custom attributes use dot-separated lowercase, following OTel naming conventions)
 - `provider.backend` — which backend handled the operation
 
 No metrics at this layer — HTTP metrics already capture end-to-end latency.
+
+Note: The health-check endpoint (`/healthz`) and exec endpoint (`/v1/sandboxes/{id}/exec`) bypass the service layer, so they will not have service-level spans. This is expected — health checks are simple liveness probes, and exec is a streaming passthrough. Both are still covered by HTTP-level metrics and tracing.
 
 ---
 
@@ -180,17 +188,23 @@ Existing file: `internal/worker/dispatcher.go`
 
 | Name | Type | Labels | Description |
 |------|------|--------|-------------|
-| `dispatcher.queue.depth` | Gauge | — | Current number of queued operations |
-| `dispatcher.inflight` | Gauge | — | Currently executing operations |
-| `dispatcher.operations.total` | Counter | `type`, `status` | Completed operations (completed/failed/cancelled) |
+| `dispatcher.queue.depth` | Observable Gauge | — | Current number of queued operations |
+| `dispatcher.inflight` | Observable Gauge | — | Currently executing operations |
+| `dispatcher.operations.total` | Counter | `type`, `status` | Completed operations (`succeeded`/`failed`/`cancelled`) |
 
-### Recording Points
+### Implementation
 
-- **Enqueue**: increment queue depth
-- **Dequeue** (worker picks up): decrement queue depth, increment inflight
-- **Complete** (handler returns): decrement inflight, increment operations total with type and status labels
+**Queue depth and inflight** are implemented as `Int64ObservableGauge` instruments with callback functions that read current state:
+- `queue.depth` callback returns `len(d.queue)` (channel length)
+- `inflight` callback returns an atomic counter value incremented when a worker picks up a task and decremented when the handler returns
 
-The Meter is obtained from the global provider. When telemetry is disabled, the global no-op meter makes all recording calls zero-cost.
+This avoids the complexity of tracking increment/decrement pairs and ensures gauges always reflect actual state, even if operations are drained or cancelled without going through normal paths.
+
+**Operations total** is a synchronous `Int64Counter`, incremented when an operation handler returns. The `status` label uses values matching the domain types: `succeeded`, `failed`, `cancelled`.
+
+### Out of Scope
+
+GC worker and startup reconciler are not instrumented in this iteration. They can be added later following the same pattern if needed.
 
 ---
 
