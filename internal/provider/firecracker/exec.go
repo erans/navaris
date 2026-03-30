@@ -7,35 +7,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"os"
+	"path/filepath"
 
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
-	"golang.org/x/sys/unix"
+	sdkvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
 
-func (p *Provider) dialAgent(cid uint32) (*fcvsock.Client, error) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
+	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
+	conn, err := sdkvsock.Dial(udsPath, 1024)
 	if err != nil {
-		return nil, fmt.Errorf("vsock socket: %w", err)
+		return nil, fmt.Errorf("vsock dial %s: %w", vmID, err)
 	}
-
-	sa := &unix.SockaddrVM{CID: cid, Port: 1024}
-	if err := unix.Connect(fd, sa); err != nil {
-		unix.Close(fd)
-		return nil, fmt.Errorf("vsock connect CID %d: %w", cid, err)
-	}
-
-	f := os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d", cid))
-	conn, err := net.FileConn(f)
-	f.Close() // FileConn dups the fd
-	if err != nil {
-		return nil, fmt.Errorf("vsock fileconn CID %d: %w", cid, err)
-	}
-
 	return fcvsock.NewClientFromConn(conn), nil
 }
 
@@ -48,12 +34,7 @@ func (p *Provider) Exec(ctx context.Context, ref domain.BackendRef, req domain.E
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "Exec")
 	defer func() { endSpan(retErr) }()
 
-	info, err := p.getVMInfo(ref.Ref)
-	if err != nil {
-		return domain.ExecHandle{}, fmt.Errorf("firecracker exec %s: %w", ref.Ref, err)
-	}
-
-	client, err := p.dialAgent(info.CID)
+	client, err := p.dialAgent(ref.Ref)
 	if err != nil {
 		return domain.ExecHandle{}, fmt.Errorf("firecracker exec %s: %w", ref.Ref, err)
 	}
@@ -86,12 +67,7 @@ func (p *Provider) ExecDetached(ctx context.Context, ref domain.BackendRef, req 
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "ExecDetached")
 	defer func() { endSpan(retErr) }()
 
-	info, err := p.getVMInfo(ref.Ref)
-	if err != nil {
-		return domain.DetachedExecHandle{}, fmt.Errorf("firecracker exec-detached %s: %w", ref.Ref, err)
-	}
-
-	client, err := p.dialAgent(info.CID)
+	client, err := p.dialAgent(ref.Ref)
 	if err != nil {
 		return domain.DetachedExecHandle{}, fmt.Errorf("firecracker exec-detached %s: %w", ref.Ref, err)
 	}
@@ -147,12 +123,7 @@ func (p *Provider) AttachSession(ctx context.Context, ref domain.BackendRef, req
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "AttachSession")
 	defer func() { endSpan(retErr) }()
 
-	info, err := p.getVMInfo(ref.Ref)
-	if err != nil {
-		return domain.SessionHandle{}, fmt.Errorf("firecracker session %s: %w", ref.Ref, err)
-	}
-
-	client, err := p.dialAgent(info.CID)
+	client, err := p.dialAgent(ref.Ref)
 	if err != nil {
 		return domain.SessionHandle{}, fmt.Errorf("firecracker session %s: %w", ref.Ref, err)
 	}

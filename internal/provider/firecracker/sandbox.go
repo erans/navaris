@@ -193,7 +193,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	}
 
 	// Wait for agent health check.
-	if err := p.waitForAgent(ctx, info.CID, 30*time.Second); err != nil {
+	if err := p.waitForAgent(ctx, vmID, 30*time.Second); err != nil {
 		// Agent didn't respond -- leave VM running, caller can retry or destroy.
 		return fmt.Errorf("firecracker agent timeout %s: %w", vmID, err)
 	}
@@ -306,7 +306,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	os.Remove(snapPath)
 
 	// Wait for agent health check.
-	if err := p.waitForAgent(ctx, info.CID, 30*time.Second); err != nil {
+	if err := p.waitForAgent(ctx, vmID, 30*time.Second); err != nil {
 		return fmt.Errorf("firecracker agent timeout %s: %w", vmID, err)
 	}
 
@@ -443,7 +443,7 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 	}
 
 	// Process alive -- check agent health.
-	if err := p.pingAgent(ctx, info.CID); err != nil {
+	if err := p.pingAgent(ctx, info.ID); err != nil {
 		return domain.SandboxStarting, nil
 	}
 
@@ -502,10 +502,10 @@ func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func (p *Provider) waitForAgent(ctx context.Context, cid uint32, timeout time.Duration) error {
+func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	for {
-		client, err := p.dialAgent(cid)
+		client, err := p.dialAgent(vmID)
 		if err == nil {
 			pingErr := client.Ping(2 * time.Second)
 			client.Close()
@@ -517,14 +517,14 @@ func (p *Provider) waitForAgent(ctx context.Context, cid uint32, timeout time.Du
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("agent at CID %d did not respond within %s", cid, timeout)
+			return fmt.Errorf("agent at %s did not respond within %s", vmID, timeout)
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
 
-func (p *Provider) pingAgent(ctx context.Context, cid uint32) error {
-	client, err := p.dialAgent(cid)
+func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
+	client, err := p.dialAgent(vmID)
 	if err != nil {
 		return err
 	}
