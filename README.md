@@ -15,6 +15,49 @@ This matters when you need to:
 - **Snapshot and restore** execution state for reproducibility or checkpointing
 - **Mix isolation levels** — containers for speed, microVMs for security — behind one API
 
+## Backends
+
+Navaris supports two isolation backends. You choose one when starting the daemon — the API and CLI work identically regardless of which backend is running underneath.
+
+### Incus (system containers)
+
+[Incus](https://linuxcontainers.org/incus/) runs sandboxes as system containers using LXC. Containers share the host kernel but get their own filesystem, process tree, and network namespace.
+
+**Strengths:**
+- **Fast startup** — containers launch in under a second
+- **Low overhead** — no guest kernel, near-native CPU and memory performance
+- **Mature ecosystem** — rich image library, live migration, storage pools, and clustering built in
+- **Simpler operations** — no kernel or rootfs images to manage separately
+
+**Best for:** development environments, CI runners, trusted workloads where speed and density matter more than hard isolation boundaries.
+
+### Firecracker (microVMs)
+
+[Firecracker](https://firecracker-microvm.github.io/) runs sandboxes as lightweight virtual machines using KVM. Each sandbox gets its own guest kernel, providing hardware-level isolation.
+
+**Strengths:**
+- **Strong isolation** — separate kernel per sandbox; a guest kernel exploit doesn't compromise the host
+- **Minimal attack surface** — Firecracker's VMM is purpose-built with a small device model (no PCI, no USB, no graphics)
+- **Predictable performance** — dedicated vCPUs and memory with no kernel sharing; no noisy-neighbor effects from cgroup contention
+- **Jailer integration** — each VM runs in a chroot with seccomp filters and a dedicated UID
+
+**Best for:** running untrusted code, multi-tenant environments, security-sensitive workloads where isolation guarantees matter.
+
+### Choosing a backend
+
+| Consideration | Incus | Firecracker |
+|--------------|-------|-------------|
+| Startup time | ~1s | ~2-3s |
+| Memory overhead | Minimal | ~30MB per VM (guest kernel) |
+| Isolation level | Namespace/cgroup | Hardware (KVM) |
+| Host kernel shared | Yes | No |
+| Requires `/dev/kvm` | No | Yes |
+| Image management | Built-in image server | Manual rootfs + kernel |
+| Live snapshots | Native support | Memory + disk snapshot |
+| Density (sandboxes per host) | Higher | Lower |
+
+You can also run both backends on different Navaris instances and route workloads based on trust level — containers for your own code, microVMs for user-submitted code.
+
 ## Features
 
 - **Multi-backend**: Incus (system containers) and Firecracker (microVMs)
@@ -47,7 +90,7 @@ For Firecracker, a lightweight guest agent (`navaris-agent`) runs inside each VM
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - For Incus backend: a running Incus daemon
 - For Firecracker backend: Firecracker binary, jailer, a Linux kernel, and `/dev/kvm` access
 
