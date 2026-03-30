@@ -42,7 +42,7 @@ When `cfg.Endpoint` is empty, sets global OTel providers to no-op and returns a 
 
 1. Create OTLP exporters (gRPC or HTTP based on protocol flag) — one trace exporter via `otlptracegrpc.New()` or `otlptracehttp.New()`, and one metric exporter via `otlpmetricgrpc.New()` or `otlpmetrichttp.New()`.
 2. Create `TracerProvider` with a `BatchSpanProcessor` wrapping the trace exporter. Resource attributes: `service.name`.
-3. Create `MeterProvider` with a `PeriodicReader` (default 30s interval) wrapping the metric exporter. Same resource attributes.
+3. Create `MeterProvider` with a `PeriodicReader` (default 60s export interval) wrapping the metric exporter. Same resource attributes.
 4. Set both as global providers via `otel.SetTracerProvider` and `otel.SetMeterProvider`.
 5. Set W3C trace context propagator via `otel.SetTextMapPropagator`.
 6. Register Go runtime instrumentation (must be after global providers are set): `if err := otelruntime.Start(); err != nil { return nil, fmt.Errorf("runtime instrumentation: %w", err) }`. Import as `otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"` to avoid shadowing stdlib `runtime`.
@@ -86,7 +86,7 @@ The middleware wraps the handler, recording start time and incrementing the acti
 
 ### Endpoint Exclusions
 
-The `/v1/events` WebSocket endpoint and `/v1/sandboxes/{id}/exec` streaming endpoint are excluded from both metrics and tracing middleware. These long-lived connections would create misleading latency data and unbounded spans. If observability for these endpoints is needed later, dedicated instrumentation (e.g., connection count gauge, message throughput counter) should be added separately.
+The `/v1/events` WebSocket endpoint and `/v1/sandboxes/{id}/exec` long-running synchronous endpoint are excluded from both metrics and tracing middleware. These long-lived connections would create misleading latency data and unbounded spans. If observability for these endpoints is needed later, dedicated instrumentation (e.g., connection count gauge, message throughput counter) should be added separately.
 
 The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the actual URL path, to prevent high-cardinality label explosion. Extract this from `r.Pattern` (the `Pattern` field on `*http.Request`, available since Go 1.22, populated by `http.ServeMux` with the matched pattern including method prefix — e.g., `"GET /v1/sandboxes/{id}"`; strip the method prefix to get the route).
 
@@ -118,7 +118,7 @@ The W3C `traceparent` propagator (set in Init) extracts incoming trace context f
 
 ### Registration
 
-Same gating as metrics middleware. Inserted before the metrics middleware so the span wraps the entire request lifecycle. Same endpoint exclusions apply (WebSocket `/v1/events` and streaming `/v1/sandboxes/{id}/exec`).
+Same gating as metrics middleware. Inserted before the metrics middleware so the span wraps the entire request lifecycle. Same endpoint exclusions apply (WebSocket `/v1/events` and long-running `/v1/sandboxes/{id}/exec`).
 
 ---
 
@@ -173,11 +173,11 @@ The helpers are called from provider implementations (Firecracker, Incus).
 
 ### Provider Spans
 
-Each provider method creates a span: `provider.{operation}` (e.g., `provider.CreateSandbox`). Attributes include `backend` and resource IDs. These appear as children of the service span in traces.
+Each provider method creates a span using `otel.Tracer("navaris.provider")`: `provider.{operation}` (e.g., `provider.CreateSandbox`). Attributes include `backend` and resource IDs. These appear as children of the service span in traces.
 
 ### sandbox.count Gauge
 
-Updated via callbacks: the gauge reads from the provider's in-memory VM map (Firecracker) or queries the Incus daemon via the client API (Incus). Registered once during provider init via `metric.Int64ObservableGauge` with a callback function.
+Updated via callbacks: the gauge reads from the provider's in-memory VM map (Firecracker) or queries the Incus daemon via the client API (Incus). Registered once during provider init via `metric.Int64ObservableGauge` with a callback function. The `state` label values are: `running` (PID > 0 and process alive), `stopped` (PID == 0 or process dead, not stopping), `stopping` (Stopping flag set).
 
 ---
 
@@ -198,10 +198,10 @@ Existing file: `internal/worker/dispatcher.go`
 ### Implementation
 
 **Queue depth and inflight** are implemented as `Int64ObservableGauge` instruments with callback functions that read current state:
-- `queue.depth` callback returns `len(d.queue)` (channel length)
-- `inflight` callback returns an atomic counter value incremented when a worker picks up a task and decremented when the handler returns
+- `queue.depth` callback returns `len(d.queue)` (buffered channel length)
+- `inflight` callback returns `len(d.sem)` (the existing semaphore channel whose capacity equals concurrency; its length is the number of acquired slots, i.e., currently executing workers)
 
-This avoids the complexity of tracking increment/decrement pairs and ensures gauges always reflect actual state, even if operations are drained or cancelled without going through normal paths.
+This avoids adding new state and ensures gauges always reflect actual state, even if operations are drained or cancelled without going through normal paths.
 
 **Operations total** is a synchronous `Int64Counter`, incremented when an operation handler returns. The `status` label uses values matching the domain types: `succeeded`, `failed`, `cancelled`.
 
