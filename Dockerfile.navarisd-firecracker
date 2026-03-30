@@ -24,7 +24,9 @@ RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION
 COPY resources/microvm-kernel.config /tmp/linux-${KERNEL_VERSION}/.config
 
 WORKDIR /tmp/linux-${KERNEL_VERSION}
-RUN make olddefconfig && make -j"$(nproc)" vmlinux
+RUN KCONFIG_ALLCONFIG=/tmp/linux-${KERNEL_VERSION}/.config \
+    make allnoconfig && \
+    make -j"$(nproc)" vmlinux
 RUN cp vmlinux /vmlinux
 
 # ---- Stage 3: Build Alpine rootfs ext4 image ----
