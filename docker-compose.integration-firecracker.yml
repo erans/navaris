@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.navarisd-firecracker
     privileged: true
+    cgroupns: host
     devices:
       - /dev/kvm:/dev/kvm
     command:
