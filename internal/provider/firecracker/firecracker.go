@@ -44,15 +44,16 @@ func (c *Config) defaults() {
 
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
-	config    Config
-	subnets   *network.Allocator
-	uids      *jailer.UIDAllocator
-	portAlloc *network.PortAllocator
-	cidNext   uint32
-	cidMu     sync.Mutex
-	vms       map[string]*VMInfo
-	vmMu      sync.RWMutex
-	hostIface string
+	config       Config
+	subnets      *network.Allocator
+	uids         *jailer.UIDAllocator
+	portAlloc    *network.PortAllocator
+	cidNext      uint32
+	cidMu        sync.Mutex
+	vms          map[string]*VMInfo
+	vmMu         sync.RWMutex
+	hostIface    string
+	cgroupVersion string
 }
 
 // New creates a Firecracker provider and recovers any orphaned VMs.
@@ -91,13 +92,14 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	p := &Provider{
-		config:    cfg,
-		subnets:   network.NewAllocator(),
-		uids:      jailer.NewUIDAllocator(10000),
-		portAlloc: network.NewPortAllocator(),
-		cidNext:   cfg.VsockCIDBase,
-		vms:       make(map[string]*VMInfo),
-		hostIface: hostIface,
+		config:        cfg,
+		subnets:       network.NewAllocator(),
+		uids:          jailer.NewUIDAllocator(10000),
+		portAlloc:     network.NewPortAllocator(),
+		cidNext:       cfg.VsockCIDBase,
+		vms:           make(map[string]*VMInfo),
+		hostIface:     hostIface,
+		cgroupVersion: detectCgroupVersion(),
 	}
 
 	// Recover orphaned VMs from disk.
@@ -203,3 +205,11 @@ func (p *Provider) Health(ctx context.Context) domain.ProviderHealth {
 }
 
 var _ domain.Provider = (*Provider)(nil)
+
+// detectCgroupVersion returns "2" if the system uses cgroup v2, otherwise "1".
+func detectCgroupVersion() string {
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+		return "2"
+	}
+	return "1"
+}

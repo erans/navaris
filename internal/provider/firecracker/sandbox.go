@@ -140,6 +140,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 			JailerBinary:   p.config.JailerBin,
 			ChrootBaseDir:  p.config.ChrootBase,
 			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
+			CgroupVersion:  p.cgroupVersion,
 		},
 	}
 
@@ -244,6 +245,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 			JailerBinary:   p.config.JailerBin,
 			ChrootBaseDir:  p.config.ChrootBase,
 			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
+			CgroupVersion:  p.cgroupVersion,
 		},
 	}
 
