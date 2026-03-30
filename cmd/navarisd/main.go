@@ -18,6 +18,7 @@ import (
 	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/service"
 	"github.com/navaris/navaris/internal/store/sqlite"
+	"github.com/navaris/navaris/internal/telemetry"
 	"github.com/navaris/navaris/internal/worker"
 )
 
@@ -36,6 +37,9 @@ type config struct {
 	chrootBase     string
 	hostInterface  string
 	snapshotDir    string
+	otlpEndpoint   string
+	otlpProtocol   string
+	serviceName    string
 }
 
 func main() {
@@ -62,6 +66,9 @@ func parseFlags() config {
 	flag.StringVar(&cfg.chrootBase, "chroot-base", "/srv/firecracker", "jailer chroot base directory")
 	flag.StringVar(&cfg.hostInterface, "host-interface", "", "network interface for masquerade (auto-detect if empty)")
 	flag.StringVar(&cfg.snapshotDir, "snapshot-dir", "/srv/firecracker/snapshots", "directory for Firecracker snapshots")
+	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
+	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
+	flag.StringVar(&cfg.serviceName, "service-name", "navarisd", "service name in telemetry data")
 	flag.Parse()
 	return cfg
 }
@@ -69,6 +76,18 @@ func parseFlags() config {
 func run(cfg config) error {
 	logger := setupLogger(cfg.logLevel)
 	slog.SetDefault(logger)
+
+	telemetryShutdown, err := telemetry.Init(context.Background(), telemetry.Config{
+		Endpoint:    cfg.otlpEndpoint,
+		Protocol:    cfg.otlpProtocol,
+		ServiceName: cfg.serviceName,
+	})
+	if err != nil {
+		return fmt.Errorf("telemetry init: %w", err)
+	}
+	if telemetry.Enabled() {
+		logger.Info("telemetry enabled", "endpoint", cfg.otlpEndpoint, "protocol", cfg.otlpProtocol)
+	}
 
 	logger.Info("starting navarisd",
 		"listen", cfg.listen,
@@ -210,6 +229,13 @@ func run(cfg config) error {
 	}
 	gc.Stop()
 	disp.Stop()
+
+	telShutdownCtx, telCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer telCancel()
+	if err := telemetryShutdown(telShutdownCtx); err != nil {
+		logger.Error("telemetry shutdown error", "error", err)
+	}
+
 	logger.Info("stopped")
 	return nil
 }
