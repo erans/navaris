@@ -35,6 +35,7 @@ type config struct {
 	imageDir       string
 	chrootBase     string
 	hostInterface  string
+	snapshotDir    string
 }
 
 func main() {
@@ -60,6 +61,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.imageDir, "image-dir", "", "directory containing rootfs images")
 	flag.StringVar(&cfg.chrootBase, "chroot-base", "/srv/firecracker", "jailer chroot base directory")
 	flag.StringVar(&cfg.hostInterface, "host-interface", "", "network interface for masquerade (auto-detect if empty)")
+	flag.StringVar(&cfg.snapshotDir, "snapshot-dir", "/srv/firecracker/snapshots", "directory for Firecracker snapshots")
 	flag.Parse()
 	return cfg
 }

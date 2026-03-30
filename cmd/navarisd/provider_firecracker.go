@@ -15,5 +15,6 @@ func newFirecrackerProvider(cfg config) (domain.Provider, error) {
 		ImageDir:       cfg.imageDir,
 		ChrootBase:     cfg.chrootBase,
 		HostInterface:  cfg.hostInterface,
+		SnapshotDir:    cfg.snapshotDir,
 	})
 }

@@ -26,6 +26,7 @@ type Config struct {
 	ChrootBase     string
 	VsockCIDBase   uint32
 	HostInterface  string
+	SnapshotDir    string
 }
 
 func (c *Config) defaults() {
@@ -35,6 +36,9 @@ func (c *Config) defaults() {
 	if c.VsockCIDBase == 0 {
 		c.VsockCIDBase = 100
 	}
+	if c.SnapshotDir == "" {
+		c.SnapshotDir = "/srv/firecracker/snapshots"
+	}
 }
 
 // Provider implements domain.Provider for Firecracker microVMs.
@@ -42,6 +46,7 @@ type Provider struct {
 	config    Config
 	subnets   *network.Allocator
 	uids      *jailer.UIDAllocator
+	portAlloc *network.PortAllocator
 	cidNext   uint32
 	cidMu     sync.Mutex
 	vms       map[string]*VMInfo
@@ -52,6 +57,10 @@ type Provider struct {
 // New creates a Firecracker provider and recovers any orphaned VMs.
 func New(cfg Config) (*Provider, error) {
 	cfg.defaults()
+
+	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
+		return nil, fmt.Errorf("firecracker: create snapshot dir: %w", err)
+	}
 
 	// Validate required fields.
 	for _, check := range []struct{ name, val string }{
@@ -84,6 +93,7 @@ func New(cfg Config) (*Provider, error) {
 		config:    cfg,
 		subnets:   network.NewAllocator(),
 		uids:      jailer.NewUIDAllocator(10000),
+		portAlloc: network.NewPortAllocator(),
 		cidNext:   cfg.VsockCIDBase,
 		vms:       make(map[string]*VMInfo),
 		hostIface: hostIface,
@@ -118,6 +128,34 @@ func (p *Provider) recover() error {
 			p.subnets.InitPast(info.SubnetIdx)
 		}
 		slog.Info("firecracker: recovered VM", "id", info.ID, "pid", info.PID)
+
+		// Port recovery: re-establish or clean up port rules.
+		if len(info.Ports) > 0 {
+			alive := info.PID > 0 && processAlive(info.PID)
+			if alive && info.TapDevice != "" {
+				// Running VM — re-establish iptables rules.
+				guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
+				for hp, tp := range info.Ports {
+					p.portAlloc.MarkUsed(hp)
+					if err := network.AddDNAT(hp, guestIP, tp); err != nil {
+						slog.Warn("firecracker: recovery re-add dnat", "vm", info.ID, "port", hp, "error", err)
+					}
+				}
+			} else {
+				// Dead VM — best-effort remove stale rules, clear ports.
+				if info.TapDevice != "" {
+					guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
+					for hp, tp := range info.Ports {
+						network.RemoveDNAT(hp, guestIP, tp)
+					}
+				}
+				info.Ports = nil
+				infoPath := jailer.VMInfoPath(p.config.ChrootBase, info.ID)
+				if err := info.Write(infoPath); err != nil {
+					slog.Warn("firecracker: recovery write vminfo", "vm", info.ID, "error", err)
+				}
+			}
+		}
 	}
 	return nil
 }

@@ -134,6 +134,69 @@ func TestReadVMInfoMissing(t *testing.T) {
 	}
 }
 
+func TestVMInfoPortsPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vminfo.json")
+
+	info := &VMInfo{
+		ID:    "nvrs-fc-porttest",
+		CID:   100,
+		UID:   10000,
+		Ports: map[int]int{40000: 8080, 40001: 3000},
+	}
+	if err := info.Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadVMInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Ports) != 2 || got.Ports[40000] != 8080 || got.Ports[40001] != 3000 {
+		t.Errorf("Ports mismatch: got %v", got.Ports)
+	}
+}
+
+func TestVMInfoRestoreFromSnapshotPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vminfo.json")
+
+	info := &VMInfo{
+		ID:                  "nvrs-fc-snaprest",
+		CID:                 100,
+		UID:                 10000,
+		RestoreFromSnapshot: true,
+	}
+	if err := info.Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadVMInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.RestoreFromSnapshot {
+		t.Error("RestoreFromSnapshot not persisted")
+	}
+}
+
+func TestClearRuntimeClearsPorts(t *testing.T) {
+	info := &VMInfo{
+		ID:    "nvrs-fc-clear",
+		CID:   100,
+		UID:   10000,
+		PID:   12345,
+		Ports: map[int]int{40000: 8080},
+	}
+	info.ClearRuntime()
+	if info.Ports != nil {
+		t.Errorf("expected Ports cleared, got %v", info.Ports)
+	}
+	if info.PID != 0 {
+		t.Error("expected PID cleared")
+	}
+}
+
 func TestScanVMDirsWithCorruptEntry(t *testing.T) {
 	base := t.TempDir()
 	fcDir := filepath.Join(base, "firecracker")

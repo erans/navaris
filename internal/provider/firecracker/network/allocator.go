@@ -39,6 +39,16 @@ func (a *Allocator) Release(idx int) {
 	delete(a.inUse, idx)
 }
 
+// Reserve marks a specific index as in use without advancing the counter.
+func (a *Allocator) Reserve(idx int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.inUse[idx] = true
+	if idx >= a.next {
+		a.next = idx + 1
+	}
+}
+
 func (a *Allocator) InUse(idx int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

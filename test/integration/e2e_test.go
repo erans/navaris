@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -113,11 +112,6 @@ func TestEndToEndLifecycle(t *testing.T) {
 		t.Fatalf("stop operation failed: state=%s error=%s", stopOp.State, stopOp.ErrorText)
 	}
 	t.Logf("sandbox stopped")
-
-	if os.Getenv("NAVARIS_SKIP_SNAPSHOTS") == "1" {
-		t.Log("end-to-end lifecycle test passed (snapshot section skipped)")
-		return
-	}
 
 	snapOp, err := c.CreateSnapshot(ctx, sandboxID, client.CreateSnapshotRequest{
 		Label:           "e2e-snap",
