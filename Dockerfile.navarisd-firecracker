@@ -58,7 +58,8 @@ RUN ARCH=$(uname -m) && \
     rm -rf /tmp/fc.tgz /tmp/release-*
 
 # Download Firecracker-compatible kernel.
-RUN ARCH=$(uname -m) && \
+RUN mkdir -p /opt/firecracker && \
+    ARCH=$(uname -m) && \
     wget -q "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/vmlinux-6.1-${ARCH}.bin" \
         -O /opt/firecracker/vmlinux
 
