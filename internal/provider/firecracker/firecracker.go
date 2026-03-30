@@ -13,6 +13,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 const backendName = "firecracker"
@@ -103,6 +104,23 @@ func New(cfg Config) (*Provider, error) {
 	if err := p.recover(); err != nil {
 		slog.Warn("firecracker: recovery scan", "error", err)
 	}
+
+	telemetry.RegisterSandboxCountGauge(backendName, func() map[string]int64 {
+		p.vmMu.RLock()
+		defer p.vmMu.RUnlock()
+		counts := map[string]int64{}
+		for _, info := range p.vms {
+			switch {
+			case info.Stopping:
+				counts["stopping"]++
+			case info.PID > 0 && processAlive(info.PID):
+				counts["running"]++
+			default:
+				counts["stopped"]++
+			}
+		}
+		return counts
+	})
 
 	return p, nil
 }

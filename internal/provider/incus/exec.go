@@ -11,11 +11,15 @@ import (
 	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // Exec runs a command inside the container with separated stdout/stderr
 // streams and returns an ExecHandle for reading output and waiting.
-func (p *IncusProvider) Exec(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (domain.ExecHandle, error) {
+func (p *IncusProvider) Exec(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (_ domain.ExecHandle, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "Exec")
+	defer func() { endSpan(retErr) }()
+
 	var stdoutBuf, stderrBuf bytes.Buffer
 	stdoutR, stdoutW := io.Pipe()
 	stderrR, stderrW := io.Pipe()
@@ -81,7 +85,10 @@ func (p *IncusProvider) Exec(ctx context.Context, ref domain.BackendRef, req dom
 // ExecDetached runs a command inside the container with a PTY and returns a
 // DetachedExecHandle allowing the caller to write to stdin and read from
 // stdout.
-func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (domain.DetachedExecHandle, error) {
+func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (_ domain.DetachedExecHandle, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "ExecDetached")
+	defer func() { endSpan(retErr) }()
+
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
 
@@ -137,7 +144,10 @@ func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef,
 
 // AttachSession attaches an interactive shell session to the container and
 // returns a SessionHandle with a bidirectional connection.
-func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef, req domain.SessionRequest) (domain.SessionHandle, error) {
+func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef, req domain.SessionRequest) (_ domain.SessionHandle, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "AttachSession")
+	defer func() { endSpan(retErr) }()
+
 	shell := req.Shell
 	if shell == "" {
 		shell = "/bin/sh"

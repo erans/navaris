@@ -9,11 +9,15 @@ import (
 
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // PublishSnapshotAsImage publishes a container snapshot as a reusable Incus
 // image. The snapshotRef.Ref is expected to be "container/snapshot".
-func (p *IncusProvider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (domain.BackendRef, error) {
+func (p *IncusProvider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "PublishSnapshotAsImage")
+	defer func() { endSpan(retErr) }()
+
 	parts := strings.SplitN(snapshotRef.Ref, "/", 2)
 	if len(parts) != 2 {
 		return domain.BackendRef{}, fmt.Errorf("invalid snapshot ref %q: expected container/snapshot", snapshotRef.Ref)
@@ -66,7 +70,10 @@ func (p *IncusProvider) PublishSnapshotAsImage(ctx context.Context, snapshotRef 
 
 // DeleteImage removes an image from the Incus image store. The imageRef.Ref
 // is the image fingerprint.
-func (p *IncusProvider) DeleteImage(ctx context.Context, imageRef domain.BackendRef) error {
+func (p *IncusProvider) DeleteImage(ctx context.Context, imageRef domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DeleteImage")
+	defer func() { endSpan(retErr) }()
+
 	op, err := p.client.DeleteImage(imageRef.Ref)
 	if err != nil {
 		return fmt.Errorf("incus delete image %s: %w", imageRef.Ref, err)
@@ -75,7 +82,10 @@ func (p *IncusProvider) DeleteImage(ctx context.Context, imageRef domain.Backend
 }
 
 // GetImageInfo retrieves metadata for an image by its fingerprint.
-func (p *IncusProvider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef) (domain.ImageInfo, error) {
+func (p *IncusProvider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef) (_ domain.ImageInfo, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "GetImageInfo")
+	defer func() { endSpan(retErr) }()
+
 	img, _, err := p.client.GetImage(imageRef.Ref)
 	if err != nil {
 		return domain.ImageInfo{}, fmt.Errorf("incus get image %s: %w", imageRef.Ref, err)
