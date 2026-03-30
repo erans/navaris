@@ -109,7 +109,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off " + p.subnets.KernelBootArg(subnetIdx)
 
 	fcCfg := fcsdk.Config{
-		SocketPath:      filepath.Join(vmDir, "firecracker.sock"),
+		SocketPath:      "firecracker.sock",
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      bootArgs,
 		Drives: []models.Drive{
@@ -216,7 +216,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 
 	// Build config for snapshot restore — omit KernelImagePath, KernelArgs, MachineCfg.
 	fcCfg := fcsdk.Config{
-		SocketPath: filepath.Join(vmDir, "firecracker.sock"),
+		SocketPath: "firecracker.sock",
 		Drives: []models.Drive{
 			{
 				DriveID:      fcsdk.String("rootfs"),
@@ -323,7 +323,7 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 		} else {
 			// Graceful: send CtrlAltDel via Firecracker API socket.
 			vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
-			sockPath := filepath.Join(vmDir, "root", "run", "firecracker.socket")
+			sockPath := filepath.Join(vmDir, "root", "firecracker.sock")
 			machine, merr := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
 			if merr == nil {
 				machine.Shutdown(ctx)
