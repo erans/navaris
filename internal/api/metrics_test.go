@@ -110,21 +110,27 @@ func TestMiddleware_ExcludesEventsEndpoint(t *testing.T) {
 	}
 	wrapped := newTracingMiddleware()(mw(handler))
 
-	req := httptest.NewRequest("GET", "/v1/events", nil)
-	rec := httptest.NewRecorder()
-	wrapped.ServeHTTP(rec, req)
+	for _, path := range []string{"/v1/events", "/v1/sandboxes/abc-123/exec"} {
+		spanExp.Reset()
 
-	spans := spanExp.GetSpans()
-	if len(spans) != 0 {
-		t.Errorf("got %d spans for excluded endpoint, want 0", len(spans))
-	}
+		req := httptest.NewRequest("POST", path, nil)
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, req)
 
-	var rm metricdata.ResourceMetrics
-	reader.Collect(context.Background(), &rm)
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name == "http.server.request.duration" {
-				t.Error("http.server.request.duration recorded for excluded endpoint")
+		spans := spanExp.GetSpans()
+		if len(spans) != 0 {
+			t.Errorf("%s: got %d spans for excluded endpoint, want 0", path, len(spans))
+		}
+
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatal(err)
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name == "http.server.request.duration" {
+					t.Errorf("%s: http.server.request.duration recorded for excluded endpoint", path)
+				}
 			}
 		}
 	}

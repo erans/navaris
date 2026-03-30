@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -13,28 +12,10 @@ import (
 	otelTrace "go.opentelemetry.io/otel/trace"
 )
 
-var providerTracer = otel.Tracer("navaris.provider")
-
-var (
-	providerDuration     metric.Float64Histogram
-	providerDurationOnce sync.Once
-)
-
-func getProviderDuration() metric.Float64Histogram {
-	providerDurationOnce.Do(func() {
-		providerDuration, _ = otel.Meter("navaris.provider").Float64Histogram(
-			"provider.operation.duration",
-			metric.WithUnit("s"),
-			metric.WithDescription("Provider operation duration"),
-		)
-	})
-	return providerDuration
-}
-
 // ProviderSpan starts a span for a provider operation and returns an end function.
 // Call end(err) when the operation completes. If err is non-nil, the span records the error.
 func ProviderSpan(ctx context.Context, backend, operation string) (context.Context, func(error)) {
-	ctx, span := providerTracer.Start(ctx, fmt.Sprintf("provider.%s", operation),
+	ctx, span := otel.Tracer("navaris.provider").Start(ctx, fmt.Sprintf("provider.%s", operation),
 		otelTrace.WithAttributes(
 			attribute.String("provider.backend", backend),
 		),
@@ -55,7 +36,12 @@ func ProviderSpan(ctx context.Context, backend, operation string) (context.Conte
 
 // RecordProviderDuration records a provider operation duration metric.
 func RecordProviderDuration(ctx context.Context, backend, operation string, d time.Duration) {
-	getProviderDuration().Record(ctx, d.Seconds(),
+	h, _ := otel.Meter("navaris.provider").Float64Histogram(
+		"provider.operation.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Provider operation duration"),
+	)
+	h.Record(ctx, d.Seconds(),
 		metric.WithAttributes(
 			attribute.String("backend", backend),
 			attribute.String("operation", operation),
