@@ -9,12 +9,16 @@ import (
 
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // CreateSnapshot creates a snapshot of the given container. When mode is
 // ConsistencyLive, a stateful (memory) snapshot is taken so the container can
 // be restored to the exact running state.
-func (p *IncusProvider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, label string, mode domain.ConsistencyMode) (domain.BackendRef, error) {
+func (p *IncusProvider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, label string, mode domain.ConsistencyMode) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	snapReq := incusapi.InstanceSnapshotsPost{
 		Name:     label,
 		Stateful: mode == domain.ConsistencyLive,
@@ -35,7 +39,10 @@ func (p *IncusProvider) CreateSnapshot(ctx context.Context, ref domain.BackendRe
 
 // RestoreSnapshot restores a container to a previous snapshot state. The
 // snapshotRef.Ref is expected to be "container/snapshot".
-func (p *IncusProvider) RestoreSnapshot(ctx context.Context, sandboxRef domain.BackendRef, snapshotRef domain.BackendRef) error {
+func (p *IncusProvider) RestoreSnapshot(ctx context.Context, sandboxRef domain.BackendRef, snapshotRef domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "RestoreSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	parts := strings.SplitN(snapshotRef.Ref, "/", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid snapshot ref %q: expected container/snapshot", snapshotRef.Ref)
@@ -58,7 +65,10 @@ func (p *IncusProvider) RestoreSnapshot(ctx context.Context, sandboxRef domain.B
 
 // DeleteSnapshot removes a snapshot from its parent container. The
 // snapshotRef.Ref is expected to be "container/snapshot".
-func (p *IncusProvider) DeleteSnapshot(ctx context.Context, snapshotRef domain.BackendRef) error {
+func (p *IncusProvider) DeleteSnapshot(ctx context.Context, snapshotRef domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DeleteSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	parts := strings.SplitN(snapshotRef.Ref, "/", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid snapshot ref %q: expected container/snapshot", snapshotRef.Ref)

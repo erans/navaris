@@ -9,9 +9,13 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
-func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (domain.PublishedEndpoint, error) {
+func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (_ domain.PublishedEndpoint, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "PublishPort")
+	defer func() { endSpan(retErr) }()
+
 	vmID := ref.Ref
 
 	// Allocate host port.
@@ -59,7 +63,10 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 	}, nil
 }
 
-func (p *Provider) UnpublishPort(ctx context.Context, ref domain.BackendRef, publishedPort int) error {
+func (p *Provider) UnpublishPort(ctx context.Context, ref domain.BackendRef, publishedPort int) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "UnpublishPort")
+	defer func() { endSpan(retErr) }()
+
 	vmID := ref.Ref
 
 	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)

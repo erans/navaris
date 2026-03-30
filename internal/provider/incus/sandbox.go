@@ -11,6 +11,7 @@ import (
 	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // containerName generates a deterministic container name from a UUID.
@@ -20,7 +21,10 @@ func containerName() string {
 
 // CreateSandbox creates a new Incus container instance from the given image
 // reference, applies resource limits, and returns a BackendRef.
-func (p *IncusProvider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+func (p *IncusProvider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSandbox")
+	defer func() { endSpan(retErr) }()
+
 	name := containerName()
 
 	instanceCfg := map[string]string{}
@@ -55,7 +59,10 @@ func (p *IncusProvider) CreateSandbox(ctx context.Context, req domain.CreateSand
 }
 
 // StartSandbox starts a stopped or newly created container.
-func (p *IncusProvider) StartSandbox(ctx context.Context, ref domain.BackendRef) error {
+func (p *IncusProvider) StartSandbox(ctx context.Context, ref domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "StartSandbox")
+	defer func() { endSpan(retErr) }()
+
 	reqState := incusapi.InstanceStatePut{
 		Action:  "start",
 		Timeout: -1,
@@ -70,7 +77,10 @@ func (p *IncusProvider) StartSandbox(ctx context.Context, ref domain.BackendRef)
 
 // StopSandbox stops a running container. If force is true the container is
 // killed immediately rather than given a graceful shutdown period.
-func (p *IncusProvider) StopSandbox(ctx context.Context, ref domain.BackendRef, force bool) error {
+func (p *IncusProvider) StopSandbox(ctx context.Context, ref domain.BackendRef, force bool) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "StopSandbox")
+	defer func() { endSpan(retErr) }()
+
 	reqState := incusapi.InstanceStatePut{
 		Action:  "stop",
 		Timeout: -1,
@@ -85,7 +95,10 @@ func (p *IncusProvider) StopSandbox(ctx context.Context, ref domain.BackendRef, 
 }
 
 // DestroySandbox deletes the container and all its snapshots.
-func (p *IncusProvider) DestroySandbox(ctx context.Context, ref domain.BackendRef) error {
+func (p *IncusProvider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DestroySandbox")
+	defer func() { endSpan(retErr) }()
+
 	op, err := p.client.DeleteInstance(ref.Ref)
 	if err != nil {
 		return fmt.Errorf("incus delete %s: %w", ref.Ref, err)
@@ -95,7 +108,10 @@ func (p *IncusProvider) DestroySandbox(ctx context.Context, ref domain.BackendRe
 
 // GetSandboxState queries Incus for the current container status and maps it
 // to a domain.SandboxState.
-func (p *IncusProvider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (domain.SandboxState, error) {
+func (p *IncusProvider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (_ domain.SandboxState, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "GetSandboxState")
+	defer func() { endSpan(retErr) }()
+
 	state, _, err := p.client.GetInstanceState(ref.Ref)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -129,7 +145,10 @@ func mapIncusStatus(status string) domain.SandboxState {
 
 // CreateSandboxFromSnapshot creates a new container by copying the specified
 // snapshot. The snapshotRef.Ref is expected to be "container/snapshot".
-func (p *IncusProvider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+func (p *IncusProvider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSandboxFromSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	name := containerName()
 
 	// Parse "container/snapshot" from the snapshotRef.

@@ -8,6 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/worker"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type SnapshotService struct {
@@ -38,18 +41,31 @@ func NewSnapshotService(
 }
 
 func (s *SnapshotService) Create(ctx context.Context, sandboxID, label string, mode domain.ConsistencyMode) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSnapshot")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("sandbox.id", sandboxID))
+
 	sbx, err := s.sandboxes.Get(ctx, sandboxID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if sbx.State == domain.SandboxDestroyed {
-		return nil, fmt.Errorf("cannot snapshot destroyed sandbox: %w", domain.ErrInvalidState)
+		err := fmt.Errorf("cannot snapshot destroyed sandbox: %w", domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 	if mode == "" {
 		mode = domain.ConsistencyStopped
 	}
 	if mode == domain.ConsistencyStopped && sbx.State != domain.SandboxStopped {
-		return nil, fmt.Errorf("sandbox must be stopped for stopped-consistency snapshot (state: %s): %w", sbx.State, domain.ErrInvalidState)
+		err := fmt.Errorf("sandbox must be stopped for stopped-consistency snapshot (state: %s): %w", sbx.State, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -64,8 +80,12 @@ func (s *SnapshotService) Create(ctx context.Context, sandboxID, label string, m
 		UpdatedAt:       now,
 	}
 	if err := s.snapshots.Create(ctx, snap); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+
+	span.SetAttributes(attribute.String("snapshot.id", snap.SnapshotID))
 
 	op := &domain.Operation{
 		OperationID:  uuid.NewString(),
@@ -78,6 +98,8 @@ func (s *SnapshotService) Create(ctx context.Context, sandboxID, label string, m
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -85,14 +107,42 @@ func (s *SnapshotService) Create(ctx context.Context, sandboxID, label string, m
 }
 
 func (s *SnapshotService) Get(ctx context.Context, id string) (*domain.Snapshot, error) {
-	return s.snapshots.Get(ctx, id)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.GetSnapshot")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("snapshot.id", id))
+	snap, err := s.snapshots.Get(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return snap, nil
 }
 
 func (s *SnapshotService) ListBySandbox(ctx context.Context, sandboxID string) ([]*domain.Snapshot, error) {
-	return s.snapshots.ListBySandbox(ctx, sandboxID)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.ListSnapshotsBySandbox")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("sandbox.id", sandboxID))
+	list, err := s.snapshots.ListBySandbox(ctx, sandboxID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return list, nil
 }
 
 func (s *SnapshotService) Restore(ctx context.Context, sandboxID, snapshotID string) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.RestoreSnapshot")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("sandbox.id", sandboxID),
+		attribute.String("snapshot.id", snapshotID),
+	)
+
 	now := time.Now().UTC()
 	op := &domain.Operation{
 		OperationID:  uuid.NewString(),
@@ -105,6 +155,8 @@ func (s *SnapshotService) Restore(ctx context.Context, sandboxID, snapshotID str
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -112,8 +164,15 @@ func (s *SnapshotService) Restore(ctx context.Context, sandboxID, snapshotID str
 }
 
 func (s *SnapshotService) Delete(ctx context.Context, id string) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.DeleteSnapshot")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("snapshot.id", id))
+
 	snap, err := s.snapshots.Get(ctx, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -128,6 +187,8 @@ func (s *SnapshotService) Delete(ctx context.Context, id string) (*domain.Operat
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)

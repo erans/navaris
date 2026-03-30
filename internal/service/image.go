@@ -8,6 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/worker"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type ImageService struct {
@@ -37,12 +40,22 @@ func NewImageService(
 }
 
 func (s *ImageService) PromoteSnapshot(ctx context.Context, snapshotID, name, version string) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.PromoteSnapshotToImage")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("snapshot.id", snapshotID))
+
 	snap, err := s.snapshots.Get(ctx, snapshotID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if snap.State != domain.SnapshotReady {
-		return nil, fmt.Errorf("cannot promote snapshot in state %s: %w", snap.State, domain.ErrInvalidState)
+		err := fmt.Errorf("cannot promote snapshot in state %s: %w", snap.State, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -58,6 +71,8 @@ func (s *ImageService) PromoteSnapshot(ctx context.Context, snapshotID, name, ve
 		CreatedAt:        now,
 	}
 	if err := s.images.Create(ctx, img); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -71,6 +86,8 @@ func (s *ImageService) PromoteSnapshot(ctx context.Context, snapshotID, name, ve
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -78,6 +95,11 @@ func (s *ImageService) PromoteSnapshot(ctx context.Context, snapshotID, name, ve
 }
 
 func (s *ImageService) Register(ctx context.Context, name, version, backend, backendRef, arch string) (*domain.BaseImage, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.RegisterImage")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("image.ref", backendRef))
+
 	now := time.Now().UTC()
 	img := &domain.BaseImage{
 		ImageID:      uuid.NewString(),
@@ -91,22 +113,47 @@ func (s *ImageService) Register(ctx context.Context, name, version, backend, bac
 		CreatedAt:    now,
 	}
 	if err := s.images.Create(ctx, img); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return img, nil
 }
 
 func (s *ImageService) Get(ctx context.Context, id string) (*domain.BaseImage, error) {
-	return s.images.Get(ctx, id)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.GetImage")
+	defer span.End()
+
+	img, err := s.images.Get(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return img, nil
 }
 
 func (s *ImageService) List(ctx context.Context, filter domain.ImageFilter) ([]*domain.BaseImage, error) {
-	return s.images.List(ctx, filter)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.ListImages")
+	defer span.End()
+
+	list, err := s.images.List(ctx, filter)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return list, nil
 }
 
 func (s *ImageService) Delete(ctx context.Context, id string) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.DeleteImage")
+	defer span.End()
+
 	img, err := s.images.Get(ctx, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -119,6 +166,8 @@ func (s *ImageService) Delete(ctx context.Context, id string) (*domain.Operation
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)

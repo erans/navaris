@@ -7,11 +7,15 @@ import (
 	"fmt"
 
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // PublishPort adds an Incus proxy device to the container that forwards a host
 // port to the specified container port.
-func (p *IncusProvider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (domain.PublishedEndpoint, error) {
+func (p *IncusProvider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (_ domain.PublishedEndpoint, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "PublishPort")
+	defer func() { endSpan(retErr) }()
+
 	hostPort, err := p.allocatePort()
 	if err != nil {
 		return domain.PublishedEndpoint{}, fmt.Errorf("allocate host port: %w", err)
@@ -50,7 +54,10 @@ func (p *IncusProvider) PublishPort(ctx context.Context, ref domain.BackendRef, 
 
 // UnpublishPort removes the proxy device for the given published port from
 // the container.
-func (p *IncusProvider) UnpublishPort(ctx context.Context, ref domain.BackendRef, publishedPort int) error {
+func (p *IncusProvider) UnpublishPort(ctx context.Context, ref domain.BackendRef, publishedPort int) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "UnpublishPort")
+	defer func() { endSpan(retErr) }()
+
 	inst, etag, err := p.client.GetInstance(ref.Ref)
 	if err != nil {
 		return fmt.Errorf("incus get instance %s: %w", ref.Ref, err)

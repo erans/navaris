@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // validateRef rejects refs containing path separators or traversal.
@@ -41,7 +42,10 @@ func (p *Provider) imageMetaPath(ref string) string {
 	return filepath.Join(p.config.ImageDir, ref+".json")
 }
 
-func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (domain.BackendRef, error) {
+func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "PublishSnapshotAsImage")
+	defer func() { endSpan(retErr) }()
+
 	snapID := snapshotRef.Ref
 	if err := validateRef(snapID); err != nil {
 		return domain.BackendRef{}, fmt.Errorf("firecracker publish image: %w", err)
@@ -86,7 +90,10 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 	return domain.BackendRef{Backend: backendName, Ref: imgRef}, nil
 }
 
-func (p *Provider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef) (domain.ImageInfo, error) {
+func (p *Provider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef) (_ domain.ImageInfo, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "GetImageInfo")
+	defer func() { endSpan(retErr) }()
+
 	if err := validateRef(imageRef.Ref); err != nil {
 		return domain.ImageInfo{}, fmt.Errorf("firecracker get image info: %w", err)
 	}
@@ -104,7 +111,10 @@ func (p *Provider) GetImageInfo(ctx context.Context, imageRef domain.BackendRef)
 	}, nil
 }
 
-func (p *Provider) DeleteImage(ctx context.Context, imageRef domain.BackendRef) error {
+func (p *Provider) DeleteImage(ctx context.Context, imageRef domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DeleteImage")
+	defer func() { endSpan(retErr) }()
+
 	ref := imageRef.Ref
 	if err := validateRef(ref); err != nil {
 		return fmt.Errorf("firecracker delete image: %w", err)

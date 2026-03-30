@@ -20,6 +20,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // validImageRef matches safe image reference names (alphanumeric, dots, dashes, underscores).
@@ -29,7 +30,10 @@ func vmName() string {
 	return "nvrs-fc-" + uuid.NewString()[:8]
 }
 
-func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSandbox")
+	defer func() { endSpan(retErr) }()
+
 	// Validate ImageRef to prevent path traversal.
 	if !validImageRef.MatchString(req.ImageRef) {
 		return domain.BackendRef{}, fmt.Errorf("firecracker: invalid image ref %q", req.ImageRef)
@@ -65,7 +69,10 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	return domain.BackendRef{Backend: backendName, Ref: vmID}, nil
 }
 
-func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) error {
+func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "StartSandbox")
+	defer func() { endSpan(retErr) }()
+
 	vmID := ref.Ref
 
 	// Read vminfo.
@@ -294,7 +301,10 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	return nil
 }
 
-func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force bool) error {
+func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force bool) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "StopSandbox")
+	defer func() { endSpan(retErr) }()
+
 	vmID := ref.Ref
 	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
 	info, err := ReadVMInfo(infoPath)
@@ -362,7 +372,10 @@ stopped:
 	return nil
 }
 
-func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) error {
+func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DestroySandbox")
+	defer func() { endSpan(retErr) }()
+
 	// Stop first if running. Ignore "not found" errors (already stopped/cleaned).
 	if err := p.StopSandbox(ctx, ref, true); err != nil && !os.IsNotExist(errors.Unwrap(err)) {
 		return fmt.Errorf("firecracker destroy stop %s: %w", ref.Ref, err)
@@ -382,7 +395,10 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) er
 	return nil
 }
 
-func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (domain.SandboxState, error) {
+func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (_ domain.SandboxState, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "GetSandboxState")
+	defer func() { endSpan(retErr) }()
+
 	vmID := ref.Ref
 	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
 
@@ -422,7 +438,10 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 	return domain.SandboxRunning, nil
 }
 
-func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef domain.BackendRef, req domain.CreateSandboxRequest) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSandboxFromSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	snapID := snapshotRef.Ref
 	if err := validateRef(snapID); err != nil {
 		return domain.BackendRef{}, fmt.Errorf("firecracker create from snapshot: %w", err)

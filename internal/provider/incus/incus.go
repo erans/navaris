@@ -9,7 +9,9 @@ import (
 	"time"
 
 	incusclient "github.com/lxc/incus/v6/client"
+	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 const backendName = "incus"
@@ -64,11 +66,32 @@ func New(cfg Config) (*IncusProvider, error) {
 		return nil, fmt.Errorf("incus connect %s: %w", cfg.Socket, err)
 	}
 
-	return &IncusProvider{
+	p := &IncusProvider{
 		client:   client,
 		config:   cfg,
 		nextPort: cfg.PortRangeMin,
-	}, nil
+	}
+
+	telemetry.RegisterSandboxCountGauge(backendName, func() map[string]int64 {
+		instances, err := p.client.GetInstances(incusapi.InstanceTypeContainer)
+		if err != nil {
+			return nil
+		}
+		counts := map[string]int64{}
+		for _, inst := range instances {
+			switch inst.Status {
+			case "Running":
+				counts["running"]++
+			case "Stopping", "Aborting", "Freezing":
+				counts["stopping"]++
+			default:
+				counts["stopped"]++
+			}
+		}
+		return counts
+	})
+
+	return p, nil
 }
 
 // Health reports whether the Incus daemon is reachable and responsive.

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 type snapInfo struct {
@@ -54,7 +55,10 @@ func writeSnapInfo(path string, si *snapInfo) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, label string, mode domain.ConsistencyMode) (domain.BackendRef, error) {
+func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, label string, mode domain.ConsistencyMode) (_ domain.BackendRef, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	vmID := ref.Ref
 	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
 
@@ -183,7 +187,10 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	return nil
 }
 
-func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.BackendRef, snapshotRef domain.BackendRef) error {
+func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.BackendRef, snapshotRef domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "RestoreSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	vmID := sandboxRef.Ref
 	snapID := snapshotRef.Ref
 
@@ -226,7 +233,10 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 	return nil
 }
 
-func (p *Provider) DeleteSnapshot(ctx context.Context, snapshotRef domain.BackendRef) error {
+func (p *Provider) DeleteSnapshot(ctx context.Context, snapshotRef domain.BackendRef) (retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DeleteSnapshot")
+	defer func() { endSpan(retErr) }()
+
 	snapDir := p.snapshotDir(snapshotRef.Ref)
 	if err := os.RemoveAll(snapDir); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("firecracker delete snapshot %s: %w", snapshotRef.Ref, err)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/service"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 type ServerConfig struct {
@@ -99,6 +100,18 @@ func (s *Server) Handler() http.Handler {
 	handler = loggingMiddleware(s.log)(handler)
 	handler = authMiddleware(s.cfg.AuthToken)(handler)
 	handler = requestIDMiddleware(handler)
+
+	// Telemetry middleware (outermost when enabled):
+	// tracing -> metrics -> requestID -> auth -> logging -> mux
+	if telemetry.Enabled() {
+		mw, err := newMetricsMiddleware()
+		if err != nil {
+			s.log.Error("failed to create metrics middleware", "error", err)
+		} else {
+			handler = mw(handler)
+		}
+		handler = newTracingMiddleware()(handler)
+	}
 
 	return handler
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
+	"github.com/navaris/navaris/internal/telemetry"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,7 +44,10 @@ func (p *Provider) getVMInfo(vmID string) (*VMInfo, error) {
 	return ReadVMInfo(infoPath)
 }
 
-func (p *Provider) Exec(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (domain.ExecHandle, error) {
+func (p *Provider) Exec(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (_ domain.ExecHandle, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "Exec")
+	defer func() { endSpan(retErr) }()
+
 	info, err := p.getVMInfo(ref.Ref)
 	if err != nil {
 		return domain.ExecHandle{}, fmt.Errorf("firecracker exec %s: %w", ref.Ref, err)
@@ -78,7 +82,10 @@ func (p *Provider) Exec(ctx context.Context, ref domain.BackendRef, req domain.E
 	}, nil
 }
 
-func (p *Provider) ExecDetached(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (domain.DetachedExecHandle, error) {
+func (p *Provider) ExecDetached(ctx context.Context, ref domain.BackendRef, req domain.ExecRequest) (_ domain.DetachedExecHandle, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "ExecDetached")
+	defer func() { endSpan(retErr) }()
+
 	info, err := p.getVMInfo(ref.Ref)
 	if err != nil {
 		return domain.DetachedExecHandle{}, fmt.Errorf("firecracker exec-detached %s: %w", ref.Ref, err)
@@ -136,7 +143,10 @@ func (p *Provider) ExecDetached(ctx context.Context, ref domain.BackendRef, req 
 	}, nil
 }
 
-func (p *Provider) AttachSession(ctx context.Context, ref domain.BackendRef, req domain.SessionRequest) (domain.SessionHandle, error) {
+func (p *Provider) AttachSession(ctx context.Context, ref domain.BackendRef, req domain.SessionRequest) (_ domain.SessionHandle, retErr error) {
+	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "AttachSession")
+	defer func() { endSpan(retErr) }()
+
 	info, err := p.getVMInfo(ref.Ref)
 	if err != nil {
 		return domain.SessionHandle{}, fmt.Errorf("firecracker session %s: %w", ref.Ref, err)
