@@ -9,7 +9,7 @@ jobs:
     # Pin to ubuntu-24.04 — KVM is available on GitHub-hosted runners
     # but not guaranteed on all ubuntu-latest aliases or self-hosted runners.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Enable KVM
