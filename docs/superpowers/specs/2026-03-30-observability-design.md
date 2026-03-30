@@ -48,7 +48,7 @@ When `cfg.Endpoint` is empty, sets global OTel providers to no-op and returns a 
 6. Register Go runtime instrumentation (must be after global providers are set): `if err := otelruntime.Start(); err != nil { return nil, fmt.Errorf("runtime instrumentation: %w", err) }`. Import as `otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"` to avoid shadowing stdlib `runtime`.
 7. Return a shutdown function that flushes and stops both providers.
 
-`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** all other components have stopped — specifically, it must not be placed as a bare `defer` at the top of `run()`, as that would execute it before `disp.Stop()` returns. The existing shutdown sequence in `main.go` is `httpSrv.Shutdown()` → `gc.Stop()` → `disp.Stop()`; append `telemetry.Shutdown()` after `disp.Stop()`. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down.
+`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** all other components have stopped — specifically, it must not be placed as a bare `defer` at the top of `run()`, as that would execute it before `disp.Stop()` returns. The existing shutdown sequence in `main.go` is `httpSrv.Shutdown()` → `gc.Stop()` → `disp.Stop()`; append `telemetry.Shutdown(ctx)` after `disp.Stop()`, passing a dedicated `context.WithTimeout(context.Background(), 10*time.Second)` to avoid sharing the HTTP shutdown timeout budget. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down.
 
 ### Dependencies (new direct)
 
@@ -86,7 +86,7 @@ The middleware wraps the handler, recording start time and incrementing the acti
 
 ### Endpoint Exclusions
 
-The `/v1/events` WebSocket endpoint and `/v1/sandboxes/{id}/exec` long-running synchronous endpoint are excluded from both metrics and tracing middleware. These long-lived connections would create misleading latency data and unbounded spans. If observability for these endpoints is needed later, dedicated instrumentation (e.g., connection count gauge, message throughput counter) should be added separately.
+The `/v1/events` WebSocket endpoint and `/v1/sandboxes/{id}/exec` long-running synchronous endpoint are excluded from both metrics and tracing middleware. Exclusions are checked via `r.URL.Path` prefix matching before the handler runs (since the middleware wraps the mux, `r.Pattern` is not yet populated at that point). After the handler returns, `r.Pattern` is available for the `route` label. If observability for these endpoints is needed later, dedicated instrumentation (e.g., connection count gauge, message throughput counter) should be added separately.
 
 The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the actual URL path, to prevent high-cardinality label explosion. Extract this from `r.Pattern` (the `Pattern` field on `*http.Request`, available since Go 1.22, populated by `http.ServeMux` with the matched pattern including method prefix — e.g., `"GET /v1/sandboxes/{id}"`; strip the method prefix to get the route).
 
@@ -108,7 +108,7 @@ Same file: `internal/api/metrics.go`
 
 Creates a span per request:
 - Span name: `HTTP {METHOD} {route}` (e.g., `HTTP POST /v1/sandboxes`)
-- Attributes: `http.request.method`, `http.route`, `http.response.status_code`, `url.path`
+- Attributes: `http.request.method`, `http.route` (method prefix stripped, same value as the metrics `route` label), `http.response.status_code`, `url.path`
 - On error (5xx): set span status to `Error`
 - Inject span context into `r.Context()` so downstream code inherits it
 
@@ -177,7 +177,11 @@ Each provider method creates a span using `otel.Tracer("navaris.provider")`: `pr
 
 ### sandbox.count Gauge
 
-Updated via callbacks: the gauge reads from the provider's in-memory VM map (Firecracker) or queries the Incus daemon via the client API (Incus). Registered once during provider init via `metric.Int64ObservableGauge` with a callback function. The `state` label values are: `running` (PID > 0 and process alive), `stopped` (PID == 0 or process dead, not stopping), `stopping` (Stopping flag set).
+Updated via callbacks: the gauge reads from the provider's in-memory VM map (Firecracker) or queries the Incus daemon via the client API (Incus). Registered once during provider init via `metric.Int64ObservableGauge` with a callback function.
+
+**State label values by backend:**
+- **Firecracker**: `running` (PID > 0 and process alive), `stopped` (PID == 0 or process dead, not stopping), `stopping` (Stopping flag set). Derived from `VMInfo` fields.
+- **Incus**: Map Incus instance status strings to the same three values: `Running` → `running`, `Stopped`/`Frozen` → `stopped`, `Stopping`/`Aborting`/`Freezing` → `stopping`. Other transient states (e.g., `Starting`) map to `stopped`.
 
 ---
 
