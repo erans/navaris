@@ -7,6 +7,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type SessionService struct {
@@ -29,12 +32,22 @@ func NewSessionService(
 }
 
 func (s *SessionService) Create(ctx context.Context, sandboxID string, backing domain.SessionBacking, shell string) (*domain.Session, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSession")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("sandbox.id", sandboxID))
+
 	sbx, err := s.sandboxes.Get(ctx, sandboxID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if sbx.State != domain.SandboxRunning {
-		return nil, fmt.Errorf("sandbox must be running to create session (state: %s): %w", sbx.State, domain.ErrInvalidState)
+		err := fmt.Errorf("sandbox must be running to create session (state: %s): %w", sbx.State, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	if shell == "" {
@@ -55,25 +68,56 @@ func (s *SessionService) Create(ctx context.Context, sandboxID string, backing d
 		UpdatedAt: now,
 	}
 	if err := s.sessions.Create(ctx, sess); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	return sess, nil
 }
 
 func (s *SessionService) Get(ctx context.Context, id string) (*domain.Session, error) {
-	return s.sessions.Get(ctx, id)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.GetSession")
+	defer span.End()
+
+	sess, err := s.sessions.Get(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return sess, nil
 }
 
 func (s *SessionService) ListBySandbox(ctx context.Context, sandboxID string) ([]*domain.Session, error) {
-	return s.sessions.ListBySandbox(ctx, sandboxID)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.ListSessionsBySandbox")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("sandbox.id", sandboxID))
+	list, err := s.sessions.ListBySandbox(ctx, sandboxID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return list, nil
 }
 
 func (s *SessionService) Destroy(ctx context.Context, id string) error {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.DestroySession")
+	defer span.End()
+
 	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	sess.State = domain.SessionDestroyed
 	sess.UpdatedAt = time.Now().UTC()
-	return s.sessions.Update(ctx, sess)
+	if err := s.sessions.Update(ctx, sess); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
 }

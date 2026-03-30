@@ -8,6 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/worker"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type CreateSandboxOpts struct {
@@ -64,6 +67,14 @@ func (s *SandboxService) registerHandlers() {
 }
 
 func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSandbox")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("provider.backend", s.defaultBackend),
+		attribute.String("image.ref", imageID),
+	)
+
 	now := time.Now().UTC()
 	networkMode := opts.NetworkMode
 	if networkMode == "" {
@@ -86,8 +97,12 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		Metadata:      opts.Metadata,
 	}
 	if err := s.sandboxes.Create(ctx, sbx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+
+	span.SetAttributes(attribute.String("sandbox.id", sbx.SandboxID))
 
 	op := &domain.Operation{
 		OperationID:  uuid.NewString(),
@@ -100,6 +115,8 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		Metadata:     map[string]any{"image_id": imageID},
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		s.sandboxes.Delete(ctx, sbx.SandboxID)
 		return nil, err
 	}
@@ -108,6 +125,14 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 }
 
 func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name, snapshotID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSandboxFromSnapshot")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("provider.backend", s.defaultBackend),
+		attribute.String("snapshot.id", snapshotID),
+	)
+
 	now := time.Now().UTC()
 	networkMode := opts.NetworkMode
 	if networkMode == "" {
@@ -130,8 +155,12 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		Metadata:         opts.Metadata,
 	}
 	if err := s.sandboxes.Create(ctx, sbx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+
+	span.SetAttributes(attribute.String("sandbox.id", sbx.SandboxID))
 
 	op := &domain.Operation{
 		OperationID:  uuid.NewString(),
@@ -144,6 +173,8 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		Metadata:     map[string]any{"snapshot_id": snapshotID},
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		s.sandboxes.Delete(ctx, sbx.SandboxID)
 		return nil, err
 	}
@@ -152,27 +183,65 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 }
 
 func (s *SandboxService) Get(ctx context.Context, id string) (*domain.Sandbox, error) {
-	return s.sandboxes.Get(ctx, id)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.GetSandbox")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("provider.backend", s.defaultBackend),
+		attribute.String("sandbox.id", id),
+	)
+	sbx, err := s.sandboxes.Get(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return sbx, nil
 }
 
 func (s *SandboxService) List(ctx context.Context, filter domain.SandboxFilter) ([]*domain.Sandbox, error) {
-	return s.sandboxes.List(ctx, filter)
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.ListSandboxes")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("provider.backend", s.defaultBackend))
+	list, err := s.sandboxes.List(ctx, filter)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	return list, nil
 }
 
 func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.StartSandbox")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("provider.backend", s.defaultBackend),
+		attribute.String("sandbox.id", id),
+	)
+
 	sbx, err := s.sandboxes.Get(ctx, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	prevState := sbx.State
 	if !prevState.CanTransitionTo(domain.SandboxStarting) {
-		return nil, fmt.Errorf("cannot start sandbox in state %s: %w", prevState, domain.ErrInvalidState)
+		err := fmt.Errorf("cannot start sandbox in state %s: %w", prevState, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	// Transition to starting before enqueue to prevent duplicate operations
 	sbx.State = domain.SandboxStarting
 	sbx.UpdatedAt = time.Now().UTC()
 	if err := s.sandboxes.Update(ctx, sbx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -187,6 +256,8 @@ func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operatio
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		// Rollback sandbox state
 		sbx.State = prevState
 		sbx.UpdatedAt = time.Now().UTC()
@@ -198,19 +269,34 @@ func (s *SandboxService) Start(ctx context.Context, id string) (*domain.Operatio
 }
 
 func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.StopSandbox")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("provider.backend", s.defaultBackend),
+		attribute.String("sandbox.id", id),
+	)
+
 	sbx, err := s.sandboxes.Get(ctx, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	prevState := sbx.State
 	if !prevState.CanTransitionTo(domain.SandboxStopping) {
-		return nil, fmt.Errorf("cannot stop sandbox in state %s: %w", prevState, domain.ErrInvalidState)
+		err := fmt.Errorf("cannot stop sandbox in state %s: %w", prevState, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	// Transition to stopping before enqueue to prevent duplicate operations
 	sbx.State = domain.SandboxStopping
 	sbx.UpdatedAt = time.Now().UTC()
 	if err := s.sandboxes.Update(ctx, sbx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -226,6 +312,8 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 		Metadata:     map[string]any{"force": force},
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		// Rollback sandbox state
 		sbx.State = prevState
 		sbx.UpdatedAt = time.Now().UTC()
@@ -237,12 +325,25 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 }
 
 func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.DestroySandbox")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("provider.backend", s.defaultBackend),
+		attribute.String("sandbox.id", id),
+	)
+
 	sbx, err := s.sandboxes.Get(ctx, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if sbx.State == domain.SandboxDestroyed {
-		return nil, fmt.Errorf("sandbox already destroyed: %w", domain.ErrInvalidState)
+		err := fmt.Errorf("sandbox already destroyed: %w", domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -256,6 +357,8 @@ func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operat
 		StartedAt:    now,
 	}
 	if err := s.ops.Create(ctx, op); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)
