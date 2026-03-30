@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -14,18 +15,19 @@ import (
 
 var providerTracer = otel.Tracer("navaris.provider")
 
-// providerDuration is lazily initialised on first use.
-var providerDuration metric.Float64Histogram
+var (
+	providerDuration     metric.Float64Histogram
+	providerDurationOnce sync.Once
+)
 
 func getProviderDuration() metric.Float64Histogram {
-	if providerDuration == nil {
-		h, _ := otel.Meter("navaris.provider").Float64Histogram(
+	providerDurationOnce.Do(func() {
+		providerDuration, _ = otel.Meter("navaris.provider").Float64Histogram(
 			"provider.operation.duration",
 			metric.WithUnit("s"),
 			metric.WithDescription("Provider operation duration"),
 		)
-		providerDuration = h
-	}
+	})
 	return providerDuration
 }
 
