@@ -12,6 +12,9 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/eventbus"
 	"github.com/navaris/navaris/internal/worker"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type mockOpStore struct {
@@ -162,5 +165,37 @@ func TestDispatcherConcurrencyLimit(t *testing.T) {
 
 	if maxSeen.Load() > 2 {
 		t.Fatalf("expected max 2 concurrent, saw %d", maxSeen.Load())
+	}
+}
+
+func TestDispatcher_MetricsRegistered(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() { mp.Shutdown(context.Background()) })
+
+	store := &mockOpStore{ops: make(map[string]*domain.Operation)}
+	bus := eventbus.New(64)
+	d := worker.NewDispatcher(store, bus, 4)
+	d.Start()
+	t.Cleanup(func() { d.Stop() })
+
+	// Trigger a collection to exercise the gauge callbacks.
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+
+	names := make(map[string]bool)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			names[m.Name] = true
+		}
+	}
+
+	for _, want := range []string{"dispatcher.queue.depth", "dispatcher.inflight"} {
+		if !names[want] {
+			t.Errorf("metric %q not found", want)
+		}
 	}
 }

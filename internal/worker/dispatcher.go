@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/navaris/navaris/internal/domain"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type OperationHandler func(ctx context.Context, op *domain.Operation) error
@@ -25,13 +28,14 @@ type Dispatcher struct {
 	stopped    bool
 	stopOnce   sync.Once
 	done       chan struct{}
+	opsTotal   metric.Int64Counter
 }
 
 func NewDispatcher(opStore domain.OperationStore, events domain.EventBus, concurrency int) *Dispatcher {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &Dispatcher{
+	d := &Dispatcher{
 		opStore:  opStore,
 		events:   events,
 		handlers: make(map[string]OperationHandler),
@@ -39,6 +43,27 @@ func NewDispatcher(opStore domain.OperationStore, events domain.EventBus, concur
 		sem:      make(chan struct{}, concurrency),
 		done:     make(chan struct{}),
 	}
+
+	// Register telemetry instruments.
+	meter := otel.Meter("navaris.dispatcher")
+
+	queueDepth, _ := meter.Int64ObservableGauge("dispatcher.queue.depth",
+		metric.WithDescription("Current number of queued operations"),
+	)
+	inflight, _ := meter.Int64ObservableGauge("dispatcher.inflight",
+		metric.WithDescription("Currently executing operations"),
+	)
+	meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		o.ObserveInt64(queueDepth, int64(len(d.queue)))
+		o.ObserveInt64(inflight, int64(len(d.sem)))
+		return nil
+	}, queueDepth, inflight)
+
+	d.opsTotal, _ = meter.Int64Counter("dispatcher.operations.total",
+		metric.WithDescription("Completed operations"),
+	)
+
+	return d
 }
 
 func (d *Dispatcher) Register(opType string, handler OperationHandler) {
@@ -153,6 +178,12 @@ func (d *Dispatcher) run(op *domain.Operation) {
 			slog.Error("dispatcher: failed to update op to cancelled", "error", err)
 		}
 		d.publishOpEvent(context.Background(), op)
+		d.opsTotal.Add(context.Background(), 1,
+			metric.WithAttributes(
+				attribute.String("type", op.Type),
+				attribute.String("status", string(op.State)),
+			),
+		)
 		return
 	}
 
@@ -195,6 +226,12 @@ func (d *Dispatcher) run(op *domain.Operation) {
 		slog.Error("dispatcher: failed to update op to succeeded", "error", err)
 	}
 	d.publishOpEvent(ctx, op)
+	d.opsTotal.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("type", op.Type),
+			attribute.String("status", string(op.State)),
+		),
+	)
 }
 
 func (d *Dispatcher) fail(op *domain.Operation, errText string) {
@@ -206,6 +243,12 @@ func (d *Dispatcher) fail(op *domain.Operation, errText string) {
 		slog.Error("dispatcher: failed to update op to failed", "error", err)
 	}
 	d.publishOpEvent(context.Background(), op)
+	d.opsTotal.Add(context.Background(), 1,
+		metric.WithAttributes(
+			attribute.String("type", op.Type),
+			attribute.String("status", string(op.State)),
+		),
+	)
 }
 
 func (d *Dispatcher) cancel(op *domain.Operation) {
@@ -216,6 +259,12 @@ func (d *Dispatcher) cancel(op *domain.Operation) {
 		slog.Error("dispatcher: failed to update op to cancelled", "error", err)
 	}
 	d.publishOpEvent(context.Background(), op)
+	d.opsTotal.Add(context.Background(), 1,
+		metric.WithAttributes(
+			attribute.String("type", op.Type),
+			attribute.String("status", string(op.State)),
+		),
+	)
 }
 
 func (d *Dispatcher) publishOpEvent(ctx context.Context, op *domain.Operation) {
