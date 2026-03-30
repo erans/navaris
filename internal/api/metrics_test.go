@@ -110,16 +110,19 @@ func TestMiddleware_ExcludesEventsEndpoint(t *testing.T) {
 	}
 	wrapped := newTracingMiddleware()(mw(handler))
 
-	for _, path := range []string{"/v1/events", "/v1/sandboxes/abc-123/exec"} {
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/v1/events"},
+		{"POST", "/v1/sandboxes/abc-123/exec"},
+	} {
 		spanExp.Reset()
 
-		req := httptest.NewRequest("POST", path, nil)
+		req := httptest.NewRequest(tc.method, tc.path, nil)
 		rec := httptest.NewRecorder()
 		wrapped.ServeHTTP(rec, req)
 
 		spans := spanExp.GetSpans()
 		if len(spans) != 0 {
-			t.Errorf("%s: got %d spans for excluded endpoint, want 0", path, len(spans))
+			t.Errorf("%s %s: got %d spans for excluded endpoint, want 0", tc.method, tc.path, len(spans))
 		}
 
 		var rm metricdata.ResourceMetrics
@@ -129,7 +132,7 @@ func TestMiddleware_ExcludesEventsEndpoint(t *testing.T) {
 		for _, sm := range rm.ScopeMetrics {
 			for _, m := range sm.Metrics {
 				if m.Name == "http.server.request.duration" {
-					t.Errorf("%s: http.server.request.duration recorded for excluded endpoint", path)
+					t.Errorf("%s %s: http.server.request.duration recorded for excluded endpoint", tc.method, tc.path)
 				}
 			}
 		}
