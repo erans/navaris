@@ -99,9 +99,9 @@ func newMetricsMiddleware() (func(http.Handler) http.Handler, error) {
 			start := time.Now()
 			method := r.Method
 
-			activeReqs.Add(r.Context(), 1, metric.WithAttributes(
-				attribute.String("method", method),
-			))
+			methodAttr := metric.WithAttributes(attribute.String("method", method))
+			activeReqs.Add(r.Context(), 1, methodAttr)
+			defer activeReqs.Add(r.Context(), -1, methodAttr)
 
 			sc := &statusCapturingWriter{ResponseWriter: w, code: http.StatusOK}
 			next.ServeHTTP(sc, r)
@@ -124,10 +124,6 @@ func newMetricsMiddleware() (func(http.Handler) http.Handler, error) {
 					),
 				)
 			}
-
-			activeReqs.Add(r.Context(), -1, metric.WithAttributes(
-				attribute.String("method", method),
-			))
 		})
 	}, nil
 }
