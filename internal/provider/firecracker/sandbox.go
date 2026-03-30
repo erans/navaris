@@ -112,6 +112,10 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		SocketPath:      "firecracker.sock",
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      bootArgs,
+		MachineCfg: models.MachineConfiguration{
+			VcpuCount:  fcsdk.Int64(1),
+			MemSizeMib: fcsdk.Int64(128),
+		},
 		Drives: []models.Drive{
 			{
 				DriveID:      fcsdk.String("rootfs"),
