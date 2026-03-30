@@ -20,10 +20,8 @@ RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION
     tar -xf /tmp/linux.tar.xz -C /tmp && \
     rm /tmp/linux.tar.xz
 
-# Download Firecracker's kernel config for 6.1.
-RUN ARCH=$(uname -m) && \
-    wget -q "https://raw.githubusercontent.com/firecracker-microvm/firecracker/main/resources/guest_configs/microvm-kernel-ci-${ARCH}-6.1.config" \
-        -O /tmp/linux-${KERNEL_VERSION}/.config
+# Use our own minimal microVM kernel config.
+COPY resources/microvm-kernel.config /tmp/linux-${KERNEL_VERSION}/.config
 
 WORKDIR /tmp/linux-${KERNEL_VERSION}
 RUN make olddefconfig && make -j"$(nproc)" vmlinux
