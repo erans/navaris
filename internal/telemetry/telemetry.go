@@ -90,8 +90,7 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 		)
 	}
 	if err != nil {
-		tp.Shutdown(ctx)
-		return nil, fmt.Errorf("telemetry metric exporter: %w", err)
+		return nil, errors.Join(fmt.Errorf("telemetry metric exporter: %w", err), tp.Shutdown(ctx))
 	}
 
 	mp := sdkmetric.NewMeterProvider(
@@ -106,9 +105,11 @@ func Init(ctx context.Context, cfg Config) (func(context.Context) error, error) 
 
 	// Runtime instrumentation (after globals are set)
 	if err := otelruntime.Start(); err != nil {
-		tp.Shutdown(ctx)
-		mp.Shutdown(ctx)
-		return nil, fmt.Errorf("telemetry runtime: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("telemetry runtime: %w", err),
+			tp.Shutdown(ctx),
+			mp.Shutdown(ctx),
+		)
 	}
 
 	enabled = true

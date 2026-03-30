@@ -3,6 +3,7 @@ package telemetry_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/navaris/navaris/internal/telemetry"
 	"go.opentelemetry.io/otel"
@@ -33,7 +34,11 @@ func TestInit_EnabledWithEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	t.Cleanup(func() { shutdown(context.Background()) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		shutdown(ctx)
+	})
 
 	if !telemetry.Enabled() {
 		t.Error("Enabled() = false, want true when endpoint is set")
@@ -56,7 +61,11 @@ func TestInit_HTTPProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	t.Cleanup(func() { shutdown(context.Background()) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		shutdown(ctx)
+	})
 
 	if !telemetry.Enabled() {
 		t.Error("Enabled() = false, want true")
