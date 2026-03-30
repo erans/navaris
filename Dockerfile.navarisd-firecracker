@@ -40,7 +40,7 @@ RUN apk add --no-cache openrc e2fsprogs
 COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
 
 # Add OpenRC service for the agent.
-RUN printf '#!/sbin/openrc-run\nname="navaris-agent"\ndescription="Navaris guest agent"\ncommand="/usr/local/bin/navaris-agent"\ncommand_background="yes"\npidfile="/run/navaris-agent.pid"\n' \
+RUN printf '#!/sbin/openrc-run\nname="navaris-agent"\ndescription="Navaris guest agent"\ncommand="/usr/local/bin/navaris-agent"\ncommand_background="yes"\npidfile="/run/navaris-agent.pid"\noutput_log="/dev/console"\nerror_log="/dev/console"\n' \
     > /etc/init.d/navaris-agent && \
     chmod +x /etc/init.d/navaris-agent && \
     rc-update add navaris-agent default
