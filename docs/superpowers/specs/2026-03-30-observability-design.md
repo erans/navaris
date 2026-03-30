@@ -43,23 +43,22 @@ When `cfg.Endpoint` is empty, sets global OTel providers to no-op and returns a 
 1. Create OTLP exporter (gRPC or HTTP based on protocol flag).
 2. Create `TracerProvider` with a `BatchSpanProcessor` wrapping the exporter. Resource attributes: `service.name`, `service.version`.
 3. Create `MeterProvider` with a `PeriodicReader` (default 30s interval) wrapping the exporter. Same resource attributes.
-4. Register Go runtime instrumentation via `go.opentelemetry.io/contrib/instrumentation/runtime`.
+4. Register Go runtime instrumentation: `if err := runtime.Start(); err != nil { return nil, fmt.Errorf("runtime instrumentation: %w", err) }`. Called after both providers are set as global.
 5. Set both as global providers via `otel.SetTracerProvider` and `otel.SetMeterProvider`.
 6. Set W3C trace context propagator via `otel.SetTextMapPropagator`.
 7. Return a shutdown function that flushes and stops both providers.
 
-`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** the dispatcher has been stopped (after `disp.Stop()` returns), not via a bare `defer`. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down. Sequence: `disp.Stop()` → `telemetry.Shutdown()` → exit.
+`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** all other components have stopped, not via a bare `defer`. Full shutdown sequence: `httpSrv.Shutdown()` → `gc.Stop()` → `disp.Stop()` → `telemetry.Shutdown()` → exit. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down.
 
 ### Dependencies (new direct)
 
-- `go.opentelemetry.io/otel`
+- `go.opentelemetry.io/otel` (includes `otel/propagation`, `otel/codes`, `otel/metric`, `otel/trace`)
 - `go.opentelemetry.io/otel/sdk`
 - `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc`
 - `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`
 - `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc`
 - `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp`
 - `go.opentelemetry.io/contrib/instrumentation/runtime`
-- `go.opentelemetry.io/otel/propagation`
 
 ---
 
@@ -91,7 +90,9 @@ The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the act
 
 ### Registration
 
-The middleware is inserted in the chain in `server.go` only when telemetry is enabled. A `telemetry.Enabled()` check (package-level bool set during Init) gates registration. When disabled, the chain is unchanged.
+The middleware is inserted in the chain in `server.go` only when telemetry is enabled. A `telemetry.Enabled()` check (package-level bool, written once during `Init` before any handler is registered, read-only thereafter — no synchronization needed) gates registration. When disabled, the chain is unchanged.
+
+Middleware position: tracing and metrics wrap the outermost chain, before `requestID`. This ensures span context is available throughout the request lifecycle, including in request ID generation and logging. Full chain when enabled: `tracing -> metrics -> requestID -> auth -> logging -> mux`.
 
 ---
 
@@ -99,7 +100,7 @@ The middleware is inserted in the chain in `server.go` only when telemetry is en
 
 ### Location
 
-Same file: `internal/api/metrics.go` (or `tracing.go` if it gets long)
+Same file: `internal/api/metrics.go`
 
 ### Behavior
 
@@ -149,7 +150,7 @@ Key attributes added to spans where relevant:
 
 No metrics at this layer — HTTP metrics already capture end-to-end latency.
 
-Note: The health-check endpoint (`/healthz`) and exec endpoint (`/v1/sandboxes/{id}/exec`) bypass the service layer, so they will not have service-level spans. This is expected — health checks are simple liveness probes, and exec is a streaming passthrough. Both are still covered by HTTP-level metrics and tracing.
+Note: The health endpoint (`GET /v1/health`) and exec endpoint (`POST /v1/sandboxes/{id}/exec`) bypass the service layer, so they will not have service-level spans. This is expected — exec is a streaming passthrough. The health handler does call into the provider layer via `Provider.Health()`, but its provider-level span is sufficient. Both endpoints are still covered by HTTP-level metrics and tracing, except for exec which is excluded from middleware (see Sections 2 and 3).
 
 ---
 
