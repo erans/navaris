@@ -40,25 +40,27 @@ Three new CLI flags in `cmd/navarisd/main.go` (using Go stdlib `flag` single-das
 
 When `cfg.Endpoint` is empty, sets global OTel providers to no-op and returns a no-op shutdown. Otherwise:
 
-1. Create OTLP exporter (gRPC or HTTP based on protocol flag).
-2. Create `TracerProvider` with a `BatchSpanProcessor` wrapping the exporter. Resource attributes: `service.name`, `service.version`.
-3. Create `MeterProvider` with a `PeriodicReader` (default 30s interval) wrapping the exporter. Same resource attributes.
-4. Register Go runtime instrumentation: `if err := runtime.Start(); err != nil { return nil, fmt.Errorf("runtime instrumentation: %w", err) }`. Called after both providers are set as global.
-5. Set both as global providers via `otel.SetTracerProvider` and `otel.SetMeterProvider`.
-6. Set W3C trace context propagator via `otel.SetTextMapPropagator`.
+1. Create OTLP exporters (gRPC or HTTP based on protocol flag) — one trace exporter via `otlptracegrpc.New()` or `otlptracehttp.New()`, and one metric exporter via `otlpmetricgrpc.New()` or `otlpmetrichttp.New()`.
+2. Create `TracerProvider` with a `BatchSpanProcessor` wrapping the trace exporter. Resource attributes: `service.name`.
+3. Create `MeterProvider` with a `PeriodicReader` (default 30s interval) wrapping the metric exporter. Same resource attributes.
+4. Set both as global providers via `otel.SetTracerProvider` and `otel.SetMeterProvider`.
+5. Set W3C trace context propagator via `otel.SetTextMapPropagator`.
+6. Register Go runtime instrumentation (must be after global providers are set): `if err := otelruntime.Start(); err != nil { return nil, fmt.Errorf("runtime instrumentation: %w", err) }`. Import as `otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"` to avoid shadowing stdlib `runtime`.
 7. Return a shutdown function that flushes and stops both providers.
 
-`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** all other components have stopped, not via a bare `defer`. Full shutdown sequence: `httpSrv.Shutdown()` → `gc.Stop()` → `disp.Stop()` → `telemetry.Shutdown()` → exit. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down.
+`main.go` calls `Init` after flag parsing. The returned `shutdown` function must be called **after** all other components have stopped — specifically, it must not be placed as a bare `defer` at the top of `run()`, as that would execute it before `disp.Stop()` returns. The existing shutdown sequence in `main.go` is `httpSrv.Shutdown()` → `gc.Stop()` → `disp.Stop()`; append `telemetry.Shutdown()` after `disp.Stop()`. This ensures all in-flight operations have completed and their final metrics/spans are recorded before the telemetry providers flush and shut down.
 
 ### Dependencies (new direct)
 
-- `go.opentelemetry.io/otel` (includes `otel/propagation`, `otel/codes`, `otel/metric`, `otel/trace`)
+- `go.opentelemetry.io/otel` (includes sub-packages `propagation`, `codes`)
 - `go.opentelemetry.io/otel/sdk`
+- `go.opentelemetry.io/otel/metric` (separate module, will promote from indirect to direct)
+- `go.opentelemetry.io/otel/trace` (separate module, will promote from indirect to direct)
 - `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc`
 - `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`
 - `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc`
 - `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp`
-- `go.opentelemetry.io/contrib/instrumentation/runtime`
+- `go.opentelemetry.io/contrib/instrumentation/runtime` (import as `otelruntime`)
 
 ---
 
@@ -86,7 +88,7 @@ The middleware wraps the handler, recording start time and incrementing the acti
 
 The `/v1/events` WebSocket endpoint and `/v1/sandboxes/{id}/exec` streaming endpoint are excluded from both metrics and tracing middleware. These long-lived connections would create misleading latency data and unbounded spans. If observability for these endpoints is needed later, dedicated instrumentation (e.g., connection count gauge, message throughput counter) should be added separately.
 
-The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the actual URL path, to prevent high-cardinality label explosion. Extract this from the request's `http.ServeMux` pattern (Go 1.23+ stores it in the request via `r.Pattern`).
+The `route` label uses the mux pattern (e.g., `/v1/sandboxes/{id}`), not the actual URL path, to prevent high-cardinality label explosion. Extract this from `r.Pattern` (the `Pattern` field on `*http.Request`, available since Go 1.22, populated by `http.ServeMux` with the matched pattern including method prefix — e.g., `"GET /v1/sandboxes/{id}"`; strip the method prefix to get the route).
 
 ### Registration
 
@@ -150,7 +152,7 @@ Key attributes added to spans where relevant:
 
 No metrics at this layer — HTTP metrics already capture end-to-end latency.
 
-Note: The health endpoint (`GET /v1/health`) and exec endpoint (`POST /v1/sandboxes/{id}/exec`) bypass the service layer, so they will not have service-level spans. This is expected — exec is a streaming passthrough. The health handler does call into the provider layer via `Provider.Health()`, but its provider-level span is sufficient. Both endpoints are still covered by HTTP-level metrics and tracing, except for exec which is excluded from middleware (see Sections 2 and 3).
+Note: The exec handler (`POST /v1/sandboxes/{id}/exec`) calls `SandboxService.Get()` to fetch the sandbox (producing a service span for that lookup), but then calls `Provider.Exec()` directly — there is no dedicated `service.ExecInSandbox` span. The exec endpoint is excluded from HTTP middleware (see Sections 2 and 3), so it will have no HTTP-level spans or metrics. The health endpoint (`GET /v1/health`) calls `Provider.Health()` directly without going through the service layer, but is covered by HTTP-level metrics and tracing middleware. Its provider-level span is sufficient for diagnostics.
 
 ---
 
@@ -175,7 +177,7 @@ Each provider method creates a span: `provider.{operation}` (e.g., `provider.Cre
 
 ### sandbox.count Gauge
 
-Updated via callbacks: the gauge reads from the provider's in-memory VM map (Firecracker) or queries the store (Incus). Registered once during provider init via `metric.Int64ObservableGauge` with a callback function.
+Updated via callbacks: the gauge reads from the provider's in-memory VM map (Firecracker) or queries the Incus daemon via the client API (Incus). Registered once during provider init via `metric.Int64ObservableGauge` with a callback function.
 
 ---
 
