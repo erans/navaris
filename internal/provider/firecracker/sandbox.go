@@ -59,6 +59,12 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	cid := p.allocateCID()
 	uid := p.uids.Allocate()
 
+	// Chown rootfs so the jailer UID can access it after privilege drop.
+	if err := os.Chown(dstImage, uid, uid); err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker chown rootfs %s: %w", vmID, err)
+	}
+
 	// Write vminfo.json.
 	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
 	if err := info.Write(jailer.VMInfoPath(p.config.ChrootBase, vmID)); err != nil {
@@ -473,6 +479,12 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	// Allocate resources.
 	cid := p.allocateCID()
 	uid := p.uids.Allocate()
+
+	// Chown rootfs so the jailer UID can access it after privilege drop.
+	if err := os.Chown(dst, uid, uid); err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker chown snapshot rootfs %s: %w", vmID, err)
+	}
 
 	// Write vminfo.json.
 	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
