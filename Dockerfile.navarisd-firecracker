@@ -57,10 +57,10 @@ RUN ARCH=$(uname -m) && \
     chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer && \
     rm -rf /tmp/fc.tgz /tmp/release-*
 
-# Download Firecracker-compatible kernel.
+# Download Firecracker-compatible kernel from the quickstart guide bucket.
 RUN mkdir -p /opt/firecracker && \
     ARCH=$(uname -m) && \
-    wget -q "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/vmlinux-6.1-${ARCH}.bin" \
+    wget -q "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/${ARCH}/kernels/vmlinux.bin" \
         -O /opt/firecracker/vmlinux
 
 # Create image directory and copy rootfs from stage 2.
