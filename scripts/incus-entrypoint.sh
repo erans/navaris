@@ -42,12 +42,16 @@ fi
 # Pre-pull base image for integration tests so it's available as a local alias.
 # The Incus Go client API doesn't support remote:alias syntax — only the CLI does.
 if [ -n "${INCUS_PRELOAD_IMAGE:-}" ]; then
-    local_alias="${INCUS_PRELOAD_IMAGE#*:}"
-    if ! incus image alias list --format csv | grep -q "^${local_alias},"; then
-        echo "Pre-pulling image ${INCUS_PRELOAD_IMAGE} -> local alias ${local_alias}..."
-        incus image copy "${INCUS_PRELOAD_IMAGE}" local: --alias "${local_alias}"
-        echo "Image pre-pull complete."
-    fi
+    IFS=',' read -ra IMAGES <<< "${INCUS_PRELOAD_IMAGE}"
+    for img in "${IMAGES[@]}"; do
+        img="$(echo "$img" | xargs)"  # trim whitespace
+        local_alias="${img#*:}"
+        if ! incus image alias list --format csv | grep -q "^${local_alias},"; then
+            echo "Pre-pulling image ${img} -> local alias ${local_alias}..."
+            incus image copy "${img}" local: --alias "${local_alias}"
+            echo "Image pre-pull complete: ${local_alias}"
+        fi
+    done
 fi
 
 echo "Incus ready."

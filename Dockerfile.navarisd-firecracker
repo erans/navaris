@@ -73,6 +73,32 @@ RUN mkdir /staging && \
     mkdir -p /opt/firecracker/images && \
     mv /tmp/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
 
+# ---- Stage 3b: Build Debian 12 rootfs ext4 image ----
+FROM debian:12-slim AS rootfs-debian
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv e2fsprogs fuse3 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Copy the agent binary.
+COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
+
+# Systemd unit for the agent.
+RUN printf '[Unit]\nDescription=Navaris guest agent\nAfter=network.target\n\n[Service]\nExecStart=/usr/local/bin/navaris-agent\nRestart=on-failure\nStandardOutput=journal+console\nStandardError=journal+console\n\n[Install]\nWantedBy=multi-user.target\n' \
+    > /etc/systemd/system/navaris-agent.service && \
+    systemctl enable navaris-agent.service
+
+# Pack the Debian rootfs into an ext4 image.
+RUN mkdir /staging && \
+    for d in bin etc home lib lib64 media mnt opt root run sbin srv usr var; do \
+        [ -d "/$d" ] && cp -a "/$d" /staging/; \
+    done && \
+    mkdir -p /staging/tmp && chmod 1777 /staging/tmp && \
+    mkdir -p /staging/proc /staging/sys /staging/dev && \
+    mke2fs -t ext4 -d /staging -L rootfs /tmp/debian-12.ext4 1024M && \
+    mkdir -p /opt/firecracker/images && \
+    mv /tmp/debian-12.ext4 /opt/firecracker/images/debian-12.ext4
+
 # ---- Stage 4: Runtime ----
 FROM debian:bookworm-slim
 
@@ -100,6 +126,7 @@ COPY --from=kernel-builder /vmlinux /opt/firecracker/vmlinux
 # Create image directory and copy rootfs from stage 3.
 RUN mkdir -p /opt/firecracker/images
 COPY --from=rootfs /opt/firecracker/images/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
+COPY --from=rootfs-debian /opt/firecracker/images/debian-12.ext4 /opt/firecracker/images/debian-12.ext4
 
 # Copy navarisd from build stage.
 COPY --from=build /navarisd /usr/local/bin/navarisd

@@ -10,6 +10,9 @@ jobs:
     # but not guaranteed on all ubuntu-latest aliases or self-hosted runners.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      matrix:
+        image: [alpine-3.21, debian-12]
     steps:
       - uses: actions/checkout@v4
       - name: Enable KVM
@@ -19,5 +22,7 @@ jobs:
             exit 1
           fi
           sudo chmod 666 /dev/kvm
-      - name: Run integration tests
+      - name: Run integration tests (${{ matrix.image }})
         run: make integration-test-firecracker
+        env:
+          NAVARIS_BASE_IMAGE: ${{ matrix.image }}

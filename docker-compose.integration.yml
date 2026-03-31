@@ -6,7 +6,7 @@ services:
     privileged: true
     cgroup: host
     environment:
-      INCUS_PRELOAD_IMAGE: images:alpine/3.21
+      INCUS_PRELOAD_IMAGE: images:alpine/3.21,images:debian/12
     volumes:
       - incus-socket:/var/lib/incus
       - incus-data:/var/lib/incus/storage-pools
@@ -54,7 +54,7 @@ services:
     environment:
       NAVARIS_API_URL: http://navarisd:8080
       NAVARIS_TOKEN: test-token
-      NAVARIS_BASE_IMAGE: alpine/3.21
+      NAVARIS_BASE_IMAGE: ${NAVARIS_BASE_IMAGE:-alpine/3.21}
       NAVARIS_CLI: /usr/local/bin/navaris
     depends_on:
       navarisd:

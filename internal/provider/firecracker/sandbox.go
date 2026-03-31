@@ -136,7 +136,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		KernelArgs:      bootArgs,
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  fcsdk.Int64(1),
-			MemSizeMib: fcsdk.Int64(128),
+			MemSizeMib: fcsdk.Int64(256),
 		},
 		Drives: []models.Drive{
 			{

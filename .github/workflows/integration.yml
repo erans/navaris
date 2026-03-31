@@ -9,6 +9,12 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      matrix:
+        image: [alpine/3.21, debian/12]
     steps:
       - uses: actions/checkout@v4
-      - run: make integration-test
+      - name: Run integration tests (${{ matrix.image }})
+        run: make integration-test
+        env:
+          NAVARIS_BASE_IMAGE: ${{ matrix.image }}
