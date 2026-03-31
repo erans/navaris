@@ -19,6 +19,7 @@ type createSandboxRequest struct {
 	NetworkMode   string         `json:"network_mode"`
 	ExpiresAt     *time.Time     `json:"expires_at"`
 	Metadata      map[string]any `json:"metadata"`
+	Backend       string         `json:"backend"`
 }
 
 type createSandboxFromSnapshotRequest struct {
@@ -30,6 +31,7 @@ type createSandboxFromSnapshotRequest struct {
 	NetworkMode   string         `json:"network_mode"`
 	ExpiresAt     *time.Time     `json:"expires_at"`
 	Metadata      map[string]any `json:"metadata"`
+	Backend       string         `json:"backend"`
 }
 
 type createSandboxFromImageRequest struct {
@@ -41,6 +43,7 @@ type createSandboxFromImageRequest struct {
 	NetworkMode   string         `json:"network_mode"`
 	ExpiresAt     *time.Time     `json:"expires_at"`
 	Metadata      map[string]any `json:"metadata"`
+	Backend       string         `json:"backend"`
 }
 
 type stopSandboxRequest struct {
@@ -64,6 +67,7 @@ func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 		NetworkMode:   domain.NetworkMode(req.NetworkMode),
 		ExpiresAt:     req.ExpiresAt,
 		Metadata:      req.Metadata,
+		Backend:       req.Backend,
 	}
 
 	var op *domain.Operation
@@ -103,6 +107,7 @@ func (s *Server) createSandboxFromSnapshot(w http.ResponseWriter, r *http.Reques
 		NetworkMode:   domain.NetworkMode(req.NetworkMode),
 		ExpiresAt:     req.ExpiresAt,
 		Metadata:      req.Metadata,
+		Backend:       req.Backend,
 	}
 
 	op, err := s.cfg.Sandboxes.CreateFromSnapshot(r.Context(), req.ProjectID, req.Name, req.SnapshotID, opts)
@@ -130,6 +135,7 @@ func (s *Server) createSandboxFromImage(w http.ResponseWriter, r *http.Request) 
 		NetworkMode:   domain.NetworkMode(req.NetworkMode),
 		ExpiresAt:     req.ExpiresAt,
 		Metadata:      req.Metadata,
+		Backend:       req.Backend,
 	}
 
 	op, err := s.cfg.Sandboxes.Create(r.Context(), req.ProjectID, req.Name, req.ImageID, opts)

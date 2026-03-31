@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,11 +15,27 @@ import (
 )
 
 type CreateSandboxOpts struct {
+	Backend       string
 	CPULimit      *int
 	MemoryLimitMB *int
 	NetworkMode   domain.NetworkMode
 	ExpiresAt     *time.Time
 	Metadata      map[string]any
+}
+
+// resolveBackend picks the backend for a new sandbox.
+// Priority: explicit > auto-detect from image ref > default.
+func (s *SandboxService) resolveBackend(explicit, imageRef string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if strings.Contains(imageRef, "/") {
+		return "incus"
+	}
+	if imageRef != "" {
+		return "firecracker"
+	}
+	return s.defaultBackend
 }
 
 type SandboxService struct {
@@ -86,7 +103,7 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		ProjectID:     projectID,
 		Name:          name,
 		State:         domain.SandboxPending,
-		Backend:       s.defaultBackend,
+		Backend:       s.resolveBackend(opts.Backend, imageID),
 		SourceImageID: imageID,
 		NetworkMode:   networkMode,
 		CPULimit:      opts.CPULimit,
@@ -144,7 +161,7 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		ProjectID:        projectID,
 		Name:             name,
 		State:            domain.SandboxPending,
-		Backend:          s.defaultBackend,
+		Backend:          s.resolveBackend(opts.Backend, ""),
 		ParentSnapshotID: snapshotID,
 		NetworkMode:      networkMode,
 		CPULimit:         opts.CPULimit,
@@ -385,6 +402,7 @@ func (s *SandboxService) handleCreate(ctx context.Context, op *domain.Operation)
 		CPULimit:      sbx.CPULimit,
 		MemoryLimitMB: sbx.MemoryLimitMB,
 		NetworkMode:   sbx.NetworkMode,
+		Backend:       sbx.Backend,
 	}
 
 	var ref domain.BackendRef
