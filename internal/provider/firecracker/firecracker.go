@@ -209,6 +209,15 @@ func (p *Provider) vsockPath(vmID string) string {
 	return filepath.Join(p.vmDir(vmID), "vsock")
 }
 
+// vsockUDSPath returns the uds_path value for the Firecracker vsock config.
+// With jailer it's relative (to chroot root); without it's absolute.
+func (p *Provider) vsockUDSPath(vmID string) string {
+	if p.config.EnableJailer {
+		return "vsock"
+	}
+	return filepath.Join(p.vmDir(vmID), "vsock")
+}
+
 func (p *Provider) socketPath(vmID string) string {
 	if p.config.EnableJailer {
 		return "firecracker.sock" // relative, SDK translates via jailer chroot

@@ -155,7 +155,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 			},
 		},
 		VsockDevices: []fcsdk.VsockDevice{
-			{Path: "vsock", CID: uint32(info.CID)},
+			{Path: p.vsockUDSPath(vmID), CID: uint32(info.CID)},
 		},
 		JailerCfg: jailerCfg,
 	}
@@ -272,7 +272,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 			},
 		},
 		VsockDevices: []fcsdk.VsockDevice{
-			{Path: "vsock", CID: uint32(info.CID)},
+			{Path: p.vsockUDSPath(vmID), CID: uint32(info.CID)},
 		},
 		JailerCfg: jailerCfg,
 	}
