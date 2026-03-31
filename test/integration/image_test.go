@@ -17,7 +17,7 @@ func TestImageRegisterListGetDelete(t *testing.T) {
 		Name:       "test-image",
 		Version:    "1.0",
 		Backend:    "incus",
-		BackendRef: baseImage(),
+		BackendRef: "test-dummy-ref",
 	})
 	if err != nil {
 		t.Fatalf("register image: %v", err)

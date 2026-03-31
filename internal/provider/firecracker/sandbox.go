@@ -96,6 +96,11 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 
 	vmDir := p.vmDir(vmID)
 
+	// Clean up stale socket files from a previous run so Firecracker
+	// can bind fresh ones.
+	os.Remove(p.vsockPath(vmID))
+	os.Remove(filepath.Join(vmDir, "firecracker.sock"))
+
 	// Check for live snapshot restore.
 	if info.RestoreFromSnapshot {
 		return p.startFromSnapshot(ctx, vmID, vmDir, info, infoPath)
@@ -161,14 +166,17 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	}
 
 	// Launch VM.
-	machine, err := fcsdk.NewMachine(ctx, fcCfg)
+	// Use a detached context so the Firecracker process outlives the
+	// operation context that created it.
+	machineCtx := context.Background()
+	machine, err := fcsdk.NewMachine(machineCtx, fcCfg)
 	if err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker new machine %s: %w", vmID, err)
 	}
 
-	if err := machine.Start(ctx); err != nil {
+	if err := machine.Start(machineCtx); err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker start machine %s: %w", vmID, err)
@@ -277,7 +285,10 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		JailerCfg: jailerCfg,
 	}
 
-	machine, err := fcsdk.NewMachine(ctx, fcCfg, fcsdk.WithSnapshot(memPath, snapPath, func(cfg *fcsdk.SnapshotConfig) {
+	// Use a detached context so the Firecracker process outlives the
+	// operation context that created it.
+	machineCtx := context.Background()
+	machine, err := fcsdk.NewMachine(machineCtx, fcCfg, fcsdk.WithSnapshot(memPath, snapPath, func(cfg *fcsdk.SnapshotConfig) {
 		cfg.ResumeVM = true
 	}))
 	if err != nil {
@@ -286,7 +297,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		return fmt.Errorf("firecracker snapshot restore new machine %s: %w", vmID, err)
 	}
 
-	if err := machine.Start(ctx); err != nil {
+	if err := machine.Start(machineCtx); err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker snapshot restore start %s: %w", vmID, err)

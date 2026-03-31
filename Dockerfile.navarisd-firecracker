@@ -25,8 +25,12 @@ COPY resources/microvm-kernel.config /tmp/linux-${KERNEL_VERSION}/.microvm.confi
 
 WORKDIR /tmp/linux-${KERNEL_VERSION}
 RUN make defconfig && \
+    make olddefconfig && \
     ./scripts/config --disable CONFIG_ACPI && \
+    ./scripts/config --set-val CONFIG_VIRTIO y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_MMIO y && \
     ./scripts/config --set-val CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_BLK y && \
     ./scripts/config --set-val CONFIG_VIRTIO_NET y && \
     ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS y && \
     ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS_COMMON y && \
@@ -38,7 +42,7 @@ RUN make defconfig && \
     ./scripts/config --set-val CONFIG_SECURITY_LANDLOCK y && \
     ./scripts/config --set-val CONFIG_FUSE_FS y && \
     make olddefconfig && \
-    grep -E 'VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|LANDLOCK|FUSE' .config && \
+    grep -E 'VIRTIO_BLK|VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|VSOCKETS=|LANDLOCK|FUSE' .config && \
     make -j"$(nproc)" vmlinux
 RUN cp vmlinux /vmlinux
 
