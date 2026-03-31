@@ -3,11 +3,9 @@
 package firecracker
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"sync"
 	"time"
@@ -15,6 +13,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -44,12 +43,6 @@ func (c *Config) defaults() {
 	}
 }
 
-// agentConn holds a persistent vsock connection to a guest agent.
-type agentConn struct {
-	conn net.Conn
-	br   *bufio.Reader
-}
-
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
 	config        Config
@@ -62,7 +55,7 @@ type Provider struct {
 	vmMu          sync.RWMutex
 	hostIface     string
 	cgroupVersion string
-	agentConns    map[string]*agentConn
+	agentClients  map[string]*fcvsock.Client
 	agentMu       sync.Mutex
 }
 
@@ -110,7 +103,7 @@ func New(cfg Config) (*Provider, error) {
 		vms:           make(map[string]*VMInfo),
 		hostIface:     hostIface,
 		cgroupVersion: detectCgroupVersion(),
-		agentConns:    make(map[string]*agentConn),
+		agentClients:  make(map[string]*fcvsock.Client),
 	}
 
 	// Recover orphaned VMs from disk.

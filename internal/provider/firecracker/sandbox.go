@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +20,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -405,6 +405,14 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
 
+	// Close and remove cached agent client.
+	p.agentMu.Lock()
+	if c, ok := p.agentClients[vmID]; ok {
+		c.Close()
+		delete(p.agentClients, vmID)
+	}
+	p.agentMu.Unlock()
+
 	return nil
 }
 
@@ -504,22 +512,21 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
-	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 	deadline := time.After(timeout)
 	for {
-		// Try to connect + CONNECT handshake. If it succeeds, the guest
-		// agent is listening. Close immediately — dialAgent will open
-		// a fresh connection for the actual exec.
-		conn, err := net.DialTimeout("unix", udsPath, time.Second)
+		ac, err := p.connectAgent(vmID)
 		if err == nil {
-			conn.SetDeadline(time.Now().Add(5 * time.Second))
-			fmt.Fprintf(conn, "CONNECT 1024\n")
-			buf := make([]byte, 32)
-			n, readErr := conn.Read(buf)
-			conn.Close()
-			if readErr == nil && n >= 3 && string(buf[:3]) == "OK " {
+			// CONNECT handshake succeeded — store the persistent connection.
+			// All subsequent dialAgent calls will reuse this connection.
+			client := fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br})
+			pingErr := client.Ping(2 * time.Second)
+			if pingErr == nil {
+				p.agentMu.Lock()
+				p.agentClients[vmID] = client
+				p.agentMu.Unlock()
 				return nil
 			}
+			client.Close()
 		}
 		select {
 		case <-ctx.Done():

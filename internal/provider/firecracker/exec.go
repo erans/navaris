@@ -19,6 +19,12 @@ import (
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
+// agentConn holds a vsock UDS connection after the CONNECT handshake.
+type agentConn struct {
+	conn net.Conn
+	br   *bufio.Reader
+}
+
 func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 
@@ -50,11 +56,26 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 }
 
 func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
+	p.agentMu.Lock()
+	client, ok := p.agentClients[vmID]
+	p.agentMu.Unlock()
+
+	if ok {
+		return client, nil
+	}
+
+	// No cached client — establish a new connection.
 	ac, err := p.connectAgent(vmID)
 	if err != nil {
 		return nil, err
 	}
-	return fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br}), nil
+	client = fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br})
+
+	p.agentMu.Lock()
+	p.agentClients[vmID] = client
+	p.agentMu.Unlock()
+
+	return client, nil
 }
 
 // bufferedConn wraps a net.Conn so that reads drain the bufio.Reader first,
