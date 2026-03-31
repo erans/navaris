@@ -50,21 +50,10 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 }
 
 func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
-	p.agentMu.Lock()
-	ac, ok := p.agentConns[vmID]
-	if ok {
-		delete(p.agentConns, vmID)
+	ac, err := p.connectAgent(vmID)
+	if err != nil {
+		return nil, err
 	}
-	p.agentMu.Unlock()
-
-	if ac == nil {
-		var err error
-		ac, err = p.connectAgent(vmID)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	return fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br}), nil
 }
 

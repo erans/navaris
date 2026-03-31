@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -503,16 +504,22 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
+	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 	deadline := time.After(timeout)
 	for {
-		ac, err := p.connectAgent(vmID)
+		// Try to connect + CONNECT handshake. If it succeeds, the guest
+		// agent is listening. Close immediately — dialAgent will open
+		// a fresh connection for the actual exec.
+		conn, err := net.DialTimeout("unix", udsPath, time.Second)
 		if err == nil {
-			// CONNECT handshake succeeded — Firecracker confirmed the guest
-			// agent is listening. Cache the connection for the first exec.
-			p.agentMu.Lock()
-			p.agentConns[vmID] = ac
-			p.agentMu.Unlock()
-			return nil
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
+			fmt.Fprintf(conn, "CONNECT 1024\n")
+			buf := make([]byte, 32)
+			n, readErr := conn.Read(buf)
+			conn.Close()
+			if readErr == nil && n >= 3 && string(buf[:3]) == "OK " {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
