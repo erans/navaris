@@ -22,7 +22,6 @@ import (
 // agentConn holds a vsock UDS connection after the CONNECT handshake.
 type agentConn struct {
 	conn net.Conn
-	br   *bufio.Reader
 }
 
 func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
@@ -62,7 +61,7 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 		}
 
 		conn.SetDeadline(time.Time{}) // clear deadline
-		return &agentConn{conn: conn, br: br}, nil
+		return &agentConn{conn: conn}, nil
 	}
 	return nil, lastErr
 }
@@ -79,7 +78,7 @@ func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br}), nil
+	return fcvsock.NewClientFromConn(ac.conn), nil
 }
 
 // bufferedConn wraps a net.Conn so that reads drain the bufio.Reader first,
