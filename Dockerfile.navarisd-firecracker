@@ -35,16 +35,18 @@ RUN make defconfig && \
     ./scripts/config --set-val CONFIG_IP_PNP y && \
     ./scripts/config --set-val CONFIG_IP_PNP_DHCP y && \
     ./scripts/config --set-val CONFIG_RANDOM_TRUST_CPU y && \
+    ./scripts/config --set-val CONFIG_SECURITY_LANDLOCK y && \
+    ./scripts/config --set-val CONFIG_FUSE_FS y && \
     make olddefconfig && \
-    grep -E 'VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK' .config && \
+    grep -E 'VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|LANDLOCK|FUSE' .config && \
     make -j"$(nproc)" vmlinux
 RUN cp vmlinux /vmlinux
 
 # ---- Stage 3: Build Alpine rootfs ext4 image ----
 FROM alpine:3.21 AS rootfs
 
-# Install OpenRC (init system) and e2fsprogs (mke2fs).
-RUN apk add --no-cache openrc e2fsprogs
+# Install OpenRC (init system), e2fsprogs (mke2fs), and fuse3.
+RUN apk add --no-cache openrc e2fsprogs fuse3
 
 # Copy the agent binary.
 COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
