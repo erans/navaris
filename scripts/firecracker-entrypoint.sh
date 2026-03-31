@@ -4,7 +4,7 @@ set -eu
 # Enable IP forwarding for VM networking.
 sysctl -w net.ipv4.ip_forward=1
 
-# Create chroot base for jailer.
+# Create base directory for Firecracker VM data (used by both jailer and non-jailer modes).
 mkdir -p /srv/firecracker
 
 # On cgroup v2, the jailer needs to write cgroup.subtree_control, which

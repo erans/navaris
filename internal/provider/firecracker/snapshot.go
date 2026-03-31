@@ -14,7 +14,6 @@ import (
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
-	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -60,7 +59,7 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 	defer func() { endSpan(retErr) }()
 
 	vmID := ref.Ref
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 
 	snapID := "snap-" + uuid.NewString()[:8]
 	snapDir := p.snapshotDir(snapID)
@@ -97,7 +96,7 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 
 	// For live snapshots, preserve SubnetIdx for network-correct restore.
 	if mode == domain.ConsistencyLive {
-		infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+		infoPath := p.vmInfoPath(vmID)
 		info, err := ReadVMInfo(infoPath)
 		if err != nil {
 			os.RemoveAll(snapDir)
@@ -124,8 +123,13 @@ func (p *Provider) createStoppedSnapshot(vmDir, snapDir string) error {
 }
 
 func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir string) error {
-	// Connect to running VM via the post-jailer socket path.
-	sockPath := filepath.Join(vmDir, "root", "run", "firecracker.socket")
+	// Connect to running VM via the API socket.
+	var sockPath string
+	if p.config.EnableJailer {
+		sockPath = filepath.Join(vmDir, "root", "run", "firecracker.socket")
+	} else {
+		sockPath = filepath.Join(vmDir, "firecracker.sock")
+	}
 	machine, err := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
 	if err != nil {
 		return fmt.Errorf("firecracker live snapshot connect %s: %w", vmID, err)
@@ -149,9 +153,15 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		}
 	}()
 
-	// Create Firecracker memory snapshot. Paths are relative to the jailer chroot root.
+	// Create Firecracker memory snapshot.
+	// With jailer, paths are relative to the chroot root.
+	// Without jailer, use paths relative to the VM directory.
 	memFile := "/vmstate.bin"
 	snapMeta := "/snapshot.meta"
+	if !p.config.EnableJailer {
+		memFile = filepath.Join(vmDir, "vmstate.bin")
+		snapMeta = filepath.Join(vmDir, "snapshot.meta")
+	}
 	if snapErr = machine.CreateSnapshot(ctx, memFile, snapMeta); snapErr != nil {
 		return fmt.Errorf("firecracker create snapshot %s: %w", vmID, snapErr)
 	}
@@ -163,10 +173,15 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		return fmt.Errorf("firecracker snapshot copy rootfs: %w", snapErr)
 	}
 
-	// Copy snapshot files from chroot to snapshot dir.
-	chrootRoot := filepath.Join(vmDir, "root")
+	// Copy snapshot files from VM directory to snapshot dir.
+	var snapshotFilesDir string
+	if p.config.EnableJailer {
+		snapshotFilesDir = filepath.Join(vmDir, "root")
+	} else {
+		snapshotFilesDir = vmDir
+	}
 	for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
-		src := filepath.Join(chrootRoot, name)
+		src := filepath.Join(snapshotFilesDir, name)
 		dst := filepath.Join(snapDir, name)
 		if snapErr = copyFile(src, dst); snapErr != nil {
 			return fmt.Errorf("firecracker snapshot copy %s: %w", name, snapErr)
@@ -179,9 +194,9 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	}
 	snapErr = nil // Clear so defer doesn't try to resume again.
 
-	// Clean up snapshot files from chroot dir.
+	// Clean up snapshot files from VM dir.
 	for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
-		os.Remove(filepath.Join(chrootRoot, name))
+		os.Remove(filepath.Join(snapshotFilesDir, name))
 	}
 
 	return nil
@@ -194,7 +209,7 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 	vmID := sandboxRef.Ref
 	snapID := snapshotRef.Ref
 
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 	snapDir := p.snapshotDir(snapID)
 
 	si, err := readSnapInfo(p.snapInfoPath(snapID))
@@ -208,17 +223,22 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 	}
 
 	if si.Mode == domain.ConsistencyLive {
-		// Copy snapshot files to VM's chroot root for live restore.
-		chrootRoot := filepath.Join(vmDir, "root")
-		os.MkdirAll(chrootRoot, 0o755)
+		// Copy snapshot files to VM directory for live restore.
+		var restoreDir string
+		if p.config.EnableJailer {
+			restoreDir = filepath.Join(vmDir, "root")
+		} else {
+			restoreDir = vmDir
+		}
+		os.MkdirAll(restoreDir, 0o755)
 		for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
-			if err := copyFile(filepath.Join(snapDir, name), filepath.Join(chrootRoot, name)); err != nil {
+			if err := copyFile(filepath.Join(snapDir, name), filepath.Join(restoreDir, name)); err != nil {
 				return fmt.Errorf("firecracker restore copy %s: %w", name, err)
 			}
 		}
 
 		// Set restore flag in vminfo, preserving original subnet for network-correct restore.
-		infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+		infoPath := p.vmInfoPath(vmID)
 		info, err := ReadVMInfo(infoPath)
 		if err != nil {
 			return fmt.Errorf("firecracker restore read vminfo: %w", err)

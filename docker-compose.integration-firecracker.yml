@@ -15,6 +15,7 @@ services:
       - --image-dir=/opt/firecracker/images
       - --chroot-base=/srv/firecracker
       - --snapshot-dir=/srv/firecracker/snapshots
+      - --enable-jailer=false
       - --auth-token=test-token
       - --log-level=debug
     healthcheck:

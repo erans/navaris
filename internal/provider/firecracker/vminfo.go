@@ -83,6 +83,10 @@ func ReadVMInfo(path string) (*VMInfo, error) {
 
 func ScanVMDirs(base string) ([]*VMInfo, []error) {
 	pattern := filepath.Join(base, "firecracker", "nvrs-fc-*")
+	return ScanVMDirsGlob(pattern)
+}
+
+func ScanVMDirsGlob(pattern string) ([]*VMInfo, []error) {
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, []error{fmt.Errorf("scan VM dirs: %w", err)}

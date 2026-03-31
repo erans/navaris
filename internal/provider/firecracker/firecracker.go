@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ type Config struct {
 	VsockCIDBase   uint32
 	HostInterface  string
 	SnapshotDir    string
+	EnableJailer   bool
 }
 
 func (c *Config) defaults() {
@@ -67,13 +69,16 @@ func New(cfg Config) (*Provider, error) {
 	// Validate required fields.
 	for _, check := range []struct{ name, val string }{
 		{"firecracker-bin", cfg.FirecrackerBin},
-		{"jailer-bin", cfg.JailerBin},
 		{"kernel-path", cfg.KernelPath},
 		{"image-dir", cfg.ImageDir},
 	} {
 		if check.val == "" {
 			return nil, fmt.Errorf("firecracker: %s is required", check.name)
 		}
+	}
+
+	if cfg.EnableJailer && cfg.JailerBin == "" {
+		return nil, fmt.Errorf("firecracker: jailer-bin is required when jailer is enabled")
 	}
 
 	// Detect host interface.
@@ -128,7 +133,13 @@ func New(cfg Config) (*Provider, error) {
 }
 
 func (p *Provider) recover() error {
-	infos, errs := ScanVMDirs(p.config.ChrootBase)
+	var pattern string
+	if p.config.EnableJailer {
+		pattern = filepath.Join(p.config.ChrootBase, "firecracker", "nvrs-fc-*")
+	} else {
+		pattern = filepath.Join(p.config.ChrootBase, "nvrs-fc-*")
+	}
+	infos, errs := ScanVMDirsGlob(pattern)
 	for _, e := range errs {
 		slog.Warn("firecracker: recovery skip", "error", e)
 	}
@@ -170,7 +181,7 @@ func (p *Provider) recover() error {
 					}
 				}
 				info.Ports = nil
-				infoPath := jailer.VMInfoPath(p.config.ChrootBase, info.ID)
+				infoPath := p.vmInfoPath(info.ID)
 				if err := info.Write(infoPath); err != nil {
 					slog.Warn("firecracker: recovery write vminfo", "vm", info.ID, "error", err)
 				}
@@ -178,6 +189,31 @@ func (p *Provider) recover() error {
 		}
 	}
 	return nil
+}
+
+func (p *Provider) vmDir(vmID string) string {
+	if p.config.EnableJailer {
+		return jailer.ChrootPath(p.config.ChrootBase, vmID)
+	}
+	return filepath.Join(p.config.ChrootBase, vmID)
+}
+
+func (p *Provider) vmInfoPath(vmID string) string {
+	return filepath.Join(p.vmDir(vmID), "vminfo.json")
+}
+
+func (p *Provider) vsockPath(vmID string) string {
+	if p.config.EnableJailer {
+		return filepath.Join(p.vmDir(vmID), "root", "vsock")
+	}
+	return filepath.Join(p.vmDir(vmID), "vsock")
+}
+
+func (p *Provider) socketPath(vmID string) string {
+	if p.config.EnableJailer {
+		return "firecracker.sock" // relative, SDK translates via jailer chroot
+	}
+	return filepath.Join(p.vmDir(vmID), "firecracker.sock") // absolute
 }
 
 func (p *Provider) allocateCID() uint32 {

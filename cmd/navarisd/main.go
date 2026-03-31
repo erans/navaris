@@ -37,6 +37,7 @@ type config struct {
 	chrootBase     string
 	hostInterface  string
 	snapshotDir    string
+	enableJailer   bool
 	otlpEndpoint   string
 	otlpProtocol   string
 	serviceName    string
@@ -66,6 +67,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.chrootBase, "chroot-base", "/srv/firecracker", "jailer chroot base directory")
 	flag.StringVar(&cfg.hostInterface, "host-interface", "", "network interface for masquerade (auto-detect if empty)")
 	flag.StringVar(&cfg.snapshotDir, "snapshot-dir", "/srv/firecracker/snapshots", "directory for Firecracker snapshots")
+	flag.BoolVar(&cfg.enableJailer, "enable-jailer", true, "use the Firecracker jailer (disable for Docker-in-Docker)")
 	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
 	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
 	flag.StringVar(&cfg.serviceName, "service-name", "navarisd", "service name in telemetry data")

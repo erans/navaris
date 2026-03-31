@@ -18,7 +18,6 @@ import (
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
-	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
 	"github.com/navaris/navaris/internal/telemetry"
 )
@@ -40,7 +39,7 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	}
 
 	vmID := vmName()
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 
 	// Create VM directory.
 	if err := os.MkdirAll(vmDir, 0o755); err != nil {
@@ -60,14 +59,16 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	uid := p.uids.Allocate()
 
 	// Chown rootfs so the jailer UID can access it after privilege drop.
-	if err := os.Chown(dstImage, uid, uid); err != nil {
-		os.RemoveAll(vmDir)
-		return domain.BackendRef{}, fmt.Errorf("firecracker chown rootfs %s: %w", vmID, err)
+	if p.config.EnableJailer {
+		if err := os.Chown(dstImage, uid, uid); err != nil {
+			os.RemoveAll(vmDir)
+			return domain.BackendRef{}, fmt.Errorf("firecracker chown rootfs %s: %w", vmID, err)
+		}
 	}
 
 	// Write vminfo.json.
 	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
-	if err := info.Write(jailer.VMInfoPath(p.config.ChrootBase, vmID)); err != nil {
+	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
 	}
@@ -82,7 +83,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	vmID := ref.Ref
 
 	// Read vminfo.
-	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
 		return fmt.Errorf("firecracker start %s: %w", vmID, err)
@@ -93,7 +94,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		return nil
 	}
 
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 
 	// Check for live snapshot restore.
 	if info.RestoreFromSnapshot {
@@ -114,8 +115,23 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off " + p.subnets.KernelBootArg(subnetIdx)
 
+	var jailerCfg *fcsdk.JailerConfig
+	if p.config.EnableJailer {
+		jailerCfg = &fcsdk.JailerConfig{
+			GID:            fcsdk.Int(info.UID),
+			UID:            fcsdk.Int(info.UID),
+			ID:             vmID,
+			NumaNode:       fcsdk.Int(0),
+			ExecFile:       p.config.FirecrackerBin,
+			JailerBinary:   p.config.JailerBin,
+			ChrootBaseDir:  p.config.ChrootBase,
+			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
+			CgroupVersion:  p.cgroupVersion,
+		}
+	}
+
 	fcCfg := fcsdk.Config{
-		SocketPath:      "firecracker.sock",
+		SocketPath:      p.socketPath(vmID),
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      bootArgs,
 		MachineCfg: models.MachineConfiguration{
@@ -141,17 +157,7 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		VsockDevices: []fcsdk.VsockDevice{
 			{Path: "vsock", CID: uint32(info.CID)},
 		},
-		JailerCfg: &fcsdk.JailerConfig{
-			GID:            fcsdk.Int(info.UID),
-			UID:            fcsdk.Int(info.UID),
-			ID:             vmID,
-			NumaNode:       fcsdk.Int(0),
-			ExecFile:       p.config.FirecrackerBin,
-			JailerBinary:   p.config.JailerBin,
-			ChrootBaseDir:  p.config.ChrootBase,
-			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
-			CgroupVersion:  p.cgroupVersion,
-		},
+		JailerCfg: jailerCfg,
 	}
 
 	// Launch VM.
@@ -220,13 +226,35 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	}
 
 	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
-	chrootRoot := filepath.Join(vmDir, "root")
-	memPath := filepath.Join(chrootRoot, "vmstate.bin")
-	snapPath := filepath.Join(chrootRoot, "snapshot.meta")
+
+	var memPath, snapPath string
+	if p.config.EnableJailer {
+		chrootRoot := filepath.Join(vmDir, "root")
+		memPath = filepath.Join(chrootRoot, "vmstate.bin")
+		snapPath = filepath.Join(chrootRoot, "snapshot.meta")
+	} else {
+		memPath = filepath.Join(vmDir, "vmstate.bin")
+		snapPath = filepath.Join(vmDir, "snapshot.meta")
+	}
 
 	// Build config for snapshot restore — omit KernelImagePath, KernelArgs, MachineCfg.
+	var jailerCfg *fcsdk.JailerConfig
+	if p.config.EnableJailer {
+		jailerCfg = &fcsdk.JailerConfig{
+			GID:            fcsdk.Int(info.UID),
+			UID:            fcsdk.Int(info.UID),
+			ID:             vmID,
+			NumaNode:       fcsdk.Int(0),
+			ExecFile:       p.config.FirecrackerBin,
+			JailerBinary:   p.config.JailerBin,
+			ChrootBaseDir:  p.config.ChrootBase,
+			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
+			CgroupVersion:  p.cgroupVersion,
+		}
+	}
+
 	fcCfg := fcsdk.Config{
-		SocketPath: "firecracker.sock",
+		SocketPath: p.socketPath(vmID),
 		Drives: []models.Drive{
 			{
 				DriveID:      fcsdk.String("rootfs"),
@@ -246,17 +274,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		VsockDevices: []fcsdk.VsockDevice{
 			{Path: "vsock", CID: uint32(info.CID)},
 		},
-		JailerCfg: &fcsdk.JailerConfig{
-			GID:            fcsdk.Int(info.UID),
-			UID:            fcsdk.Int(info.UID),
-			ID:             vmID,
-			NumaNode:       fcsdk.Int(0),
-			ExecFile:       p.config.FirecrackerBin,
-			JailerBinary:   p.config.JailerBin,
-			ChrootBaseDir:  p.config.ChrootBase,
-			ChrootStrategy: fcsdk.NewNaiveChrootStrategy(p.config.KernelPath),
-			CgroupVersion:  p.cgroupVersion,
-		},
+		JailerCfg: jailerCfg,
 	}
 
 	machine, err := fcsdk.NewMachine(ctx, fcCfg, fcsdk.WithSnapshot(memPath, snapPath, func(cfg *fcsdk.SnapshotConfig) {
@@ -318,7 +336,7 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 	defer func() { endSpan(retErr) }()
 
 	vmID := ref.Ref
-	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
 		return fmt.Errorf("firecracker stop %s: %w", vmID, err)
@@ -332,8 +350,13 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 			syscall.Kill(info.PID, syscall.SIGKILL)
 		} else {
 			// Graceful: send CtrlAltDel via Firecracker API socket.
-			vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
-			sockPath := filepath.Join(vmDir, "root", "firecracker.sock")
+			vmDir := p.vmDir(vmID)
+			var sockPath string
+			if p.config.EnableJailer {
+				sockPath = filepath.Join(vmDir, "root", "firecracker.sock")
+			} else {
+				sockPath = filepath.Join(vmDir, "firecracker.sock")
+			}
 			machine, merr := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
 			if merr == nil {
 				machine.Shutdown(ctx)
@@ -394,7 +417,7 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	}
 
 	vmID := ref.Ref
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 
 	if err := os.RemoveAll(vmDir); err != nil {
 		return fmt.Errorf("firecracker destroy %s: %w", vmID, err)
@@ -412,14 +435,14 @@ func (p *Provider) GetSandboxState(ctx context.Context, ref domain.BackendRef) (
 	defer func() { endSpan(retErr) }()
 
 	vmID := ref.Ref
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 
 	// Check if VM directory exists.
 	if _, err := os.Stat(vmDir); os.IsNotExist(err) {
 		return domain.SandboxDestroyed, nil
 	}
 
-	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
 		if os.IsNotExist(errors.Unwrap(err)) {
@@ -461,7 +484,7 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	snapDir := p.snapshotDir(snapID)
 
 	vmID := vmName()
-	vmDir := jailer.ChrootPath(p.config.ChrootBase, vmID)
+	vmDir := p.vmDir(vmID)
 
 	// Create VM directory.
 	if err := os.MkdirAll(vmDir, 0o755); err != nil {
@@ -481,14 +504,16 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	uid := p.uids.Allocate()
 
 	// Chown rootfs so the jailer UID can access it after privilege drop.
-	if err := os.Chown(dst, uid, uid); err != nil {
-		os.RemoveAll(vmDir)
-		return domain.BackendRef{}, fmt.Errorf("firecracker chown snapshot rootfs %s: %w", vmID, err)
+	if p.config.EnableJailer {
+		if err := os.Chown(dst, uid, uid); err != nil {
+			os.RemoveAll(vmDir)
+			return domain.BackendRef{}, fmt.Errorf("firecracker chown snapshot rootfs %s: %w", vmID, err)
+		}
 	}
 
 	// Write vminfo.json.
 	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
-	if err := info.Write(jailer.VMInfoPath(p.config.ChrootBase, vmID)); err != nil {
+	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
 	}
@@ -503,42 +528,33 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
-	// Firecracker's vsock UDS only supports one CONNECT per guest port.
-	// Closing a connection permanently prevents new ones. So we don't
-	// CONNECT here — just wait for the UDS file to appear (confirming
-	// Firecracker is running) and give the guest time to boot.
-	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 	deadline := time.After(timeout)
 	for {
-		if _, err := os.Stat(udsPath); err == nil {
-			// UDS exists — Firecracker is up. Give the guest a moment to
-			// boot the kernel and start the agent before the first CONNECT.
-			time.Sleep(3 * time.Second)
-			return nil
+		client, err := p.dialAgent(vmID)
+		if err == nil {
+			pingErr := client.Ping(5 * time.Second)
+			client.Close()
+			if pingErr == nil {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("agent at %s: vsock UDS not found within %s", vmID, timeout)
-		case <-time.After(100 * time.Millisecond):
+			return fmt.Errorf("agent at %s did not respond within %s", vmID, timeout)
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
 
 func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
-	// Can't CONNECT to vsock without consuming the single-use connection.
-	// Just verify the Firecracker process is still alive.
-	p.vmMu.RLock()
-	info, ok := p.vms[vmID]
-	p.vmMu.RUnlock()
-	if !ok {
-		return fmt.Errorf("vm %s not found", vmID)
+	client, err := p.dialAgent(vmID)
+	if err != nil {
+		return err
 	}
-	if info.PID <= 0 || !processAlive(info.PID) {
-		return fmt.Errorf("vm %s process not alive", vmID)
-	}
-	return nil
+	defer client.Close()
+	return client.Ping(5 * time.Second)
 }
 
 func copyFile(src, dst string) error {

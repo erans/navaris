@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/navaris/navaris/internal/domain"
-	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
 	"github.com/navaris/navaris/internal/telemetry"
 )
@@ -25,7 +24,7 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 	}
 
 	// Read vminfo to get guest IP.
-	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
 		p.portAlloc.Release(hostPort)
@@ -69,7 +68,7 @@ func (p *Provider) UnpublishPort(ctx context.Context, ref domain.BackendRef, pub
 
 	vmID := ref.Ref
 
-	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
 		return fmt.Errorf("firecracker unpublish port read vminfo %s: %w", vmID, err)

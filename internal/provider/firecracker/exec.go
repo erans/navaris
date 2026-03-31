@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"path/filepath"
 	"time"
 
 	"github.com/navaris/navaris/internal/domain"
-	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
 )
@@ -23,7 +21,7 @@ type agentConn struct {
 }
 
 func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
-	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
+	udsPath := p.vsockPath(vmID)
 
 	var lastErr error
 	for attempt := 0; attempt < 10; attempt++ {
@@ -84,7 +82,7 @@ func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 }
 
 func (p *Provider) getVMInfo(vmID string) (*VMInfo, error) {
-	infoPath := jailer.VMInfoPath(p.config.ChrootBase, vmID)
+	infoPath := p.vmInfoPath(vmID)
 	return ReadVMInfo(infoPath)
 }
 
