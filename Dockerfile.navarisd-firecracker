@@ -39,10 +39,15 @@ RUN make defconfig && \
     ./scripts/config --set-val CONFIG_IP_PNP y && \
     ./scripts/config --set-val CONFIG_IP_PNP_DHCP y && \
     ./scripts/config --set-val CONFIG_RANDOM_TRUST_CPU y && \
+    ./scripts/config --set-val CONFIG_SECCOMP y && \
+    ./scripts/config --set-val CONFIG_SECCOMP_FILTER y && \
     ./scripts/config --set-val CONFIG_SECURITY_LANDLOCK y && \
     ./scripts/config --set-val CONFIG_FUSE_FS y && \
+    ./scripts/config --set-val CONFIG_IKCONFIG y && \
+    ./scripts/config --set-val CONFIG_IKCONFIG_PROC y && \
     make olddefconfig && \
-    grep -E 'VIRTIO_BLK|VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|VSOCKETS=|LANDLOCK|FUSE' .config && \
+    echo "=== Verifying critical guest kernel configs ===" && \
+    grep -E 'VIRTIO_BLK|VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|VSOCKETS=|SECCOMP_FILTER|LANDLOCK|FUSE_FS=|IKCONFIG=' .config && \
     make -j"$(nproc)" vmlinux
 RUN cp vmlinux /vmlinux
 
