@@ -11,3 +11,5 @@ import (
 func newFirecrackerProvider(_ config) (domain.Provider, error) {
 	return nil, fmt.Errorf("firecracker provider not available: binary built without 'firecracker' build tag")
 }
+
+func kvmAvailable() bool { return false }
