@@ -3,26 +3,64 @@
 package firecracker
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
-	sdkvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
 
 func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
-	conn, err := sdkvsock.Dial(udsPath, 1024)
+
+	conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("vsock dial %s: %w", vmID, err)
 	}
-	return fcvsock.NewClientFromConn(conn), nil
+
+	// Firecracker vsock handshake: send CONNECT <port>, read OK <port>.
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := fmt.Fprintf(conn, "CONNECT 1024\n"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("vsock connect msg %s: %w", vmID, err)
+	}
+
+	// Read the ack line byte-by-byte to avoid over-reading past the newline.
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("vsock ack read %s: %w", vmID, err)
+	}
+	if !strings.HasPrefix(line, "OK ") {
+		conn.Close()
+		return nil, fmt.Errorf("vsock ack %s: unexpected %q", vmID, line)
+	}
+
+	conn.SetDeadline(time.Time{}) // clear deadline
+
+	// Wrap conn + any buffered bytes into a single net.Conn.
+	return fcvsock.NewClientFromConn(bufferedConn{Conn: conn, r: br}), nil
+}
+
+// bufferedConn wraps a net.Conn so that reads drain the bufio.Reader first,
+// ensuring bytes consumed during the CONNECT handshake aren't lost.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c bufferedConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
 }
 
 func (p *Provider) getVMInfo(vmID string) (*VMInfo, error) {
