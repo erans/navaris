@@ -536,7 +536,7 @@ func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.D
 	for {
 		if _, err := os.Stat(udsPath); err == nil {
 			// UDS exists. Give the guest kernel + init time to start the agent.
-			time.Sleep(3 * time.Second)
+			time.Sleep(5 * time.Second)
 			return nil
 		}
 		select {

@@ -24,9 +24,9 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 	udsPath := p.vsockPath(vmID)
 
 	var lastErr error
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < 30; attempt++ {
 		if attempt > 0 {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 
 		conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)
