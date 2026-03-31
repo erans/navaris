@@ -58,7 +58,6 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	unix.SetNonblock(nfd, true)
 	f := os.NewFile(uintptr(nfd), "vsock-conn")
 	return &vsockConn{f: f}, nil
 }
