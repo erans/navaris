@@ -505,13 +505,14 @@ func processAlive(pid int) bool {
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	for {
-		client, err := p.dialAgent(vmID)
+		ac, err := p.connectAgent(vmID)
 		if err == nil {
-			pingErr := client.Ping(2 * time.Second)
-			client.Close()
-			if pingErr == nil {
-				return nil
-			}
+			// CONNECT handshake succeeded — Firecracker confirmed the guest
+			// agent is listening. Cache the connection for the first exec.
+			p.agentMu.Lock()
+			p.agentConns[vmID] = ac
+			p.agentMu.Unlock()
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -524,12 +525,12 @@ func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.D
 }
 
 func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
-	client, err := p.dialAgent(vmID)
+	ac, err := p.connectAgent(vmID)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-	return client.Ping(2 * time.Second)
+	ac.conn.Close()
+	return nil
 }
 
 func copyFile(src, dst string) error {

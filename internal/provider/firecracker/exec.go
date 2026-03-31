@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,13 +19,8 @@ import (
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
-func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
+func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
-
-	// Debug: check if UDS exists.
-	if _, err := os.Stat(udsPath); err != nil {
-		return nil, fmt.Errorf("vsock dial %s: UDS stat: %w", vmID, err)
-	}
 
 	conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)
 	if err != nil {
@@ -40,7 +34,6 @@ func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 		return nil, fmt.Errorf("vsock connect msg %s: %w", vmID, err)
 	}
 
-	// Read the ack line byte-by-byte to avoid over-reading past the newline.
 	br := bufio.NewReader(conn)
 	line, err := br.ReadString('\n')
 	if err != nil {
@@ -53,9 +46,26 @@ func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 	}
 
 	conn.SetDeadline(time.Time{}) // clear deadline
+	return &agentConn{conn: conn, br: br}, nil
+}
 
-	// Wrap conn + any buffered bytes into a single net.Conn.
-	return fcvsock.NewClientFromConn(bufferedConn{Conn: conn, r: br}), nil
+func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
+	p.agentMu.Lock()
+	ac, ok := p.agentConns[vmID]
+	if ok {
+		delete(p.agentConns, vmID)
+	}
+	p.agentMu.Unlock()
+
+	if ac == nil {
+		var err error
+		ac, err = p.connectAgent(vmID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br}), nil
 }
 
 // bufferedConn wraps a net.Conn so that reads drain the bufio.Reader first,

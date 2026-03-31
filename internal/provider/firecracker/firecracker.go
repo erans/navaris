@@ -3,9 +3,11 @@
 package firecracker
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -42,18 +44,26 @@ func (c *Config) defaults() {
 	}
 }
 
+// agentConn holds a persistent vsock connection to a guest agent.
+type agentConn struct {
+	conn net.Conn
+	br   *bufio.Reader
+}
+
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
-	config       Config
-	subnets      *network.Allocator
-	uids         *jailer.UIDAllocator
-	portAlloc    *network.PortAllocator
-	cidNext      uint32
-	cidMu        sync.Mutex
-	vms          map[string]*VMInfo
-	vmMu         sync.RWMutex
-	hostIface    string
+	config        Config
+	subnets       *network.Allocator
+	uids          *jailer.UIDAllocator
+	portAlloc     *network.PortAllocator
+	cidNext       uint32
+	cidMu         sync.Mutex
+	vms           map[string]*VMInfo
+	vmMu          sync.RWMutex
+	hostIface     string
 	cgroupVersion string
+	agentConns    map[string]*agentConn
+	agentMu       sync.Mutex
 }
 
 // New creates a Firecracker provider and recovers any orphaned VMs.
@@ -100,6 +110,7 @@ func New(cfg Config) (*Provider, error) {
 		vms:           make(map[string]*VMInfo),
 		hostIface:     hostIface,
 		cgroupVersion: detectCgroupVersion(),
+		agentConns:    make(map[string]*agentConn),
 	}
 
 	// Recover orphaned VMs from disk.
