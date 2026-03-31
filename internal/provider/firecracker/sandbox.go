@@ -503,51 +503,41 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
+	// Firecracker's vsock UDS only supports one CONNECT per guest port.
+	// Closing a connection permanently prevents new ones. So we don't
+	// CONNECT here — just wait for the UDS file to appear (confirming
+	// Firecracker is running) and give the guest time to boot.
+	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 	deadline := time.After(timeout)
 	for {
-		// Try raw CONNECT + ping without creating a Client (no readLoop goroutine).
-		// This avoids the persistent connection issues that cause broken pipe.
-		ac, err := p.connectAgent(vmID)
-		if err == nil {
-			// Send a raw ping: 4-byte big-endian length + JSON body.
-			pingMsg := []byte(`{"v":1,"type":"ping","id":"health"}`)
-			lenBuf := []byte{0, 0, 0, byte(len(pingMsg))}
-			ac.conn.SetDeadline(time.Now().Add(5 * time.Second))
-			_, writeErr := ac.conn.Write(append(lenBuf, pingMsg...))
-			if writeErr == nil {
-				// Read pong: 4-byte length + body.
-				var respLen [4]byte
-				_, readErr := io.ReadFull(ac.conn, respLen[:])
-				if readErr == nil {
-					bodyLen := int(respLen[0])<<24 | int(respLen[1])<<16 | int(respLen[2])<<8 | int(respLen[3])
-					if bodyLen > 0 && bodyLen < 4096 {
-						body := make([]byte, bodyLen)
-						_, readErr = io.ReadFull(ac.conn, body)
-						if readErr == nil {
-							ac.conn.Close()
-							return nil // Agent responded
-						}
-					}
-				}
-			}
-			ac.conn.Close()
+		if _, err := os.Stat(udsPath); err == nil {
+			// UDS exists — Firecracker is up. Give the guest a moment to
+			// boot the kernel and start the agent before the first CONNECT.
+			time.Sleep(3 * time.Second)
+			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("agent at %s did not respond within %s", vmID, timeout)
-		case <-time.After(time.Second):
+			return fmt.Errorf("agent at %s: vsock UDS not found within %s", vmID, timeout)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
 
 func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
-	ac, err := p.connectAgent(vmID)
-	if err != nil {
-		return err
+	// Can't CONNECT to vsock without consuming the single-use connection.
+	// Just verify the Firecracker process is still alive.
+	p.vmMu.RLock()
+	info, ok := p.vms[vmID]
+	p.vmMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("vm %s not found", vmID)
 	}
-	ac.conn.Close()
+	if info.PID <= 0 || !processAlive(info.PID) {
+		return fmt.Errorf("vm %s process not alive", vmID)
+	}
 	return nil
 }
 
