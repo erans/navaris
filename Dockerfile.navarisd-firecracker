@@ -26,17 +26,17 @@ COPY resources/microvm-kernel.config /tmp/linux-${KERNEL_VERSION}/.microvm.confi
 WORKDIR /tmp/linux-${KERNEL_VERSION}
 RUN make defconfig && \
     ./scripts/config --disable CONFIG_ACPI && \
-    ./scripts/config --disable CONFIG_PCI && \
-    ./scripts/config --enable CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES && \
-    ./scripts/config --enable CONFIG_VIRTIO_NET && \
-    ./scripts/config --enable CONFIG_VIRTIO_VSOCKETS && \
-    ./scripts/config --enable CONFIG_VIRTIO_VSOCKETS_COMMON && \
-    ./scripts/config --enable CONFIG_VSOCKETS && \
-    ./scripts/config --enable CONFIG_VSOCKETS_DIAG && \
-    ./scripts/config --enable CONFIG_IP_PNP && \
-    ./scripts/config --enable CONFIG_IP_PNP_DHCP && \
-    ./scripts/config --enable CONFIG_RANDOM_TRUST_CPU && \
+    ./scripts/config --set-val CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_NET y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS_COMMON y && \
+    ./scripts/config --set-val CONFIG_VSOCKETS y && \
+    ./scripts/config --set-val CONFIG_VSOCKETS_DIAG y && \
+    ./scripts/config --set-val CONFIG_IP_PNP y && \
+    ./scripts/config --set-val CONFIG_IP_PNP_DHCP y && \
+    ./scripts/config --set-val CONFIG_RANDOM_TRUST_CPU y && \
     make olddefconfig && \
+    grep -E 'VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK' .config && \
     make -j"$(nproc)" vmlinux
 RUN cp vmlinux /vmlinux
 
