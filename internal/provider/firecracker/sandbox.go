@@ -404,13 +404,6 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
 
-	p.agentMu.Lock()
-	if c, ok := p.agentClients[vmID]; ok {
-		c.Close()
-		delete(p.agentClients, vmID)
-	}
-	p.agentMu.Unlock()
-
 	return nil
 }
 
@@ -510,41 +503,34 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
-	// Wait for the vsock UDS to appear (Firecracker creates it after InstanceStart).
-	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 	deadline := time.After(timeout)
-
-	// Phase 1: Wait for UDS file to exist (Firecracker creates it).
 	for {
-		if _, err := os.Stat(udsPath); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline:
-			return fmt.Errorf("agent at %s: vsock UDS not found within %s", vmID, timeout)
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-
-	// Phase 2: Wait for guest agent to start listening by attempting CONNECT.
-	// Each failed CONNECT (agent not ready) causes Firecracker to close the
-	// UDS connection. We must NOT attempt CONNECT until we're confident the
-	// agent is listening — so we wait for the kernel to boot and init to run.
-	// A single successful CONNECT + ping is enough; we keep the client alive.
-	for {
-		client, err := p.dialAgent(vmID)
+		// Try raw CONNECT + ping without creating a Client (no readLoop goroutine).
+		// This avoids the persistent connection issues that cause broken pipe.
+		ac, err := p.connectAgent(vmID)
 		if err == nil {
-			pingErr := client.Ping(5 * time.Second)
-			if pingErr == nil {
-				// Store the verified client — exec will reuse it.
-				p.agentMu.Lock()
-				p.agentClients[vmID] = client
-				p.agentMu.Unlock()
-				return nil
+			// Send a raw ping: 4-byte big-endian length + JSON body.
+			pingMsg := []byte(`{"v":1,"type":"ping","id":"health"}`)
+			lenBuf := []byte{0, 0, 0, byte(len(pingMsg))}
+			ac.conn.SetDeadline(time.Now().Add(5 * time.Second))
+			_, writeErr := ac.conn.Write(append(lenBuf, pingMsg...))
+			if writeErr == nil {
+				// Read pong: 4-byte length + body.
+				var respLen [4]byte
+				_, readErr := io.ReadFull(ac.conn, respLen[:])
+				if readErr == nil {
+					bodyLen := int(respLen[0])<<24 | int(respLen[1])<<16 | int(respLen[2])<<8 | int(respLen[3])
+					if bodyLen > 0 && bodyLen < 4096 {
+						body := make([]byte, bodyLen)
+						_, readErr = io.ReadFull(ac.conn, body)
+						if readErr == nil {
+							ac.conn.Close()
+							return nil // Agent responded
+						}
+					}
+				}
 			}
-			client.Close()
+			ac.conn.Close()
 		}
 		select {
 		case <-ctx.Done():
@@ -557,12 +543,12 @@ func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.D
 }
 
 func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
-	client, err := p.dialAgent(vmID)
+	ac, err := p.connectAgent(vmID)
 	if err != nil {
 		return err
 	}
-	// Don't close — dialAgent returns a shared client.
-	return client.Ping(2 * time.Second)
+	ac.conn.Close()
+	return nil
 }
 
 func copyFile(src, dst string) error {

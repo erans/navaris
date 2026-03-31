@@ -76,13 +76,6 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 }
 
 func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
-	p.agentMu.Lock()
-	client, ok := p.agentClients[vmID]
-	p.agentMu.Unlock()
-	if ok {
-		return client, nil
-	}
-
 	ac, err := p.connectAgent(vmID)
 	if err != nil {
 		return nil, err
