@@ -20,7 +20,6 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
-	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -405,14 +404,6 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
 
-	// Close and remove cached agent client.
-	p.agentMu.Lock()
-	if c, ok := p.agentClients[vmID]; ok {
-		c.Close()
-		delete(p.agentClients, vmID)
-	}
-	p.agentMu.Unlock()
-
 	return nil
 }
 
@@ -514,19 +505,13 @@ func processAlive(pid int) bool {
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	for {
-		ac, err := p.connectAgent(vmID)
+		client, err := p.dialAgent(vmID)
 		if err == nil {
-			// CONNECT handshake succeeded — store the persistent connection.
-			// All subsequent dialAgent calls will reuse this connection.
-			client := fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br})
 			pingErr := client.Ping(2 * time.Second)
+			client.Close()
 			if pingErr == nil {
-				p.agentMu.Lock()
-				p.agentClients[vmID] = client
-				p.agentMu.Unlock()
 				return nil
 			}
-			client.Close()
 		}
 		select {
 		case <-ctx.Done():
@@ -539,12 +524,12 @@ func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.D
 }
 
 func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
-	ac, err := p.connectAgent(vmID)
+	client, err := p.dialAgent(vmID)
 	if err != nil {
 		return err
 	}
-	ac.conn.Close()
-	return nil
+	defer client.Close()
+	return client.Ping(2 * time.Second)
 }
 
 func copyFile(src, dst string) error {

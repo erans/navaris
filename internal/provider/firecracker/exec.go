@@ -28,54 +28,51 @@ type agentConn struct {
 func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 
-	conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("vsock dial %s: %w", vmID, err)
-	}
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
 
-	// Firecracker vsock handshake: send CONNECT <port>, read OK <port>.
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err := fmt.Fprintf(conn, "CONNECT 1024\n"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("vsock connect msg %s: %w", vmID, err)
-	}
+		conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)
+		if err != nil {
+			lastErr = fmt.Errorf("vsock dial %s: %w", vmID, err)
+			continue
+		}
 
-	br := bufio.NewReader(conn)
-	line, err := br.ReadString('\n')
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("vsock ack read %s: %w", vmID, err)
-	}
-	if !strings.HasPrefix(line, "OK ") {
-		conn.Close()
-		return nil, fmt.Errorf("vsock ack %s: unexpected %q", vmID, line)
-	}
+		// Firecracker vsock handshake: send CONNECT <port>, read OK <port>.
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := fmt.Fprintf(conn, "CONNECT 1024\n"); err != nil {
+			conn.Close()
+			lastErr = fmt.Errorf("vsock connect msg %s: %w", vmID, err)
+			continue
+		}
 
-	conn.SetDeadline(time.Time{}) // clear deadline
-	return &agentConn{conn: conn, br: br}, nil
+		br := bufio.NewReader(conn)
+		line, err := br.ReadString('\n')
+		if err != nil {
+			conn.Close()
+			lastErr = fmt.Errorf("vsock ack read %s: %w", vmID, err)
+			continue
+		}
+		if !strings.HasPrefix(line, "OK ") {
+			conn.Close()
+			lastErr = fmt.Errorf("vsock ack %s: unexpected %q", vmID, line)
+			continue
+		}
+
+		conn.SetDeadline(time.Time{}) // clear deadline
+		return &agentConn{conn: conn, br: br}, nil
+	}
+	return nil, lastErr
 }
 
 func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
-	p.agentMu.Lock()
-	client, ok := p.agentClients[vmID]
-	p.agentMu.Unlock()
-
-	if ok {
-		return client, nil
-	}
-
-	// No cached client — establish a new connection.
 	ac, err := p.connectAgent(vmID)
 	if err != nil {
 		return nil, err
 	}
-	client = fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br})
-
-	p.agentMu.Lock()
-	p.agentClients[vmID] = client
-	p.agentMu.Unlock()
-
-	return client, nil
+	return fcvsock.NewClientFromConn(bufferedConn{Conn: ac.conn, r: ac.br}), nil
 }
 
 // bufferedConn wraps a net.Conn so that reads drain the bufio.Reader first,
