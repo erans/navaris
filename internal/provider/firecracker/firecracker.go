@@ -13,6 +13,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -54,6 +55,8 @@ type Provider struct {
 	vmMu          sync.RWMutex
 	hostIface     string
 	cgroupVersion string
+	agentClients  map[string]*fcvsock.Client
+	agentMu       sync.Mutex
 }
 
 // New creates a Firecracker provider and recovers any orphaned VMs.
@@ -100,6 +103,7 @@ func New(cfg Config) (*Provider, error) {
 		vms:           make(map[string]*VMInfo),
 		hostIface:     hostIface,
 		cgroupVersion: detectCgroupVersion(),
+		agentClients:  make(map[string]*fcvsock.Client),
 	}
 
 	// Recover orphaned VMs from disk.

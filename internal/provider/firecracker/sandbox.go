@@ -404,6 +404,13 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
 
+	p.agentMu.Lock()
+	if c, ok := p.agentClients[vmID]; ok {
+		c.Close()
+		delete(p.agentClients, vmID)
+	}
+	p.agentMu.Unlock()
+
 	return nil
 }
 
@@ -503,22 +510,48 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
+	// Wait for the vsock UDS to appear (Firecracker creates it after InstanceStart).
+	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
 	deadline := time.After(timeout)
+
+	// Phase 1: Wait for UDS file to exist (Firecracker creates it).
+	for {
+		if _, err := os.Stat(udsPath); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("agent at %s: vsock UDS not found within %s", vmID, timeout)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	// Phase 2: Wait for guest agent to start listening by attempting CONNECT.
+	// Each failed CONNECT (agent not ready) causes Firecracker to close the
+	// UDS connection. We must NOT attempt CONNECT until we're confident the
+	// agent is listening — so we wait for the kernel to boot and init to run.
+	// A single successful CONNECT + ping is enough; we keep the client alive.
 	for {
 		client, err := p.dialAgent(vmID)
 		if err == nil {
-			pingErr := client.Ping(2 * time.Second)
-			client.Close()
+			pingErr := client.Ping(5 * time.Second)
 			if pingErr == nil {
+				// Store the verified client — exec will reuse it.
+				p.agentMu.Lock()
+				p.agentClients[vmID] = client
+				p.agentMu.Unlock()
 				return nil
 			}
+			client.Close()
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
 			return fmt.Errorf("agent at %s did not respond within %s", vmID, timeout)
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(time.Second):
 		}
 	}
 }
@@ -528,7 +561,7 @@ func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	// Don't close — dialAgent returns a shared client.
 	return client.Ping(2 * time.Second)
 }
 
