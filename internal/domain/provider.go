@@ -13,6 +13,7 @@ type BackendRef struct {
 type CreateSandboxRequest struct {
 	Name          string
 	ImageRef      string
+	Backend       string
 	CPULimit      *int
 	MemoryLimitMB *int
 	NetworkMode   NetworkMode
