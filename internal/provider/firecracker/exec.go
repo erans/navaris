@@ -3,14 +3,12 @@
 package firecracker
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/navaris/navaris/internal/domain"
@@ -47,16 +45,27 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 			continue
 		}
 
-		br := bufio.NewReader(conn)
-		line, err := br.ReadString('\n')
-		if err != nil {
-			conn.Close()
-			lastErr = fmt.Errorf("vsock ack read %s: %w", vmID, err)
+		// Read OK ack byte-by-byte to avoid buffering past the newline.
+		var ack [32]byte
+		ackLen := 0
+		for ackLen < len(ack) {
+			n, readErr := conn.Read(ack[ackLen : ackLen+1])
+			if readErr != nil {
+				conn.Close()
+				lastErr = fmt.Errorf("vsock ack read %s: %w", vmID, readErr)
+				break
+			}
+			ackLen += n
+			if ack[ackLen-1] == '\n' {
+				break
+			}
+		}
+		if lastErr != nil {
 			continue
 		}
-		if !strings.HasPrefix(line, "OK ") {
+		if ackLen < 3 || string(ack[:3]) != "OK " {
 			conn.Close()
-			lastErr = fmt.Errorf("vsock ack %s: unexpected %q", vmID, line)
+			lastErr = fmt.Errorf("vsock ack %s: unexpected %q", vmID, string(ack[:ackLen]))
 			continue
 		}
 
@@ -79,17 +88,6 @@ func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 		return nil, err
 	}
 	return fcvsock.NewClientFromConn(ac.conn), nil
-}
-
-// bufferedConn wraps a net.Conn so that reads drain the bufio.Reader first,
-// ensuring bytes consumed during the CONNECT handshake aren't lost.
-type bufferedConn struct {
-	net.Conn
-	r *bufio.Reader
-}
-
-func (c bufferedConn) Read(p []byte) (int, error) {
-	return c.r.Read(p)
 }
 
 func (p *Provider) getVMInfo(vmID string) (*VMInfo, error) {
