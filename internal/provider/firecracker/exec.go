@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +22,11 @@ import (
 
 func (p *Provider) dialAgent(vmID string) (*fcvsock.Client, error) {
 	udsPath := filepath.Join(jailer.ChrootPath(p.config.ChrootBase, vmID), "root", "vsock")
+
+	// Debug: check if UDS exists.
+	if _, err := os.Stat(udsPath); err != nil {
+		return nil, fmt.Errorf("vsock dial %s: UDS stat: %w", vmID, err)
+	}
 
 	conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)
 	if err != nil {
