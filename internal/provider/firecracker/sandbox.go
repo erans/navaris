@@ -528,22 +528,23 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
+	// Don't CONNECT to the vsock UDS here — each failed CONNECT (before the
+	// agent starts) may permanently block the port in Firecracker. Instead,
+	// just wait for the UDS file to exist and give the guest time to boot.
+	udsPath := p.vsockPath(vmID)
 	deadline := time.After(timeout)
 	for {
-		client, err := p.dialAgent(vmID)
-		if err == nil {
-			pingErr := client.Ping(5 * time.Second)
-			client.Close()
-			if pingErr == nil {
-				return nil
-			}
+		if _, err := os.Stat(udsPath); err == nil {
+			// UDS exists. Give the guest kernel + init time to start the agent.
+			time.Sleep(3 * time.Second)
+			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("agent at %s did not respond within %s", vmID, timeout)
-		case <-time.After(500 * time.Millisecond):
+			return fmt.Errorf("agent at %s: vsock UDS not found within %s", vmID, timeout)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
