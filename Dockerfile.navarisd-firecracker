@@ -4,7 +4,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -tags firecracker -o /navarisd ./cmd/navarisd
+ARG BUILD_TAGS=firecracker
+RUN CGO_ENABLED=0 go build -tags "${BUILD_TAGS}" -o /navarisd ./cmd/navarisd
 RUN GOOS=linux CGO_ENABLED=0 go build -o /navaris-agent ./cmd/navaris-agent
 
 # ---- Stage 2: Build Firecracker-compatible kernel ----
