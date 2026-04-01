@@ -4,7 +4,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -tags firecracker -o /navarisd ./cmd/navarisd
+ARG BUILD_TAGS=firecracker
+RUN CGO_ENABLED=0 go build -tags "${BUILD_TAGS}" -o /navarisd ./cmd/navarisd
 RUN GOOS=linux CGO_ENABLED=0 go build -o /navaris-agent ./cmd/navaris-agent
 
 # ---- Stage 2: Build Firecracker-compatible kernel ----
@@ -25,8 +26,12 @@ COPY resources/microvm-kernel.config /tmp/linux-${KERNEL_VERSION}/.microvm.confi
 
 WORKDIR /tmp/linux-${KERNEL_VERSION}
 RUN make defconfig && \
+    make olddefconfig && \
     ./scripts/config --disable CONFIG_ACPI && \
+    ./scripts/config --set-val CONFIG_VIRTIO y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_MMIO y && \
     ./scripts/config --set-val CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_BLK y && \
     ./scripts/config --set-val CONFIG_VIRTIO_NET y && \
     ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS y && \
     ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS_COMMON y && \
@@ -35,10 +40,15 @@ RUN make defconfig && \
     ./scripts/config --set-val CONFIG_IP_PNP y && \
     ./scripts/config --set-val CONFIG_IP_PNP_DHCP y && \
     ./scripts/config --set-val CONFIG_RANDOM_TRUST_CPU y && \
+    ./scripts/config --set-val CONFIG_SECCOMP y && \
+    ./scripts/config --set-val CONFIG_SECCOMP_FILTER y && \
     ./scripts/config --set-val CONFIG_SECURITY_LANDLOCK y && \
     ./scripts/config --set-val CONFIG_FUSE_FS y && \
+    ./scripts/config --set-val CONFIG_IKCONFIG y && \
+    ./scripts/config --set-val CONFIG_IKCONFIG_PROC y && \
     make olddefconfig && \
-    grep -E 'VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|LANDLOCK|FUSE' .config && \
+    echo "=== Verifying critical guest kernel configs ===" && \
+    grep -E 'VIRTIO_BLK|VIRTIO_NET|VIRTIO_MMIO|VIRTIO_VSOCK|VSOCKETS=|SECCOMP_FILTER|LANDLOCK|FUSE_FS=|IKCONFIG=' .config && \
     make -j"$(nproc)" vmlinux
 RUN cp vmlinux /vmlinux
 

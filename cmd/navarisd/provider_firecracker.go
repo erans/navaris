@@ -3,6 +3,8 @@
 package main
 
 import (
+	"os"
+
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker"
 )
@@ -18,4 +20,13 @@ func newFirecrackerProvider(cfg config) (domain.Provider, error) {
 		SnapshotDir:    cfg.snapshotDir,
 		EnableJailer:   cfg.enableJailer,
 	})
+}
+
+func kvmAvailable() bool {
+	f, err := os.Open("/dev/kvm")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }

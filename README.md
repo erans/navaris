@@ -17,7 +17,7 @@ This matters when you need to:
 
 ## Backends
 
-Navaris supports two isolation backends. You choose one when starting the daemon — the API and CLI work identically regardless of which backend is running underneath.
+Navaris supports two isolation backends. You can enable one or both when starting the daemon — the API and CLI work identically regardless of which backend is running underneath. When both are enabled, each sandbox is routed to the correct backend automatically.
 
 ### Incus (system containers)
 
@@ -56,7 +56,7 @@ Navaris supports two isolation backends. You choose one when starting the daemon
 | Live snapshots | Native support | Memory + disk snapshot |
 | Density (sandboxes per host) | Higher | Lower |
 
-You can also run both backends on different Navaris instances and route workloads based on trust level — containers for your own code, microVMs for user-submitted code.
+You can run both backends in a single Navaris instance — containers for speed, microVMs for security — behind one API. Backend selection happens automatically based on image format, or you can specify it explicitly per sandbox.
 
 ## Features
 
@@ -97,12 +97,16 @@ For Firecracker, a lightweight guest agent (`navaris-agent`) runs inside each VM
 ### Build the daemon and CLI
 
 ```bash
-# Incus backend (default)
-go build -o navarisd ./cmd/navarisd
-go build -o navaris ./cmd/navaris
+# Incus backend only
+go build -tags incus -o navarisd ./cmd/navarisd
 
-# Firecracker backend
+# Firecracker backend only
 go build -tags firecracker -o navarisd ./cmd/navarisd
+
+# Both backends (recommended)
+go build -tags firecracker,incus -o navarisd ./cmd/navarisd
+
+# CLI (no build tags needed)
 go build -o navaris ./cmd/navaris
 
 # Guest agent (for Firecracker VMs)
@@ -114,17 +118,33 @@ GOOS=linux GOARCH=amd64 go build -o navaris-agent ./cmd/navaris-agent
 ### Start the daemon
 
 ```bash
-# With Incus
+# With Incus only
 ./navarisd --incus-socket /var/lib/incus/unix.socket --auth-token mysecret
 
-# With Firecracker
+# With Firecracker only (requires /dev/kvm)
 ./navarisd \
   --firecracker-bin /usr/local/bin/firecracker \
   --jailer-bin /usr/local/bin/jailer \
   --kernel-path /var/lib/firecracker/vmlinux \
   --image-dir /var/lib/firecracker/images \
   --auth-token mysecret
+
+# Both backends simultaneously
+./navarisd \
+  --incus-socket /var/lib/incus/unix.socket \
+  --firecracker-bin /usr/local/bin/firecracker \
+  --jailer-bin /usr/local/bin/jailer \
+  --kernel-path /var/lib/firecracker/vmlinux \
+  --image-dir /var/lib/firecracker/images \
+  --auth-token mysecret
 ```
+
+When both `--incus-socket` and `--firecracker-bin` are provided, navarisd enables both backends. If KVM is not available, Firecracker is disabled with a warning and Incus continues to work.
+
+Backend selection for new sandboxes follows this priority:
+1. Explicit `backend` field in the API request
+2. Auto-detection from image reference: `alpine/3.21` (slash) -> Incus, `alpine-3.21` (flat) -> Firecracker
+3. Default fallback: Incus (when both are available)
 
 ### Daemon flags
 
@@ -142,6 +162,7 @@ GOOS=linux GOARCH=amd64 go build -o navaris-agent ./cmd/navaris-agent
 | `--chroot-base` | `/srv/firecracker` | Jailer chroot base directory |
 | `--snapshot-dir` | `/srv/firecracker/snapshots` | Snapshot storage directory |
 | `--host-interface` | *(auto-detect)* | Network interface for masquerade |
+| `--enable-jailer` | `true` | Use the Firecracker jailer (disable for Docker) |
 | `--concurrency` | `8` | Max concurrent operations |
 | `--gc-interval` | `5m` | Operation garbage collection interval |
 | `--otlp-endpoint` | *(empty)* | OTLP collector endpoint (empty = telemetry disabled) |
@@ -163,8 +184,14 @@ export NAVARIS_TOKEN=mysecret
 # Create a project
 navaris project create --name my-project
 
-# Create a sandbox
+# Create an Incus container (auto-detected from image format)
 navaris sandbox create --project <project-id> --name dev --image alpine/3.21
+
+# Create a Firecracker VM (auto-detected from image format)
+navaris sandbox create --project <project-id> --name secure --image alpine-3.21
+
+# Or specify backend explicitly
+navaris sandbox create --project <project-id> --name dev --image alpine/3.21 --backend incus
 
 # Wait for it to start, then run a command
 navaris sandbox exec --sandbox <sandbox-id> -- echo "hello from the sandbox"
@@ -244,14 +271,22 @@ Integration tests use Docker Compose to spin up the full stack.
 
 ```bash
 # Incus backend
-make integration-env          # start environment
-make integration-test         # run tests
-make integration-env-down     # tear down
+make integration-test
 
 # Firecracker backend (requires /dev/kvm)
-make integration-env-firecracker
 make integration-test-firecracker
-make integration-env-firecracker-down
+
+# Mixed: both backends in one navarisd (requires /dev/kvm)
+make integration-test-mixed
+```
+
+Dev environments for manual testing:
+
+```bash
+make integration-env                # Incus
+make integration-env-firecracker    # Firecracker
+make integration-env-down           # tear down Incus
+make integration-env-firecracker-down  # tear down Firecracker
 ```
 
 ### Running unit tests

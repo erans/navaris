@@ -110,31 +110,46 @@ func run(cfg config) error {
 	// Worker dispatcher
 	disp := worker.NewDispatcher(store.OperationStore(), bus, cfg.concurrency)
 
-	// Provider
-	var prov domain.Provider
-	var backendName string
-	switch {
-	case cfg.firecrackerBin != "":
-		p, err := newFirecrackerProvider(cfg)
-		if err != nil {
-			return fmt.Errorf("firecracker provider: %w", err)
-		}
-		prov = p
-		backendName = "firecracker"
-		logger.Info("using firecracker provider")
-	case cfg.incusSocket != "":
+	// Provider registry — enable all configured backends.
+	reg := provider.NewRegistry()
+
+	if cfg.incusSocket != "" {
 		p, err := newIncusProvider(cfg.incusSocket)
 		if err != nil {
 			return fmt.Errorf("incus provider: %w", err)
 		}
-		prov = p
-		backendName = "incus"
-		logger.Info("using incus provider", "socket", cfg.incusSocket)
-	default:
-		prov = provider.NewMock()
-		backendName = "mock"
-		logger.Info("using mock provider")
+		reg.Register("incus", p)
+		logger.Info("incus provider enabled", "socket", cfg.incusSocket)
 	}
+
+	if cfg.firecrackerBin != "" {
+		if !kvmAvailable() {
+			logger.Warn("KVM not available (/dev/kvm), firecracker provider disabled")
+		} else {
+			p, err := newFirecrackerProvider(cfg)
+			if err != nil {
+				return fmt.Errorf("firecracker provider: %w", err)
+			}
+			reg.Register("firecracker", p)
+			logger.Info("firecracker provider enabled")
+		}
+	}
+
+	if reg.Len() == 0 {
+		reg.Register("mock", provider.NewMock())
+		logger.Info("no providers configured, using mock")
+	}
+
+	// Set default backend: incus > firecracker > mock.
+	for _, name := range []string{"incus", "firecracker", "mock"} {
+		if reg.Has(name) {
+			reg.SetFallback(name)
+			break
+		}
+	}
+
+	var prov domain.Provider = reg
+	backendName := reg.Fallback()
 
 	// Services
 	projSvc := service.NewProjectService(store.ProjectStore())

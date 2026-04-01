@@ -96,6 +96,11 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 
 	vmDir := p.vmDir(vmID)
 
+	// Clean up stale socket files from a previous run so Firecracker
+	// can bind fresh ones.
+	os.Remove(p.vsockPath(vmID))
+	os.Remove(filepath.Join(vmDir, "firecracker.sock"))
+
 	// Check for live snapshot restore.
 	if info.RestoreFromSnapshot {
 		return p.startFromSnapshot(ctx, vmID, vmDir, info, infoPath)
@@ -161,14 +166,17 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	}
 
 	// Launch VM.
-	machine, err := fcsdk.NewMachine(ctx, fcCfg)
+	// Use a detached context so the Firecracker process outlives the
+	// operation context that created it.
+	machineCtx := context.Background()
+	machine, err := fcsdk.NewMachine(machineCtx, fcCfg)
 	if err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker new machine %s: %w", vmID, err)
 	}
 
-	if err := machine.Start(ctx); err != nil {
+	if err := machine.Start(machineCtx); err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker start machine %s: %w", vmID, err)
@@ -277,7 +285,10 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		JailerCfg: jailerCfg,
 	}
 
-	machine, err := fcsdk.NewMachine(ctx, fcCfg, fcsdk.WithSnapshot(memPath, snapPath, func(cfg *fcsdk.SnapshotConfig) {
+	// Use a detached context so the Firecracker process outlives the
+	// operation context that created it.
+	machineCtx := context.Background()
+	machine, err := fcsdk.NewMachine(machineCtx, fcCfg, fcsdk.WithSnapshot(memPath, snapPath, func(cfg *fcsdk.SnapshotConfig) {
 		cfg.ResumeVM = true
 	}))
 	if err != nil {
@@ -286,7 +297,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		return fmt.Errorf("firecracker snapshot restore new machine %s: %w", vmID, err)
 	}
 
-	if err := machine.Start(ctx); err != nil {
+	if err := machine.Start(machineCtx); err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
 		return fmt.Errorf("firecracker snapshot restore start %s: %w", vmID, err)
@@ -528,16 +539,13 @@ func processAlive(pid int) bool {
 }
 
 func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.Duration) error {
-	// Don't CONNECT to the vsock UDS here — each failed CONNECT (before the
-	// agent starts) may permanently block the port in Firecracker. Instead,
-	// just wait for the UDS file to exist and give the guest time to boot.
 	udsPath := p.vsockPath(vmID)
 	deadline := time.After(timeout)
+
+	// Phase 1: wait for the vsock UDS file to appear.
 	for {
 		if _, err := os.Stat(udsPath); err == nil {
-			// UDS exists. Give the guest kernel + init time to start the agent.
-			time.Sleep(5 * time.Second)
-			return nil
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -545,6 +553,22 @@ func (p *Provider) waitForAgent(ctx context.Context, vmID string, timeout time.D
 		case <-deadline:
 			return fmt.Errorf("agent at %s: vsock UDS not found within %s", vmID, timeout)
 		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	// Phase 2: ping the agent until it responds. Systemd-based guests
+	// (Debian) boot slower than OpenRC (Alpine), so a blind sleep is
+	// unreliable. Retry with backoff until the agent acks a ping.
+	for {
+		if err := p.pingAgent(ctx, vmID); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("agent at %s: ping not acked within %s", vmID, timeout)
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }

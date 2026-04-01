@@ -55,3 +55,20 @@ integration-env-firecracker-down:
 
 integration-logs-firecracker:
 	docker compose -f $(FC_COMPOSE_FILE) logs -f
+
+MIXED_COMPOSE_FILE := docker-compose.integration-mixed.yml
+
+.PHONY: integration-test-mixed integration-env-mixed integration-env-mixed-down integration-logs-mixed
+
+integration-test-mixed:
+	@docker compose -f $(MIXED_COMPOSE_FILE) --profile test up \
+		--build --abort-on-container-exit --exit-code-from test-runner; \
+	rc=$$?; \
+	docker compose -f $(MIXED_COMPOSE_FILE) --profile test down -v; \
+	exit $$rc
+
+integration-env-mixed-down:
+	docker compose -f $(MIXED_COMPOSE_FILE) --profile test down -v
+
+integration-logs-mixed:
+	docker compose -f $(MIXED_COMPOSE_FILE) logs -f
