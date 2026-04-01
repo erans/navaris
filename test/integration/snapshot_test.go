@@ -17,8 +17,10 @@ func TestSnapshotRestoreToSandbox(t *testing.T) {
 	sandboxID := createTestSandbox(t, c, proj.ProjectID, "snap-restore-sbx")
 
 	// Write a marker file into the sandbox.
+	// Use /root (not /tmp) because Debian's systemd mounts /tmp as tmpfs,
+	// which is not captured by filesystem snapshots.
 	execResp, err := c.Exec(ctx, sandboxID, client.ExecRequest{
-		Command: []string{"sh", "-c", "echo marker-before > /tmp/marker.txt"},
+		Command: []string{"sh", "-c", "echo marker-before > /root/marker.txt"},
 	})
 	if err != nil {
 		t.Fatalf("exec write marker: %v", err)
@@ -68,7 +70,7 @@ func TestSnapshotRestoreToSandbox(t *testing.T) {
 	}
 
 	execResp, err = c.Exec(ctx, sandboxID, client.ExecRequest{
-		Command: []string{"sh", "-c", "echo marker-after > /tmp/marker.txt"},
+		Command: []string{"sh", "-c", "echo marker-after > /root/marker.txt"},
 	})
 	if err != nil {
 		t.Fatalf("exec modify marker: %v", err)
@@ -108,7 +110,7 @@ func TestSnapshotRestoreToSandbox(t *testing.T) {
 	}
 
 	execResp, err = c.Exec(ctx, sandboxID, client.ExecRequest{
-		Command: []string{"cat", "/tmp/marker.txt"},
+		Command: []string{"cat", "/root/marker.txt"},
 	})
 	if err != nil {
 		t.Fatalf("exec read marker: %v", err)
