@@ -55,6 +55,7 @@ if [ -n "${INCUS_PRELOAD_IMAGE:-}" ]; then
 fi
 
 echo "Incus ready."
+touch /tmp/incus-ready
 
 # ---- Firecracker Setup (from firecracker-entrypoint.sh) ----
 
@@ -121,7 +122,7 @@ NAVARISD_PID=$!
 echo "navarisd started (PID $NAVARISD_PID)."
 
 # Wait on both processes — exit if either crashes.
-wait -n "$INCUSD_PID" "$NAVARISD_PID"
-exit_code=$?
+# Use &&/|| to prevent set -e from exiting before we can log.
+wait -n "$INCUSD_PID" "$NAVARISD_PID" && exit_code=0 || exit_code=$?
 echo "Process exited with code $exit_code, shutting down."
 exit "$exit_code"
