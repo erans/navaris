@@ -72,3 +72,20 @@ integration-env-mixed-down:
 
 integration-logs-mixed:
 	docker compose -f $(MIXED_COMPOSE_FILE) logs -f
+
+# ---- All-in-one Docker image ----
+
+.PHONY: docker-build docker-up docker-up-kvm docker-down
+
+docker-build:
+	docker build -f Dockerfile.navarisd-firecracker -t navarisd-firecracker .
+	docker build -t navaris .
+
+docker-up: docker-build
+	docker compose up navaris
+
+docker-up-kvm: docker-build
+	docker compose --profile kvm up
+
+docker-down:
+	docker compose --profile kvm down
