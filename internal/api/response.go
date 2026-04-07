@@ -72,6 +72,9 @@ func mapErrorCode(err error) int {
 	if errors.Is(err, domain.ErrUnauthorized) {
 		return http.StatusUnauthorized
 	}
+	if errors.Is(err, domain.ErrForbidden) {
+		return http.StatusForbidden
+	}
 	if errors.Is(err, domain.ErrBusy) {
 		return http.StatusServiceUnavailable
 	}

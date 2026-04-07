@@ -8,5 +8,6 @@ var (
 	ErrInvalidState     = errors.New("invalid state transition")
 	ErrCapacityExceeded = errors.New("capacity exceeded")
 	ErrUnauthorized     = errors.New("unauthorized")
+	ErrForbidden        = errors.New("forbidden")
 	ErrBusy             = errors.New("database busy")
 )
