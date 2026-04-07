@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -97,5 +99,55 @@ func TestDaemonStartsAndServesHealth(t *testing.T) {
 	}
 	if body["Healthy"] != true {
 		t.Errorf("expected Healthy=true, got %v", body["Healthy"])
+	}
+}
+
+func TestParseFlagsUIDefaults(t *testing.T) {
+	// parseFlags uses the default CommandLine; swap it out per-test.
+	origArgs := os.Args
+	origFS := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = origArgs
+		flag.CommandLine = origFS
+	})
+	flag.CommandLine = flag.NewFlagSet("navarisd", flag.ContinueOnError)
+	os.Args = []string{"navarisd"}
+
+	cfg := parseFlags()
+	if cfg.uiPassword != "" {
+		t.Errorf("uiPassword default = %q, want empty", cfg.uiPassword)
+	}
+	if cfg.uiSessionKey != "" {
+		t.Errorf("uiSessionKey default = %q, want empty", cfg.uiSessionKey)
+	}
+	if cfg.uiSessionTTL != 24*time.Hour {
+		t.Errorf("uiSessionTTL default = %v, want 24h", cfg.uiSessionTTL)
+	}
+}
+
+func TestParseFlagsUIExplicit(t *testing.T) {
+	origArgs := os.Args
+	origFS := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = origArgs
+		flag.CommandLine = origFS
+	})
+	flag.CommandLine = flag.NewFlagSet("navarisd", flag.ContinueOnError)
+	os.Args = []string{
+		"navarisd",
+		"--ui-password=s3cret",
+		"--ui-session-key=deadbeef",
+		"--ui-session-ttl=8h",
+	}
+
+	cfg := parseFlags()
+	if cfg.uiPassword != "s3cret" {
+		t.Errorf("uiPassword = %q, want s3cret", cfg.uiPassword)
+	}
+	if cfg.uiSessionKey != "deadbeef" {
+		t.Errorf("uiSessionKey = %q, want deadbeef", cfg.uiSessionKey)
+	}
+	if cfg.uiSessionTTL != 8*time.Hour {
+		t.Errorf("uiSessionTTL = %v, want 8h", cfg.uiSessionTTL)
 	}
 }

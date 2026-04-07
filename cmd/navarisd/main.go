@@ -41,6 +41,9 @@ type config struct {
 	otlpEndpoint   string
 	otlpProtocol   string
 	serviceName    string
+	uiPassword     string
+	uiSessionKey   string
+	uiSessionTTL   time.Duration
 }
 
 func main() {
@@ -71,6 +74,9 @@ func parseFlags() config {
 	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
 	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
 	flag.StringVar(&cfg.serviceName, "service-name", "navarisd", "service name in telemetry data")
+	flag.StringVar(&cfg.uiPassword, "ui-password", "", "web UI password (empty disables the UI)")
+	flag.StringVar(&cfg.uiSessionKey, "ui-session-key", "", "HMAC key for UI session cookies (empty = ephemeral per-process)")
+	flag.DurationVar(&cfg.uiSessionTTL, "ui-session-ttl", 24*time.Hour, "lifetime of UI session cookies")
 	flag.Parse()
 	return cfg
 }
