@@ -9,7 +9,9 @@ import (
 func TestSessionSignVerifyRoundTrip(t *testing.T) {
 	key := []byte("unit-test-key-please-ignore")
 	signer := NewSigner(key)
-	val, err := signer.Sign(time.Now(), time.Now().Add(10*time.Minute))
+	wantIat := time.Now()
+	wantExp := wantIat.Add(10 * time.Minute)
+	val, err := signer.Sign(wantIat, wantExp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,8 +22,11 @@ func TestSessionSignVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if iat.IsZero() || exp.IsZero() {
-		t.Fatalf("iat/exp zero: iat=%v exp=%v", iat, exp)
+	if diff := iat.Sub(wantIat); diff > time.Second || diff < -time.Second {
+		t.Errorf("iat round-trip diff = %v, want < 1s (token stores unix seconds)", diff)
+	}
+	if diff := exp.Sub(wantExp); diff > time.Second || diff < -time.Second {
+		t.Errorf("exp round-trip diff = %v, want < 1s", diff)
 	}
 }
 
@@ -57,5 +62,25 @@ func TestSessionVerifyMalformedFails(t *testing.T) {
 		if _, _, err := signer.Verify(c); err == nil {
 			t.Errorf("expected error for input %q", c)
 		}
+	}
+}
+
+func TestSessionKeyIsCopiedOnConstruction(t *testing.T) {
+	key := []byte("unit-test-key-please-ignore")
+	signer := NewSigner(key)
+
+	// Mutate the caller's buffer after construction.
+	for i := range key {
+		key[i] = 0
+	}
+
+	// A freshly-signed value should still verify — the Signer must have its
+	// own copy of the original bytes.
+	val, err := signer.Sign(time.Now(), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, _, err := signer.Verify(val); err != nil {
+		t.Fatalf("verify after caller zeroed key: %v — Signer did not defensively copy the key", err)
 	}
 }

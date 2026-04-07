@@ -22,9 +22,12 @@ type Signer struct {
 }
 
 // NewSigner constructs a Signer with the given HMAC key. Callers are
-// responsible for generating or loading the key.
+// responsible for generating or loading the key. The key is copied, so
+// callers may safely mutate or zero their buffer afterward.
 func NewSigner(key []byte) *Signer {
-	return &Signer{key: key}
+	k := make([]byte, len(key))
+	copy(k, key)
+	return &Signer{key: k}
 }
 
 // Sign returns a signed string encoding issued-at and expires-at timestamps.
