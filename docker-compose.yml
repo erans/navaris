@@ -1,7 +1,7 @@
 # All-in-one Navaris: Incus + Firecracker in a single container.
 #
 # Usage:
-#   Incus only:              docker compose up navaris
+#   Incus only:              docker compose --profile default up
 #   Incus + Firecracker:     docker compose --profile kvm up
 #
 # Requirements:
@@ -31,6 +31,8 @@ services:
       timeout: 5s
       retries: 30
       start_period: 45s
+    profiles:
+      - default
 
   navaris-kvm:
     extends:

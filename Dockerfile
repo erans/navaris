@@ -1,3 +1,7 @@
+# ---- Stage 0: Alias for pre-built Firecracker artifacts ----
+ARG FC_IMAGE=navarisd-firecracker
+FROM ${FC_IMAGE} AS fc-artifacts
+
 # ---- Stage 1: Build Go binaries ----
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
@@ -44,10 +48,9 @@ RUN ARCH=$(uname -m) && \
     rm -rf /tmp/fc.tgz /tmp/release-*
 
 # Copy kernel and rootfs images from pre-built Firecracker image.
-ARG FC_IMAGE=navarisd-firecracker
 RUN mkdir -p /opt/firecracker/images
-COPY --from=${FC_IMAGE} /opt/firecracker/vmlinux /opt/firecracker/vmlinux
-COPY --from=${FC_IMAGE} /opt/firecracker/images/ /opt/firecracker/images/
+COPY --from=fc-artifacts /opt/firecracker/vmlinux /opt/firecracker/vmlinux
+COPY --from=fc-artifacts /opt/firecracker/images/ /opt/firecracker/images/
 
 # Copy Go binaries.
 COPY --from=build /navarisd /usr/local/bin/navarisd

@@ -82,10 +82,10 @@ docker-build:
 	docker build -t navaris .
 
 docker-up: docker-build
-	docker compose up navaris
+	docker compose --profile default up
 
 docker-up-kvm: docker-build
 	docker compose --profile kvm up
 
 docker-down:
-	docker compose --profile kvm down
+	docker compose --profile default --profile kvm down
