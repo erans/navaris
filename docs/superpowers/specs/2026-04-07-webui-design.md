@@ -106,11 +106,19 @@ root.Handle("/v1/", authMiddleware(token, sessionKey)(loggingMiddleware(s.log)(a
 root.HandleFunc("POST /ui/login",  s.uiLogin)     // rate-limited, public
 root.HandleFunc("POST /ui/logout", s.uiLogout)
 root.HandleFunc("GET  /ui/me",     s.uiMe)
+// Catch any unregistered /ui/* method or path so it does NOT fall through
+// to the SPA asset handler. All /ui/* is API-shaped; unknown variants are
+// 405 Method Not Allowed (or 404 for unknown paths under /ui/).
+root.Handle("/ui/", http.HandlerFunc(s.uiNotAllowed))
 if webui.Assets != nil {
     root.Handle("/", webui.NewAssetHandler(webui.Assets))
 }
 return requestIDMiddleware(root)
 ```
+
+The `/ui/` catch-all is required because Go's `http.ServeMux` treats an unregistered method on a registered pattern as a 405 only if the pattern is registered with some method. For paths under `/ui/` that are entirely unregistered (e.g. `GET /ui/foo`), without an explicit catch-all they would fall through to the root `/` handler and the SPA would serve `index.html` for what are clearly API-shaped requests. The catch-all inspects the path and returns 404 for unknown paths, 405 (with `Allow:` header) for known paths with the wrong method.
+
+The `/assets/*` path is handled by the asset handler registered at `/` — the asset handler inspects the URL and serves a matching file from the embedded filesystem or falls through to `index.html` for SPA deep links. It explicitly refuses to serve `index.html` for paths starting with `/v1/` or `/ui/` — defense in depth against accidental shadowing.
 
 The existing telemetry middleware (`newTracingMiddleware`, `newMetricsMiddleware`) wraps `root` at the outermost layer when telemetry is enabled, unchanged from today.
 
@@ -136,7 +144,21 @@ If `--ui-password` is empty at startup:
 - `internal/webui` package is effectively a no-op (all its handlers return 404)
 - `/`, `/assets/*`, `/ui/*` return 404
 - A single info log line is emitted: `"web UI disabled (--ui-password not set)"`
+- `--ui-session-key` and `--ui-session-ttl` are accepted but not read (they have no effect without the UI)
 - The `attachSandbox` handler is still registered (it's a `/v1` route, not a UI route) — CLI clients with Bearer tokens can still use it
+
+### Flag combination matrix
+
+| `--ui-password` | `--auth-token` | `--ui-session-key` | Behavior |
+|---|---|---|---|
+| empty | empty | *any* | UI disabled, `/v1/*` open (existing test-mode). Startup log warns. |
+| empty | set | *any* | UI disabled, `/v1/*` requires Bearer. Session-key value is ignored. |
+| set | empty | empty | UI enabled, ephemeral random session key generated and warning logged, `/v1/*` accepts cookie OR passes in test-mode (the dual-auth rule "both empty → allow" does not apply because `--ui-session-key` is *effectively* set via the ephemeral generation; the fallthrough only triggers when both `--auth-token` and `--ui-session-key` were empty **and remained empty** — so with UI on, the server always has a session key and test-mode is disabled). Result: `/v1/*` requires a valid cookie. |
+| set | empty | set | UI enabled, persistent sessions, `/v1/*` requires a valid cookie. |
+| set | set | empty | UI enabled with ephemeral key + warning, `/v1/*` accepts Bearer OR cookie. |
+| set | set | set | UI enabled with persistent sessions, `/v1/*` accepts Bearer OR cookie. (Recommended production config.) |
+
+The test-mode "allow everything" fallthrough at step 3 of the dual-auth middleware fires only when **both** `--auth-token` and `--ui-session-key` are empty at startup. Enabling the UI always causes `--ui-session-key` to be populated (explicitly or ephemerally), which disables the fallthrough automatically.
 
 ### Session key
 
@@ -164,7 +186,7 @@ Cookie is **stateless** — no server-side session store. Server validates on ev
 1. Browser loads `/` → SPA boots → calls `GET /ui/me`.
 2. If `{authenticated: false}`, SPA renders `/login` page.
 3. User types password → `POST /ui/login {password: "..."}`.
-4. Server compares with `subtle.ConstantTimeCompare`. On mismatch: 401 with an artificial ~200ms delay and the in-memory rate-limit bucket is decremented. On match: sets the signed cookie, returns `200 {authenticated: true}`.
+4. Server compares with `subtle.ConstantTimeCompare`. Every login attempt — success or failure — sleeps for a fixed 200ms before responding (no jitter, no randomization) to flatten timing and discourage brute-force pacing attacks. On mismatch: 401, and the rate-limit bucket for the client IP consumes one token. On match: sets the signed cookie, returns `200 {authenticated: true}`, and the rate-limit bucket is left untouched.
 5. SPA re-calls `GET /ui/me`, gets 200, navigates to the stored `next` param or `/sandboxes`.
 
 ### Logout
@@ -181,9 +203,10 @@ The existing `authMiddleware` in `internal/api/middleware.go` is extended:
      - Else compare token; mismatch → 401; match → allow
 2. Else if a navaris_ui_session cookie is present:
      - Verify HMAC, check expiry
+     - On HMAC/expiry failure: 401
      - If valid and method is unsafe (POST/PUT/DELETE/PATCH):
          - Check that the Origin (or Referer fallback) matches the request Host
-         - On mismatch: 401
+         - On mismatch: 403 (see HTTP Error Taxonomy table — authenticated but forbidden)
      - Allow
 3. Else if both --auth-token and --ui-session-key are empty:
      - Allow (test/dev convenience — preserves existing behavior)
@@ -199,11 +222,13 @@ Cookie is `SameSite=Lax + HttpOnly`, which blocks cross-site form POST and block
 
 ### WebSocket authentication
 
-Browsers don't send `Authorization` headers on WebSocket handshakes, but cookies are forwarded automatically on same-origin `new WebSocket(...)` calls. The middleware logic above works unchanged for the WebSocket routes. The existing `/v1/events` also accepts a `?token=...` query parameter for CLI use; the browser uses the cookie path exclusively.
+Browsers don't send `Authorization` headers on WebSocket handshakes, but cookies are forwarded automatically on same-origin `new WebSocket(...)` calls. The middleware logic above works unchanged for the WebSocket routes.
+
+Both WebSocket endpoints — the existing `/v1/events` and the new `/v1/sandboxes/{id}/attach` — also accept a `?token=<bearer>` query parameter as a fallback for CLI clients that can't set the `Authorization` header on a handshake. The middleware checks `?token=` **only** when both the `Authorization` header and the `navaris_ui_session` cookie are absent. The browser uses the cookie path exclusively and never puts the password or session token in a query string.
 
 ### Rate limiting
 
-The `/ui/login` endpoint has an in-memory token-bucket limiter keyed by client IP (extracted from `X-Forwarded-For` first hop, fallback `RemoteAddr`). 5 attempts per minute per IP, 429 on overflow. This is in addition to the ~200ms constant-time delay on every login attempt. Successful logins do not consume bucket capacity.
+The `/ui/login` endpoint has an in-memory token-bucket limiter keyed by client IP (extracted from `X-Forwarded-For` first hop, fallback `RemoteAddr`). 5 tokens capacity, refill rate 5 tokens/minute, returns 429 when the bucket is empty. Only **failed** login attempts consume a token; successful logins leave the bucket untouched. This is in addition to the fixed 200ms delay on every login attempt (success or failure).
 
 ## Terminal Attach
 
@@ -214,7 +239,7 @@ A new WebSocket endpoint at `GET /v1/sandboxes/{id}/attach` in `internal/api/att
 1. Fetches the sandbox by ID. 404 if not found.
 2. Rejects with 409 if `sbx.State != SandboxRunning`.
 3. Accepts the WebSocket with `OriginPatterns: []string{r.Host}` (same-origin only).
-4. Reads optional `?shell=` query parameter (default handled by provider).
+4. Reads optional `?shell=` query parameter (default handled by provider). This is a **CLI-only** knob in v1 — the web frontend does not expose a shell selector and always omits the parameter, letting the provider pick its default (`/bin/sh` for Alpine, `/bin/bash` where available). A shell picker in the UI is tracked as future work.
 5. Calls `s.cfg.Provider.AttachSession(ctx, ref, domain.SessionRequest{Shell: shell})`.
 6. Runs a bridge goroutine pair:
    - **stdout → ws:** reads from `handle.Conn`, writes binary frames to WebSocket.
@@ -255,9 +280,11 @@ A thin header bar above the xterm canvas shows:
 
 ### Disconnect behavior
 
+"Direct backing" and "tmux backing" refer to `domain.SessionBacking` values produced by `Provider.AttachSession`. Direct sessions are ephemeral PTYs spawned for the attach and die when the attach closes. Tmux sessions attach to a named tmux pane that outlives the WebSocket. The current v1 web UI does not select between them — it asks the provider for whatever its default backing is — but the disconnect semantics still depend on which backing the provider chose.
+
 | Cause | Behavior |
 |---|---|
-| User closes tab | Browser closes WS → bridge exits. Shell inside sandbox: killed for direct backing; remains for tmux backing (no UI-level session tracking in v1). |
+| User closes tab | Browser closes WS → bridge exits. Shell inside sandbox: killed for `SessionBacking=Direct`; remains running for `SessionBacking=Tmux` (no UI-level session tracking in v1). |
 | Server-side crash / timeout | WS closes → component shows "✕ disconnected — reconnect?" button that re-opens the WS without reloading the page. |
 | Sandbox stops while attached | Provider EOF → bridge ends → WS closes normally → component shows `[sandbox stopped]` inline with detach button still working. |
 | Sandbox destroyed while attached | Same as "sandbox stops" — provider EOF → WS close → inline message. |
@@ -278,6 +305,8 @@ web/
                               @fontsource-variable/mona-sans, @fontsource/commit-mono,
                               @fontsource/jetbrains-mono, sonner
   vite.config.ts            — dev proxy: /v1, /ui → http://localhost:8080
+                              (/assets and /sandboxes/*/terminal are NOT
+                              proxied — Vite serves the SPA directly in dev)
   tailwind.config.ts
   tsconfig.json
   index.html
@@ -340,6 +369,32 @@ React Router v7 data router:
 ```
 
 `RequireAuth` wraps everything except `/login`. It calls `GET /ui/me` on mount; while loading it shows a centered spinner; on `{authenticated: false}` it redirects to `/login?next=<pathname+search>`.
+
+### Create sandbox dialog
+
+The `+ New Sandbox` button on `/sandboxes` opens `CreateSandboxDialog.tsx`, a shadcn `<Dialog>` wrapping a small form. Fields:
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| Name | text | no | *server-generated* | Empty → server assigns one. |
+| Project | `<Select>` | yes | current project from URL or `default` | Populated from `useProjects()`. |
+| Image | `<Select>` | yes | first available | Populated from `useImages(projectID)`. |
+| Backend | `<RadioGroup>` | yes | `incus` if available | Options filtered by `/v1/health` — only show backends the server reports as ready. |
+| vCPUs | number | yes | `1` | Min 1, max 16. |
+| Memory (MiB) | number | yes | `512` | Min 128, step 128. |
+
+Submit calls `POST /v1/sandboxes/` with the mapped body. On 200 the dialog closes, the sandboxes list invalidates, and the UI navigates to `/sandboxes/{new-id}`. On error the dialog stays open and surfaces a `sonner` toast with the normalized message. Environment variables, volumes, port exposure, and snapshot rollback are **not** in the v1 create dialog — those are CLI/API-only. Sandboxes needing those features can still be created via `navctl` and observed/managed through the UI.
+
+### Sandbox detail tabs
+
+`SandboxDetail.tsx` shows a fixed header (name, short ID, state badge, action buttons: Start/Stop/Restart/Destroy/Open terminal) over four tabs:
+
+- **Overview** — project, backend, image, vCPUs, memory, created-at, uptime, IP addresses, state history (last 5 state transitions from the event ring buffer).
+- **Snapshots** — read-only list from `GET /v1/sandboxes/{id}/snapshots`: name, created-at, size. No create/restore/delete actions in v1.
+- **Ports** — read-only list from `GET /v1/sandboxes/{id}/ports`: container port, host port, protocol.
+- **Metadata** — raw JSON view of the full sandbox resource, formatted with `JSON.stringify(x, null, 2)` inside a `<pre>` wrapped in `Commit Mono`. Useful for debugging API shapes.
+
+All four tabs use TanStack Query keyed by `['sandbox', id, tab]` and are invalidated by relevant event-bus events.
 
 ### Data fetching
 
@@ -528,7 +583,7 @@ RUN CGO_ENABLED=0 go build -tags withui,firecracker,incus -o /navarisd ./cmd/nav
 
 The `web/dist` output is copied into `internal/webui/dist` so the `//go:embed all:dist` directive picks it up.
 
-Added image size: approximately 400–600 KB (fonts + xterm + SPA bundle gzipped).
+Bundle size is not a hard constraint in v1 — the binary is already multi-MB once Incus and Firecracker code is compiled in, and the SPA plus its fonts and xterm add a modest increment. We aim to keep the SPA tree-shakeable (lazy-load xterm, lazy-load the terminal route) and revisit if the bundle starts dominating the delta.
 
 ### Makefile targets
 
@@ -573,7 +628,7 @@ Developers open `http://localhost:5173` during dev. The production embedded UI i
 3. **HTTPS assumption.** `navarisd` does not terminate TLS. A reverse proxy (Caddy, nginx, Traefik) is expected. The `Secure` cookie flag is set when `X-Forwarded-Proto: https` is observed. If `--ui-password` is set and `navarisd` detects it's listening on a non-loopback interface with no `X-Forwarded-Proto` header seen in practice, it logs a warning at startup.
 4. **Rate limiting.** Login only. IP-keyed token bucket, 5/minute. 429 on overflow.
 5. **CSRF.** `SameSite=Lax` cookie + `Origin`/`Referer` host check on non-safe methods. No token-based CSRF. Single-trust-domain trade-off.
-6. **Password comparison timing.** Login endpoint adds an unconditional ~200ms delay before responding, whether the password matched or not.
+6. **Password comparison timing.** Login endpoint adds an unconditional fixed 200ms delay before responding, whether the password matched or not. The delay is a constant, not randomized.
 
 ## Error Handling
 
@@ -624,11 +679,14 @@ Developers open `http://localhost:5173` during dev. The production embedded UI i
   - 409 returned when sandbox is not running.
   - Mock provider drives the bridge: bytes written on client side appear on stdin pipe; bytes from stdout pipe appear in client WS messages.
   - Resize text message dispatches to provider `Resize` callback.
+  - WebSocket handshake succeeds with `?token=<bearer>` query parameter as fallback.
 - `internal/api/middleware_test.go` additions
   - Cookie auth alone passes.
   - Bearer auth alone passes.
   - Bearer takes precedence over cookie.
-  - Cookie + unsafe method + mismatched Origin → 401/403.
+  - Cookie + unsafe method + mismatched Origin → 403
+  - Cookie + unsafe method + missing Origin + mismatched Referer → 403
+  - Cookie + unsafe method + missing Origin + missing Referer → 403
   - Cookie + unsafe method + matching Origin → allowed.
   - Cookie + safe method + mismatched Origin → allowed.
   - Both `--auth-token` and `--ui-session-key` empty → all requests pass (test-mode preservation).
