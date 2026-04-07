@@ -69,17 +69,19 @@ func TestSessionKeyIsCopiedOnConstruction(t *testing.T) {
 	key := []byte("unit-test-key-please-ignore")
 	signer := NewSigner(key)
 
-	// Mutate the caller's buffer after construction.
-	for i := range key {
-		key[i] = 0
-	}
-
-	// A freshly-signed value should still verify — the Signer must have its
-	// own copy of the original bytes.
+	// Sign while the Signer still holds (what should be) its own copy.
 	val, err := signer.Sign(time.Now(), time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
+
+	// NOW zero the caller's buffer. If NewSigner did not copy the key,
+	// signer.key is also zeroed and Verify will recompute the wrong HMAC
+	// against the signature produced above with the real key.
+	for i := range key {
+		key[i] = 0
+	}
+
 	if _, _, err := signer.Verify(val); err != nil {
 		t.Fatalf("verify after caller zeroed key: %v — Signer did not defensively copy the key", err)
 	}
