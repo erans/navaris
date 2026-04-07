@@ -2,3 +2,6 @@ bin/
 navarisd
 navaris-agent
 .superpowers/
+web/node_modules/
+web/dist/
+internal/webui/dist/
