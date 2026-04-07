@@ -7,6 +7,10 @@ import (
 
 // rateLimiter is a per-key token bucket with refill-on-consume semantics.
 // Used by the /ui/login endpoint to throttle brute-force attempts.
+//
+// buckets is never evicted. This is acceptable because the login endpoint
+// is the only consumer and client-IP cardinality is low; no background
+// cleanup goroutine is warranted.
 type rateLimiter struct {
 	capacity float64
 	refill   float64 // tokens per refillInterval
@@ -47,6 +51,7 @@ func (r *rateLimiter) consume(key string) bool {
 	}
 	elapsed := now.Sub(b.last)
 	if elapsed > 0 {
+		// rate is tokens per nanosecond: r.interval is time.Duration (int64 ns).
 		rate := r.refill / float64(r.interval)
 		b.tokens += float64(elapsed) * rate
 		if b.tokens > r.capacity {
@@ -54,6 +59,11 @@ func (r *rateLimiter) consume(key string) bool {
 		}
 		b.last = now
 	}
+	// Strict < 1 (not <= 0): tokens is float64 and accumulated refill can
+	// undershoot the exact integer by ~1ulp over many small steps. For the
+	// small integer capacities used by login throttling the effect is
+	// negligible, so we deliberately accept a rare one-call underrun rather
+	// than complicate the math.
 	if b.tokens < 1 {
 		return false
 	}
