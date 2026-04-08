@@ -1,12 +1,14 @@
 package api
 
 import (
+	"io/fs"
 	"log/slog"
 	"net/http"
 
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/service"
 	"github.com/navaris/navaris/internal/telemetry"
+	"github.com/navaris/navaris/internal/webui"
 )
 
 type ServerConfig struct {
@@ -20,8 +22,10 @@ type ServerConfig struct {
 	Events     domain.EventBus
 	Ports      domain.PortBindingStore
 	AuthToken    string
-	UISessionKey []byte
 	Logger       *slog.Logger
+	UISessionKey []byte
+	UIHandlers   *webui.Handlers // new
+	UIAssets     fs.FS           // new
 }
 
 type Server struct {
@@ -38,72 +42,81 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
+	// Inner mux: all /v1/* routes (protected by authMiddleware).
+	api := http.NewServeMux()
 
-	// Health
-	mux.HandleFunc("GET /v1/health", s.healthCheck)
+	api.HandleFunc("GET /v1/health", s.healthCheck)
 
-	// Projects
-	mux.HandleFunc("POST /v1/projects", s.createProject)
-	mux.HandleFunc("GET /v1/projects", s.listProjects)
-	mux.HandleFunc("GET /v1/projects/{id}", s.getProject)
-	mux.HandleFunc("PUT /v1/projects/{id}", s.updateProject)
-	mux.HandleFunc("DELETE /v1/projects/{id}", s.deleteProject)
+	api.HandleFunc("POST /v1/projects", s.createProject)
+	api.HandleFunc("GET /v1/projects", s.listProjects)
+	api.HandleFunc("GET /v1/projects/{id}", s.getProject)
+	api.HandleFunc("PUT /v1/projects/{id}", s.updateProject)
+	api.HandleFunc("DELETE /v1/projects/{id}", s.deleteProject)
 
-	// Sandboxes
-	mux.HandleFunc("POST /v1/sandboxes", s.createSandbox)
-	mux.HandleFunc("POST /v1/sandboxes/from-snapshot", s.createSandboxFromSnapshot)
-	mux.HandleFunc("POST /v1/sandboxes/from-image", s.createSandboxFromImage)
-	mux.HandleFunc("GET /v1/sandboxes", s.listSandboxes)
-	mux.HandleFunc("GET /v1/sandboxes/{id}", s.getSandbox)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/start", s.startSandbox)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/stop", s.stopSandbox)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/destroy", s.destroySandbox)
+	api.HandleFunc("POST /v1/sandboxes", s.createSandbox)
+	api.HandleFunc("POST /v1/sandboxes/from-snapshot", s.createSandboxFromSnapshot)
+	api.HandleFunc("POST /v1/sandboxes/from-image", s.createSandboxFromImage)
+	api.HandleFunc("GET /v1/sandboxes", s.listSandboxes)
+	api.HandleFunc("GET /v1/sandboxes/{id}", s.getSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/start", s.startSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/stop", s.stopSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/destroy", s.destroySandbox)
 
-	// Snapshots
-	mux.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/snapshots", s.listSnapshots)
-	mux.HandleFunc("GET /v1/snapshots/{id}", s.getSnapshot)
-	mux.HandleFunc("POST /v1/snapshots/{id}/restore", s.restoreSnapshot)
-	mux.HandleFunc("DELETE /v1/snapshots/{id}", s.deleteSnapshot)
+	api.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
+	api.HandleFunc("GET /v1/sandboxes/{id}/snapshots", s.listSnapshots)
+	api.HandleFunc("GET /v1/snapshots/{id}", s.getSnapshot)
+	api.HandleFunc("POST /v1/snapshots/{id}/restore", s.restoreSnapshot)
+	api.HandleFunc("DELETE /v1/snapshots/{id}", s.deleteSnapshot)
 
-	// Images
-	mux.HandleFunc("POST /v1/images", s.promoteImage)
-	mux.HandleFunc("POST /v1/images/register", s.registerImage)
-	mux.HandleFunc("GET /v1/images", s.listImages)
-	mux.HandleFunc("GET /v1/images/{id}", s.getImage)
-	mux.HandleFunc("DELETE /v1/images/{id}", s.deleteImage)
+	api.HandleFunc("POST /v1/images", s.promoteImage)
+	api.HandleFunc("POST /v1/images/register", s.registerImage)
+	api.HandleFunc("GET /v1/images", s.listImages)
+	api.HandleFunc("GET /v1/images/{id}", s.getImage)
+	api.HandleFunc("DELETE /v1/images/{id}", s.deleteImage)
 
-	// Sessions
-	mux.HandleFunc("POST /v1/sandboxes/{id}/sessions", s.createSession)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/sessions", s.listSessions)
-	mux.HandleFunc("GET /v1/sessions/{id}", s.getSession)
-	mux.HandleFunc("DELETE /v1/sessions/{id}", s.deleteSession)
+	api.HandleFunc("POST /v1/sandboxes/{id}/sessions", s.createSession)
+	api.HandleFunc("GET /v1/sandboxes/{id}/sessions", s.listSessions)
+	api.HandleFunc("GET /v1/sessions/{id}", s.getSession)
+	api.HandleFunc("DELETE /v1/sessions/{id}", s.deleteSession)
 
-	// Operations
-	mux.HandleFunc("GET /v1/operations/{id}", s.getOperation)
-	mux.HandleFunc("GET /v1/operations", s.listOperations)
-	mux.HandleFunc("POST /v1/operations/{id}/cancel", s.cancelOperation)
+	api.HandleFunc("GET /v1/operations/{id}", s.getOperation)
+	api.HandleFunc("GET /v1/operations", s.listOperations)
+	api.HandleFunc("POST /v1/operations/{id}/cancel", s.cancelOperation)
 
-	// Ports
-	mux.HandleFunc("POST /v1/sandboxes/{id}/ports", s.createPort)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/ports", s.listPorts)
-	mux.HandleFunc("DELETE /v1/sandboxes/{id}/ports/{target_port}", s.deletePort)
+	api.HandleFunc("POST /v1/sandboxes/{id}/ports", s.createPort)
+	api.HandleFunc("GET /v1/sandboxes/{id}/ports", s.listPorts)
+	api.HandleFunc("DELETE /v1/sandboxes/{id}/ports/{target_port}", s.deletePort)
 
-	// Exec
-	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.execInSandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/exec", s.execInSandbox)
+	api.HandleFunc("GET /v1/events", s.streamEvents)
+	api.HandleFunc("GET /v1/sandboxes/{id}/attach", s.attachSandbox)
 
-	// Events (WebSocket)
-	mux.HandleFunc("GET /v1/events", s.streamEvents)
+	// Wrap the /v1 sub-mux with logging + auth.
+	var apiHandler http.Handler = api
+	apiHandler = loggingMiddleware(s.log)(apiHandler)
+	apiHandler = authMiddleware(s.cfg.AuthToken, s.cfg.UISessionKey)(apiHandler)
 
-	// Apply middleware chain: requestID -> auth -> logging -> mux
-	var handler http.Handler = mux
-	handler = loggingMiddleware(s.log)(handler)
-	handler = authMiddleware(s.cfg.AuthToken, s.cfg.UISessionKey)(handler)
+	// Root mux: dispatches /v1/* to the protected sub-mux and /ui/* + / to
+	// the UI handlers when enabled.
+	root := http.NewServeMux()
+	root.Handle("/v1/", apiHandler)
+
+	if s.cfg.UIHandlers != nil {
+		root.HandleFunc("POST /ui/login", s.cfg.UIHandlers.Login)
+		root.HandleFunc("POST /ui/logout", s.cfg.UIHandlers.Logout)
+		root.HandleFunc("GET /ui/me", s.cfg.UIHandlers.Me)
+		// Catch-all under /ui/ — prevents unknown variants from falling
+		// through to the SPA asset handler.
+		root.Handle("/ui/", http.HandlerFunc(s.cfg.UIHandlers.NotAllowed))
+	}
+	if s.cfg.UIAssets != nil {
+		root.Handle("/", webui.NewAssetHandler(s.cfg.UIAssets))
+	}
+
+	// Outer middleware — requestID wraps everything.
+	var handler http.Handler = root
 	handler = requestIDMiddleware(handler)
 
-	// Telemetry middleware (outermost when enabled):
-	// tracing -> metrics -> requestID -> auth -> logging -> mux
 	if telemetry.Enabled() {
 		mw, err := newMetricsMiddleware()
 		if err != nil {
@@ -113,6 +126,5 @@ func (s *Server) Handler() http.Handler {
 		}
 		handler = newTracingMiddleware()(handler)
 	}
-
 	return handler
 }
