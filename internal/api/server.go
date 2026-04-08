@@ -12,20 +12,20 @@ import (
 )
 
 type ServerConfig struct {
-	Projects   *service.ProjectService
-	Sandboxes  *service.SandboxService
-	Snapshots  *service.SnapshotService
-	Images     *service.ImageService
-	Sessions   *service.SessionService
-	Operations *service.OperationService
-	Provider   domain.Provider
-	Events     domain.EventBus
-	Ports      domain.PortBindingStore
+	Projects     *service.ProjectService
+	Sandboxes    *service.SandboxService
+	Snapshots    *service.SnapshotService
+	Images       *service.ImageService
+	Sessions     *service.SessionService
+	Operations   *service.OperationService
+	Provider     domain.Provider
+	Events       domain.EventBus
+	Ports        domain.PortBindingStore
 	AuthToken    string
 	Logger       *slog.Logger
 	UISessionKey []byte
-	UIHandlers   *webui.Handlers // new
-	UIAssets     fs.FS           // new
+	UIHandlers   *webui.Handlers // new — nil means UI disabled
+	UIAssets     fs.FS           // new — nil means UI disabled
 }
 
 type Server struct {
