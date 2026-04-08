@@ -55,12 +55,13 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
   const [pending] = useState(false);
   const [error] = useState<string | null>(null);
 
-  // Fetch projects once so the dropdown can populate. Retry is already
-  // disabled app-wide but we set it explicitly here too because a failing
-  // projects query should surface immediately in the dialog.
+  // Fetch projects once so the dropdown can populate. Retry is disabled
+  // explicitly so a failing projects query surfaces immediately in the
+  // dialog instead of silently retrying behind the user's back.
   const projectsQuery = useQuery({
     queryKey: ["projects"],
     queryFn: listProjects,
+    retry: false,
   });
 
   // When the projects arrive, pick a default: last-used id if it's still
@@ -159,10 +160,14 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
           id="nsd-project"
           value={projectId}
           onChange={(e) => setProjectId(e.currentTarget.value)}
-          disabled={projects.length === 0}
+          disabled={!projectsQuery.isSuccess || projects.length === 0}
           className="mb-4 w-full border border-[var(--border-subtle)] bg-transparent px-3 py-2 text-sm text-[var(--fg-primary)] outline-none focus:border-[var(--fg-primary)]"
         >
-          {projects.length === 0 ? (
+          {projectsQuery.isLoading ? (
+            <option value="">Loading projects…</option>
+          ) : projectsQuery.isError ? (
+            <option value="">Failed to load projects</option>
+          ) : projects.length === 0 ? (
             <option value="">No projects — create one via the CLI</option>
           ) : (
             projects.map((p) => (

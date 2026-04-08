@@ -102,4 +102,33 @@ describe("NewSandboxDialog — scaffold", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveAttribute("open");
   });
+
+  it("shows an empty-state message and keeps Create disabled when /v1/projects returns zero projects", async () => {
+    server.use(
+      http.get("/v1/projects", () =>
+        HttpResponse.json({ data: [], pagination: null }),
+      ),
+    );
+    renderDialog();
+    await screen.findByText(/no projects/i);
+    const create = screen.getByRole("button", { name: /^create$/i });
+    await userEvent.type(screen.getByLabelText(/name/i), "my-sandbox");
+    expect(create).toBeDisabled();
+  });
+
+  it("shows an error message and keeps Create disabled when /v1/projects fails", async () => {
+    server.use(
+      http.get("/v1/projects", () =>
+        HttpResponse.json(
+          { error: { code: 500, message: "boom" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    renderDialog();
+    await screen.findByText(/failed to load projects/i);
+    const create = screen.getByRole("button", { name: /^create$/i });
+    await userEvent.type(screen.getByLabelText(/name/i), "my-sandbox");
+    expect(create).toBeDisabled();
+  });
 });
