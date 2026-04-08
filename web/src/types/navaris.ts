@@ -1,54 +1,78 @@
-// Navaris domain types mirror the Go structs in internal/api/dto.go. Keep
-// these in sync by hand — the project intentionally does not auto-generate
-// types yet. Optional fields match the `omitempty` tags on the server side.
+// Navaris domain types mirror the Go structs in internal/domain/. The domain
+// structs do not declare json tags, so encoding/json serialises field names
+// in their original Go casing (PascalCase). The list response wrapper in
+// internal/api/response.go does declare json tags, so the envelope itself is
+// lowercase. The Go API tests in internal/api/*_test.go assert on the
+// PascalCase shape, so this is the intentional, tested wire contract.
+//
+// Keep these in sync by hand — the project intentionally does not auto-
+// generate types yet.
 
-export type SandboxState = "pending" | "running" | "stopped" | "failed";
+export type SandboxState =
+  | "pending"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "destroyed";
 
-export type Backend = "incus" | "firecracker";
+export type NetworkMode = "isolated" | "published";
 
 export interface Project {
-  id: string;
-  name: string;
-  createdAt: number;
+  ProjectID: string;
+  Name: string;
+  CreatedAt: string;
+  UpdatedAt: string;
+  Metadata: Record<string, unknown> | null;
 }
 
 export interface Sandbox {
-  id: string;
-  projectId: string;
-  name: string;
-  backend: Backend;
-  state: SandboxState;
-  image: string;
-  cpu: number;
-  memoryMB: number;
-  createdAt: number;
-  startedAt?: number;
-  stoppedAt?: number;
-  reason?: string;
+  SandboxID: string;
+  ProjectID: string;
+  Name: string;
+  State: SandboxState;
+  Backend: string;
+  BackendRef: string;
+  HostID: string;
+  SourceImageID: string;
+  ParentSnapshotID: string;
+  CreatedAt: string;
+  UpdatedAt: string;
+  ExpiresAt: string | null;
+  CPULimit: number | null;
+  MemoryLimitMB: number | null;
+  NetworkMode: NetworkMode | "";
+  Metadata: Record<string, unknown> | null;
 }
 
-export interface ListProjectsResponse {
-  projects: Project[];
+// ListResponse is the envelope returned by endpoints like GET /v1/projects and
+// GET /v1/sandboxes. The envelope keys are lowercase because
+// internal/api/response.go declares json tags on the wrapper struct itself.
+export interface ListResponse<T> {
+  data: T[];
+  pagination: unknown;
 }
 
-export interface ListSandboxesResponse {
-  sandboxes: Sandbox[];
-}
-
+// EventType mirrors domain.EventType. The set is fixed by the backend; new
+// values must be added in lockstep with internal/domain/event.go.
 export type EventType =
-  | "project_created"
-  | "project_deleted"
-  | "sandbox_created"
-  | "sandbox_started"
-  | "sandbox_stopped"
-  | "sandbox_failed"
-  | "sandbox_deleted";
+  | "sandbox_state_changed"
+  | "snapshot_state_changed"
+  | "image_state_changed"
+  | "session_state_changed"
+  | "operation_state_changed"
+  | "exec_output"
+  | "exec_completed"
+  | "ui.login"
+  | "ui.login_failed"
+  | "ui.attach_opened"
+  | "ui.attach_closed";
 
+// Event matches domain.Event exactly. Data is an untyped map — consumers
+// should narrow on Type before reading specific keys.
 export interface Event {
-  id: string;
-  type: EventType;
-  timestamp: number;
-  projectId?: string;
-  sandboxId?: string;
-  message?: string;
+  Type: EventType;
+  Timestamp: string;
+  Data: Record<string, unknown> | null;
 }
