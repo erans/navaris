@@ -89,3 +89,40 @@ docker-up-kvm: docker-build
 
 docker-down:
 	docker compose --profile default --profile kvm down
+
+# ─── Web UI ──────────────────────────────────────────────────────────────
+
+.PHONY: web-deps web-dev web-build web-test web-clean build-ui
+
+web-deps:
+	cd web && npm install
+
+web-dev:
+	cd web && npm run dev
+
+# web-build compiles the SPA and drops it into internal/webui/dist/ so the
+# Go embed.FS directive in internal/webui/embed.go picks it up. We recreate
+# the .gitkeep sentinel at the end because embed requires at least one file
+# present at compile time and the sentinel keeps git status clean.
+web-build:
+	cd web && npm run build
+	rm -rf internal/webui/dist
+	mkdir -p internal/webui/dist
+	cp -a web/dist/. internal/webui/dist/
+	touch internal/webui/dist/.gitkeep
+
+web-test:
+	cd web && npm test -- --run
+
+# web-clean nukes the build output and restores the empty dist/ with its
+# sentinel so non-UI go builds still compile.
+web-clean:
+	rm -rf web/dist web/node_modules internal/webui/dist
+	mkdir -p internal/webui/dist
+	touch internal/webui/dist/.gitkeep
+
+# build-ui produces a navarisd binary with the SPA embedded. The tag set
+# matches the docker image: withui for embedded assets, firecracker and
+# incus for both providers. CGO_ENABLED=0 keeps the binary statically linked.
+build-ui: web-build
+	CGO_ENABLED=0 go build -tags withui,firecracker,incus -o navarisd ./cmd/navarisd
