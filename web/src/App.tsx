@@ -1,15 +1,33 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { RouterProvider } from "react-router-dom";
+import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { router } from "@/router";
+
+// Single QueryClient for the app. Defaults: retry once, refetch on window
+// focus disabled (we drive invalidations off the event stream instead).
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
+  },
+});
 
 export default function App() {
   return (
     <ThemeProvider>
-      <div className="min-h-screen flex flex-col items-center justify-center gap-6">
-        <div className="text-sm tracking-widest uppercase font-mono text-fg-secondary">
-          Navaris — scaffold OK
-        </div>
-        <ThemeToggle />
-      </div>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+        <Toaster
+          position="bottom-right"
+          toastOptions={{
+            className: "!font-sans !text-sm",
+          }}
+        />
+      </QueryClientProvider>
     </ThemeProvider>
   );
 }
