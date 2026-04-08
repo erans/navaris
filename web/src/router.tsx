@@ -1,23 +1,17 @@
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
+import { lazy } from "react";
 import { Placeholder } from "@/routes/Placeholder";
 
-// Real routes are wired up in later tasks (Login in Task 22, Sandboxes
-// in Task 27, etc). This is the initial shell so the app mounts cleanly.
-export const router = createBrowserRouter([
-  {
-    path: "/",
-    element: <Placeholder label="root" />,
-  },
-  {
-    path: "/login",
-    element: <Placeholder label="login" />,
-  },
-  {
-    path: "/sandboxes",
-    element: <Placeholder label="sandboxes" />,
-  },
-  {
-    path: "*",
-    element: <Placeholder label="not found" />,
-  },
-]);
+const Login = lazy(() => import("@/routes/Login"));
+
+export const router = createBrowserRouter(
+  [
+    { path: "/login", element: <Login /> },
+    { path: "/", element: <Placeholder label="home" /> },
+    { path: "/projects", element: <Placeholder label="projects" /> },
+    { path: "/sandboxes", element: <Placeholder label="sandboxes" /> },
+    { path: "/sandboxes/:id", element: <Placeholder label="sandbox detail" /> },
+    { path: "/events", element: <Placeholder label="events" /> },
+    { path: "*", element: <Navigate to="/" replace /> },
+  ],
+);
