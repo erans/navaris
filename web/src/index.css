@@ -1,3 +1,79 @@
-/* Placeholder — Task 17 replaces this with Tailwind 4 imports and theme
-   tokens. A stub exists here so that Task 16's build verification can run
-   end-to-end (main.tsx imports this path). */
+@import "tailwindcss";
+@import "@fontsource-variable/mona-sans";
+@import "@fontsource/commit-mono";
+
+@theme {
+  --font-sans: "Mona Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Commit Mono", ui-monospace, "JetBrains Mono", "Menlo", monospace;
+
+  --radius: 2px;
+
+  /* Status palette — identical across themes */
+  --color-status-running: #22c55e;
+  --color-status-pending: #f59e0b;
+  --color-status-stopped: #71717a;
+  --color-status-failed: #ef4444;
+  --color-status-destroyed: #3f3f46;
+}
+
+/* Dark theme (default) */
+:root,
+:root[data-theme="dark"] {
+  --color-bg-base: #0b0b0c;
+  --color-bg-raised: #141416;
+  --color-bg-overlay: #1c1c1f;
+  --color-fg-primary: #f4f4f5;
+  --color-fg-secondary: #a1a1aa;
+  --color-fg-muted: #52525b;
+  --color-border-subtle: #1f1f22;
+  --color-border-strong: #2e2e33;
+  --color-fg-on-invert: #0b0b0c;
+  --color-invert-bg: #f4f4f5;
+}
+
+/* Light theme (warm, stone-based) */
+:root[data-theme="light"] {
+  --color-bg-base: #fafaf9;
+  --color-bg-raised: #ffffff;
+  --color-bg-overlay: #f4f4f5;
+  --color-fg-primary: #18181b;
+  --color-fg-secondary: #52525b;
+  --color-fg-muted: #a1a1aa;
+  --color-border-subtle: #e4e4e7;
+  --color-border-strong: #d4d4d8;
+  --color-fg-on-invert: #fafaf9;
+  --color-invert-bg: #18181b;
+}
+
+@theme inline {
+  --color-bg-base: var(--color-bg-base);
+  --color-bg-raised: var(--color-bg-raised);
+  --color-bg-overlay: var(--color-bg-overlay);
+  --color-fg-primary: var(--color-fg-primary);
+  --color-fg-secondary: var(--color-fg-secondary);
+  --color-fg-muted: var(--color-fg-muted);
+  --color-border-subtle: var(--color-border-subtle);
+  --color-border-strong: var(--color-border-strong);
+  --color-fg-on-invert: var(--color-fg-on-invert);
+  --color-invert-bg: var(--color-invert-bg);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border-subtle);
+  }
+  html, body {
+    background-color: var(--color-bg-base);
+    color: var(--color-fg-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
