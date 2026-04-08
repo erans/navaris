@@ -46,6 +46,16 @@ func serveFile(w http.ResponseWriter, r *http.Request, assetsFS fs.FS, name stri
 	}
 	defer f.Close()
 
+	// Directories are not serveable assets. fstest.MapFS refuses trailing-slash
+	// lookups outright, but embed.FS will happily Open a directory and return
+	// 0, io.EOF on Read — which would otherwise produce an empty-body 200 for
+	// URLs like /assets/ (a silent failure mode that's hard to debug). 404 is
+	// the right answer: a directory is not a file the SPA ever asks for.
+	if info, err := f.Stat(); err == nil && info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
 	ctype := mime.TypeByExtension(path.Ext(name))
 	if ctype == "" {
 		ctype = "application/octet-stream"
