@@ -104,8 +104,10 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
     if (name.trim() === "") return false;
     if (imageRef === "") return false;
     if (projectId === "") return false;
+    if (cpuLimit !== "" && !Number.isFinite(Number(cpuLimit))) return false;
+    if (memoryLimitMB !== "" && !Number.isFinite(Number(memoryLimitMB))) return false;
     return true;
-  }, [pending, name, imageRef, projectId]);
+  }, [pending, name, imageRef, projectId, cpuLimit, memoryLimitMB]);
 
   function handleCancelEvent(e: SyntheticEvent<HTMLDialogElement>) {
     // ESC key triggers the native `cancel` event on the dialog. We
@@ -129,17 +131,21 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
     setError(null);
     setPending(true);
     try {
+      // Parse numerics once. type="number" controls can hold intermediate
+      // values like "-" or "1e" that aren't finite — canSubmit already
+      // gates submission on these, but we also filter here so the wire
+      // payload can never contain NaN (which JSON.stringify would emit
+      // as null and defeat the "omit to use provider default" intent).
+      const cpuParsed = cpuLimit === "" ? undefined : Number(cpuLimit);
+      const memoryParsed = memoryLimitMB === "" ? undefined : Number(memoryLimitMB);
       const req = {
         project_id: projectId,
         name: name.trim(),
         image_id: imageRef,
         network_mode: networkMode,
-        // Empty strings from type="number" inputs become NaN via Number,
-        // which we filter out here. The CreateSandboxRequest type treats
-        // these as optional so undefined is dropped by JSON.stringify.
-        cpu_limit: cpuLimit === "" ? undefined : Number(cpuLimit),
+        cpu_limit: cpuParsed !== undefined && Number.isFinite(cpuParsed) ? cpuParsed : undefined,
         memory_limit_mb:
-          memoryLimitMB === "" ? undefined : Number(memoryLimitMB),
+          memoryParsed !== undefined && Number.isFinite(memoryParsed) ? memoryParsed : undefined,
       };
       const op = await createSandbox(req);
       writeLastProject(projectId);
@@ -376,16 +382,20 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
 // We key off err.status rather than err.code because the navarisd
 // errorResponse shape in internal/api/response.go is
 // `{"error": {"code": <int>, "message": "..."}}`, and apiFetch reads
-// body.code at the top level — so err.code falls back to `http_<N>`
-// and isn't useful for branching. Status is the reliable signal.
+// body.code/body.message at the top level — so both err.code and
+// err.message fall back to the HTTP status strings and aren't useful
+// for branching or display. Status is the reliable signal.
 // For 5xx, the server has already redacted the message before it
-// reaches the wire, so any fallback copy we use here is fine.
+// reaches the wire. For 422 we also use explicit copy rather than
+// err.message because apiFetch doesn't surface the nested
+// error.message the backend sends — fixing that is a separate
+// follow-up on apiFetch itself.
 function messageForCreateError(err: ApiError): string {
   if (err.status === 409) {
     return "A sandbox with that name already exists in this project.";
   }
   if (err.status === 422) {
-    return err.message || "Invalid request.";
+    return "Invalid request. Check the sandbox fields and try again.";
   }
   if (err.status >= 500) {
     return "Server error. Try again.";

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -195,6 +195,36 @@ describe("NewSandboxDialog — image picker", () => {
     // projectId and not by the empty custom ref.
     const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("prj_1"));
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
+  });
+
+  it("keeps Create disabled when CPU input is a non-finite numeric intermediate", async () => {
+    // type="number" inputs can hold intermediate values like "-", "1e", "."
+    // while the user is still typing. We don't want to silently drop those
+    // as NaN on submit — canSubmit should gate on a finite parse so Create
+    // stays disabled until the value is a real number.
+    //
+    // jsdom follows the HTML spec's value sanitization algorithm for
+    // type="number", which coerces any non-finite string (including "-",
+    // "1e", ".") back to "" before React ever sees it. To exercise the
+    // canSubmit gate we override the input's value getter on the instance
+    // so React's onChange handler reads "-" and setCpuLimit stores it as
+    // state — mirroring the behavior of Safari and some Firefox paths
+    // where the raw intermediate can reach JS.
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "my-sandbox");
+    const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prj_1"));
+    const cpu = screen.getByLabelText(/cpu/i) as HTMLInputElement;
+    Object.defineProperty(cpu, "value", {
+      configurable: true,
+      get: () => "-",
+      set: () => {},
+    });
+    // fireEvent.change triggers React's synthetic onChange, which reads
+    // e.currentTarget.value — now the overridden getter returning "-".
+    fireEvent.change(cpu);
     expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
   });
 });
