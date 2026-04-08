@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -130,5 +130,30 @@ describe("NewSandboxDialog — scaffold", () => {
     const create = screen.getByRole("button", { name: /^create$/i });
     await userEvent.type(screen.getByLabelText(/name/i), "my-sandbox");
     expect(create).toBeDisabled();
+  });
+});
+
+describe("NewSandboxDialog — project defaulting", () => {
+  it("defaults to the first project when no id is stored", async () => {
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prj_1"));
+  });
+
+  it("honors a stored project id when it still exists", async () => {
+    localStorage.setItem("navaris.lastProjectId", "prj_2");
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prj_2"));
+  });
+
+  it("falls back to the first project when the stored id is stale", async () => {
+    localStorage.setItem("navaris.lastProjectId", "prj_gone");
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prj_1"));
   });
 });
