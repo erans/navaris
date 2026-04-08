@@ -70,3 +70,18 @@ func (r *rateLimiter) consume(key string) bool {
 	b.tokens--
 	return true
 }
+
+// refund returns one token to the bucket for key. Used by successful logins
+// so only failed attempts are penalised. Capped at the configured capacity.
+func (r *rateLimiter) refund(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.buckets[key]
+	if !ok {
+		return
+	}
+	b.tokens++
+	if b.tokens > r.capacity {
+		b.tokens = r.capacity
+	}
+}
