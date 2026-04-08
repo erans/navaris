@@ -80,7 +80,11 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fixed delay on every attempt — success and failure alike.
+	// Fixed delay on every login attempt that gets as far as the password
+	// comparison — success and failure alike. Note that a 400 (bad JSON)
+	// returns immediately and so runs faster; this is a minor timing
+	// channel that distinguishes "malformed body" from "wrong password"
+	// but leaks nothing about the password itself.
 	time.Sleep(h.cfg.LoginDelay)
 
 	// Constant-time comparison.
@@ -154,6 +158,11 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"authenticated": true})
 }
 
+// extractClientIP returns the caller's IP for rate-limit bucketing. It
+// trusts the first entry of X-Forwarded-For if present, which means it is
+// ONLY safe when navarisd sits behind a reverse proxy that overwrites or
+// strips inbound XFF headers. A directly-exposed instance lets clients
+// pick their own rate-limit bucket by setting this header.
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		// First entry is the original client.
