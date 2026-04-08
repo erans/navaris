@@ -157,3 +157,44 @@ describe("NewSandboxDialog — project defaulting", () => {
     await waitFor(() => expect(select.value).toBe("prj_1"));
   });
 });
+
+describe("NewSandboxDialog — image picker", () => {
+  it("defaults to alpine/3.21 preset", async () => {
+    renderDialog();
+    const alpine = await screen.findByRole("button", { name: /alpine\/3\.21/i });
+    // Selected preset uses the --fg-primary color class; non-selected uses
+    // --fg-secondary. We assert via the class list to avoid coupling to
+    // the specific hex, which lives in index.css.
+    expect(alpine.className).toContain("border-[var(--fg-primary)]");
+  });
+
+  it("switches selection when a different preset is clicked", async () => {
+    renderDialog();
+    const debian = await screen.findByRole("button", { name: /debian-12/i });
+    await userEvent.click(debian);
+    expect(debian.className).toContain("border-[var(--fg-primary)]");
+    const alpine = screen.getByRole("button", { name: /alpine\/3\.21/i });
+    expect(alpine.className).not.toContain("border-[var(--fg-primary)]");
+  });
+
+  it("reveals a text input when Custom… is selected", async () => {
+    renderDialog();
+    const custom = await screen.findByRole("button", { name: /custom…/i });
+    expect(screen.queryByLabelText(/custom image ref/i)).not.toBeInTheDocument();
+    await userEvent.click(custom);
+    expect(screen.getByLabelText(/custom image ref/i)).toBeInTheDocument();
+  });
+
+  it("disables Create when Custom… is selected but the text input is empty", async () => {
+    renderDialog();
+    const custom = await screen.findByRole("button", { name: /custom…/i });
+    await userEvent.click(custom);
+    await userEvent.type(screen.getByLabelText(/name/i), "my-sandbox");
+    // Wait for the project dropdown to default to prj_1 before asserting
+    // the Create button state — otherwise canSubmit is gated by the empty
+    // projectId and not by the empty custom ref.
+    const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prj_1"));
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
+  });
+});
