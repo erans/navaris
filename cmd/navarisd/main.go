@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -125,12 +124,15 @@ func run(cfg config) error {
 		if cfg.uiSessionKey != "" {
 			sessionKey = []byte(cfg.uiSessionKey)
 		} else {
-			buf := make([]byte, 32)
-			if _, err := rand.Read(buf); err != nil {
+			// 32 random bytes — used directly as the HMAC-SHA256 key.
+			// Hex-encoding would be log-friendly but we never log the key,
+			// so the extra step just wastes entropy on redundant encoding
+			// and creates a format asymmetry with the operator-supplied path.
+			sessionKey = make([]byte, 32)
+			if _, err := rand.Read(sessionKey); err != nil {
 				return fmt.Errorf("generate ephemeral session key: %w", err)
 			}
-			sessionKey = []byte(hex.EncodeToString(buf))
-			logger.Warn("ui-session-key not set; generated ephemeral key; sessions will not survive restart")
+			logger.Warn("ui-session-key not set; generated ephemeral key; sessions will not survive restart — set --ui-session-key to persist sessions")
 		}
 		uiHandlers = webui.NewHandlers(webui.Config{
 			Password:   cfg.uiPassword,
@@ -138,7 +140,7 @@ func run(cfg config) error {
 			SessionTTL: cfg.uiSessionTTL,
 		})
 		if webui.Assets == nil {
-			logger.Warn("web UI enabled but binary was built without -tags withui; SPA will not be served")
+			logger.Warn("web UI enabled but binary was built without -tags withui; /ui/* API routes are reachable but the SPA shell will not be served")
 		}
 		logger.Info("web UI enabled", "session_ttl", cfg.uiSessionTTL.String())
 	} else {
