@@ -69,11 +69,15 @@ export default function Sandboxes() {
       <div className="mb-4 flex items-center gap-3 font-mono text-[11px]">
         <span className="text-[var(--fg-muted)]">state</span>
         {STATE_FILTERS.map((f) => (
-          <Chip key={f} label={f} active={stateFilter === f} onClick={() => setStateFilter(f)} />
+          <Chip key={f} active={stateFilter === f} onClick={() => setStateFilter(f)}>
+            {f}
+          </Chip>
         ))}
         <span className="ml-3 text-[var(--fg-muted)]">backend</span>
         {BACKEND_FILTERS.map((f) => (
-          <Chip key={f} label={f} active={backendFilter === f} onClick={() => setBackendFilter(f)} />
+          <Chip key={f} active={backendFilter === f} onClick={() => setBackendFilter(f)}>
+            {f}
+          </Chip>
         ))}
       </div>
 
@@ -96,34 +100,28 @@ export default function Sandboxes() {
   );
 }
 
-// Chip renders its label exclusively via the aria-label attribute and a CSS
-// pseudo-element (content: attr(data-chip-label) in index.css). This keeps
-// the DOM free of a text node matching the label, which lets getByText in
-// tests uniquely resolve backend names like "incus" that also appear in table
-// cells — without having to add aria-label-based selector overrides in every
-// test. getByRole("button", { name: /label/ }) still works via aria-label.
 function Chip({
-  label,
   active,
+  children,
   onClick,
 }: {
-  label: string;
   active: boolean;
+  children: React.ReactNode;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
-      aria-label={label}
-      data-chip-label={label}
       onClick={onClick}
       className={[
-        "chip-label px-2 py-1 border text-[11px] transition-colors",
+        "px-2 py-1 border text-[11px] transition-colors",
         active
           ? "border-[var(--fg-primary)] text-[var(--fg-primary)]"
           : "border-[var(--border-subtle)] text-[var(--fg-secondary)]",
       ].join(" ")}
-    />
+    >
+      {children}
+    </button>
   );
 }
 

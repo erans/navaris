@@ -58,11 +58,6 @@
   --color-invert-bg: var(--color-invert-bg);
 }
 
-/* Filter chip — text is rendered via CSS content to keep DOM clean for testing */
-.chip-label::before {
-  content: attr(data-chip-label);
-}
-
 @layer base {
   * {
     border-color: var(--color-border-subtle);
