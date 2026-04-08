@@ -96,4 +96,16 @@ describe("SandboxDetail", () => {
     await userEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
     await waitFor(() => expect(destroySeen).toHaveBeenCalled());
   });
+
+  it("disables the Terminal link when sandbox is not running", async () => {
+    server.use(
+      http.get("/v1/sandboxes/sbx_1", () =>
+        HttpResponse.json({ ...sample, State: "stopped" }),
+      ),
+    );
+    renderPage();
+    await screen.findByText("fedora-test-01");
+    const link = screen.getByRole("link", { name: /terminal/i });
+    expect(link).toHaveAttribute("aria-disabled", "true");
+  });
 });
