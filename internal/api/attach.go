@@ -103,7 +103,7 @@ func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domai
 
 	// Bridge loop — two goroutines race to finish; the first error tears down both sides.
 	var once sync.Once
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 2) // 2 so the losing goroutine's finish() doesn't block even though once.Do skips its send
 	finish := func(err error) { once.Do(func() { errCh <- err }) }
 
 	// stdout → ws
@@ -146,7 +146,7 @@ func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domai
 				}
 				if msg.Type == "resize" && handle.Resize != nil {
 					if err := handle.Resize(msg.Cols, msg.Rows); err != nil {
-						s.log.Warn("attach: resize failed", "error", err)
+						s.log.Debug("attach: resize failed", "error", err)
 					}
 				}
 			}
