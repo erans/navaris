@@ -1,58 +1,6 @@
-import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  beforeEach,
-  afterEach,
-  vi,
-} from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useLastProject } from "./useLastProject";
-
-// Node 25 ships a built-in (empty stub) `globalThis.localStorage` that
-// shadows jsdom's Storage implementation — jsdom sees the global already
-// exists and leaves it alone, so `localStorage.setItem` and friends are
-// undefined inside tests. Install a minimal in-memory Storage before any
-// tests run so the hook can exercise the real API surface and
-// `Storage.prototype` spies resolve against a genuine Storage class.
-class TestStorage {
-  private store = new Map<string, string>();
-  get length(): number {
-    return this.store.size;
-  }
-  key(index: number): string | null {
-    return Array.from(this.store.keys())[index] ?? null;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) as string) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
-beforeAll(() => {
-  const storage = new TestStorage();
-  Object.defineProperty(globalThis, "localStorage", {
-    value: storage,
-    writable: true,
-    configurable: true,
-  });
-  // The error-swallowing tests spy on `Storage.prototype`, so `Storage`
-  // must resolve to the same class our installed instance inherits from.
-  Object.defineProperty(globalThis, "Storage", {
-    value: TestStorage,
-    writable: true,
-    configurable: true,
-  });
-});
 
 describe("useLastProject", () => {
   beforeEach(() => {
