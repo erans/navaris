@@ -361,3 +361,108 @@ describe("NewSandboxDialog — submit", () => {
     expect(seenBody.image_id).toBe("images:ubuntu/24.04");
   });
 });
+
+describe("NewSandboxDialog — errors", () => {
+  it("shows a specific message on 409 conflict and stays open", async () => {
+    server.use(
+      http.post("/v1/sandboxes", () =>
+        HttpResponse.json(
+          { error: { code: 409, message: "conflict" } },
+          { status: 409 },
+        ),
+      ),
+    );
+    const { onClose } = renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "dup-name");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(
+      await screen.findByText(/already exists in this project/i),
+    ).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    // Create button re-enables so the user can correct and retry.
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeEnabled();
+  });
+
+  it("shows a fallback on 500 without leaking the server body", async () => {
+    server.use(
+      http.post("/v1/sandboxes", () =>
+        HttpResponse.json(
+          { error: { code: 500, message: "internal server error" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "boom");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(
+      await screen.findByText(/server error\. try again/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a generic message on network failure", async () => {
+    server.use(
+      http.post("/v1/sandboxes", () => HttpResponse.error()),
+    );
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "offline");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    expect(
+      await screen.findByText(/unable to create sandbox/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("NewSandboxDialog — pending guard", () => {
+  it("ignores ESC while pending", async () => {
+    // Hold the POST open so the dialog stays in the pending state for the
+    // duration of the test. We resolve it manually at the end.
+    let resolveCreate!: () => void;
+    const createPromise = new Promise<void>((res) => {
+      resolveCreate = res;
+    });
+    server.use(
+      http.post("/v1/sandboxes", async () => {
+        await createPromise;
+        return HttpResponse.json(
+          {
+            OperationID: "op_pending",
+            ResourceType: "sandbox",
+            ResourceID: "sbx_pending",
+            SandboxID: "sbx_pending",
+            SnapshotID: "",
+            Type: "create_sandbox",
+            State: "pending",
+            StartedAt: "2026-04-08T12:00:00Z",
+            FinishedAt: null,
+            ErrorText: "",
+            Metadata: null,
+          },
+          { status: 202 },
+        );
+      }),
+    );
+    const { onClose } = renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "pending");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    // Now the mutation is in flight: Create button becomes "Creating…".
+    expect(
+      await screen.findByRole("button", { name: /creating/i }),
+    ).toBeInTheDocument();
+    // Firing a cancel event on the dialog must NOT invoke onClose.
+    const dialog = screen.getByRole("dialog");
+    dialog.dispatchEvent(
+      new Event("cancel", { bubbles: true, cancelable: true }),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    // Clicking Cancel is also a no-op while pending (disabled button).
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeDisabled();
+    // Release the hanging mutation so the test can unwind cleanly.
+    resolveCreate();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+});
