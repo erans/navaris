@@ -115,9 +115,10 @@ func TestWebUIEndToEnd(t *testing.T) {
 	resp.Body.Close()
 
 	// 4. cookie is now cleared → 401
-	// Note: the jar may still have the cookie struct but its Max-Age=-1 means
-	// net/http drops it from subsequent requests. Make a fresh jar to be sure
-	// the test isn't fooled by cookie-expiry subtleties in the jar impl.
+	// Go's cookiejar honors the Max-Age=-1 sent on the logout response and
+	// drops navaris_ui_session from subsequent requests, so reusing c here
+	// confirms that the post-logout request arrives without any session
+	// cookie in the header.
 	reqLoggedOut, _ := http.NewRequest("GET", apiURL()+"/v1/projects", nil)
 	respLoggedOut, err := c.Do(reqLoggedOut)
 	if err != nil {
@@ -153,6 +154,7 @@ func TestWebUIEndToEnd(t *testing.T) {
 	c2 := httpClientWithJar(t)
 	resp = postJSON(t, c2, "/ui/login", map[string]string{"password": password})
 	if resp.StatusCode != 200 {
+		resp.Body.Close()
 		t.Fatalf("re-login: status = %d", resp.StatusCode)
 	}
 	resp.Body.Close()
