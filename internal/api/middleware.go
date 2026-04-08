@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -155,6 +157,16 @@ type statusCapture struct {
 func (sc *statusCapture) WriteHeader(code int) {
 	sc.code = code
 	sc.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack implements http.Hijacker so that WebSocket upgrades work when the
+// underlying ResponseWriter supports hijacking (e.g. http.Server connections).
+func (sc *statusCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := sc.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("http.ResponseWriter does not implement http.Hijacker")
+	}
+	return hj.Hijack()
 }
 
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
