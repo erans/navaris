@@ -104,8 +104,20 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
     if (name.trim() === "") return false;
     if (imageRef === "") return false;
     if (projectId === "") return false;
-    if (cpuLimit !== "" && !Number.isFinite(Number(cpuLimit))) return false;
-    if (memoryLimitMB !== "" && !Number.isFinite(Number(memoryLimitMB))) return false;
+    // cpu_limit and memory_limit_mb are decoded as *int on the backend
+    // (internal/api/sandbox.go), so we must reject decimals as well as
+    // NaN. The numeric inputs also have min attributes (cpu >= 1,
+    // memory >= 64) that the HTML form would enforce on native submit,
+    // but we drive submission through a React handler, so we re-check
+    // those constraints here too.
+    if (cpuLimit !== "") {
+      const n = Number(cpuLimit);
+      if (!Number.isInteger(n) || n < 1) return false;
+    }
+    if (memoryLimitMB !== "") {
+      const n = Number(memoryLimitMB);
+      if (!Number.isInteger(n) || n < 64) return false;
+    }
     return true;
   }, [pending, name, imageRef, projectId, cpuLimit, memoryLimitMB]);
 
@@ -131,11 +143,9 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
     setError(null);
     setPending(true);
     try {
-      // Parse numerics once. type="number" controls can hold intermediate
-      // values like "-" or "1e" that aren't finite — canSubmit already
-      // gates submission on these, but we also filter here so the wire
-      // payload can never contain NaN (which JSON.stringify would emit
-      // as null and defeat the "omit to use provider default" intent).
+      // Parse numerics once. canSubmit already rejected decimals and
+      // values below the field minimums, but we re-check here so the
+      // wire payload is never partially correct.
       const cpuParsed = cpuLimit === "" ? undefined : Number(cpuLimit);
       const memoryParsed = memoryLimitMB === "" ? undefined : Number(memoryLimitMB);
       const req = {
@@ -143,9 +153,16 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
         name: name.trim(),
         image_id: imageRef,
         network_mode: networkMode,
-        cpu_limit: cpuParsed !== undefined && Number.isFinite(cpuParsed) ? cpuParsed : undefined,
+        cpu_limit:
+          cpuParsed !== undefined && Number.isInteger(cpuParsed) && cpuParsed >= 1
+            ? cpuParsed
+            : undefined,
         memory_limit_mb:
-          memoryParsed !== undefined && Number.isFinite(memoryParsed) ? memoryParsed : undefined,
+          memoryParsed !== undefined &&
+          Number.isInteger(memoryParsed) &&
+          memoryParsed >= 64
+            ? memoryParsed
+            : undefined,
       };
       const op = await createSandbox(req);
       writeLastProject(projectId);
@@ -296,6 +313,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
               id="nsd-cpu"
               type="number"
               min={1}
+              step={1}
               value={cpuLimit}
               onChange={(e) => setCpuLimit(e.currentTarget.value)}
               className="w-full border border-[var(--border-subtle)] bg-transparent px-3 py-2 text-sm text-[var(--fg-primary)] outline-none focus:border-[var(--fg-primary)]"
@@ -312,6 +330,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
               id="nsd-memory"
               type="number"
               min={64}
+              step={1}
               value={memoryLimitMB}
               onChange={(e) => setMemoryLimitMB(e.currentTarget.value)}
               className="w-full border border-[var(--border-subtle)] bg-transparent px-3 py-2 text-sm text-[var(--fg-primary)] outline-none focus:border-[var(--fg-primary)]"

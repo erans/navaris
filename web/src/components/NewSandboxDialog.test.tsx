@@ -227,6 +227,26 @@ describe("NewSandboxDialog — image picker", () => {
     fireEvent.change(cpu);
     expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
   });
+
+  it("keeps Create disabled when CPU input is a decimal", async () => {
+    // cpu_limit is decoded as *int on the backend, so decimals must be
+    // rejected client-side even though they parse as finite numbers.
+    // This mirrors the canSubmit branch that checks Number.isInteger.
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "my-sandbox");
+    const select = screen.getByLabelText(/project/i) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("prj_1"));
+    const cpu = screen.getByLabelText(/cpu/i) as HTMLInputElement;
+    // jsdom 25 sanitizes "-", "1e", etc. back to "" for type="number",
+    // but "1.5" is a valid number-spec value so it round-trips cleanly
+    // through userEvent.type. We use userEvent here rather than the
+    // value-getter override used by the non-finite test because the
+    // path we want to exercise is "user types a decimal the input
+    // happily accepts".
+    await userEvent.type(cpu, "1.5");
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
+  });
 });
 
 describe("NewSandboxDialog — submit", () => {
