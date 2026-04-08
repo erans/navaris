@@ -7,6 +7,7 @@ import {
   startSandbox,
   stopSandbox,
   destroySandbox,
+  createSandbox,
 } from "./sandboxes";
 
 const server = setupServer();
@@ -101,5 +102,89 @@ describe("sandboxes API", () => {
     );
     await destroySandbox("sbx_1");
     expect(seen).toHaveBeenCalled();
+  });
+});
+
+describe("createSandbox", () => {
+  it("POSTs to /v1/sandboxes with the request body and returns the Operation", async () => {
+    let seenBody: unknown = null;
+    server.use(
+      http.post("/v1/sandboxes", async ({ request }) => {
+        seenBody = await request.json();
+        return HttpResponse.json(
+          {
+            OperationID: "op_1",
+            ResourceType: "sandbox",
+            ResourceID: "sbx_new",
+            SandboxID: "sbx_new",
+            SnapshotID: "",
+            Type: "create_sandbox",
+            State: "pending",
+            StartedAt: "2026-04-08T12:00:00Z",
+            FinishedAt: null,
+            ErrorText: "",
+            Metadata: null,
+          },
+          { status: 202 },
+        );
+      }),
+    );
+
+    const op = await createSandbox({
+      project_id: "prj_1",
+      name: "test-1",
+      image_id: "alpine/3.21",
+      cpu_limit: 2,
+      memory_limit_mb: 512,
+      network_mode: "isolated",
+    });
+
+    expect(op.ResourceID).toBe("sbx_new");
+    expect(op.Type).toBe("create_sandbox");
+    expect(seenBody).toEqual({
+      project_id: "prj_1",
+      name: "test-1",
+      image_id: "alpine/3.21",
+      cpu_limit: 2,
+      memory_limit_mb: 512,
+      network_mode: "isolated",
+    });
+  });
+
+  it("omits cpu_limit and memory_limit_mb when not provided", async () => {
+    let seenBody: Record<string, unknown> = {};
+    server.use(
+      http.post("/v1/sandboxes", async ({ request }) => {
+        seenBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          {
+            OperationID: "op_2",
+            ResourceType: "sandbox",
+            ResourceID: "sbx_2",
+            SandboxID: "sbx_2",
+            SnapshotID: "",
+            Type: "create_sandbox",
+            State: "pending",
+            StartedAt: "2026-04-08T12:00:00Z",
+            FinishedAt: null,
+            ErrorText: "",
+            Metadata: null,
+          },
+          { status: 202 },
+        );
+      }),
+    );
+
+    await createSandbox({
+      project_id: "prj_1",
+      name: "test-2",
+      image_id: "debian-12",
+      network_mode: "published",
+    });
+
+    expect(seenBody).not.toHaveProperty("cpu_limit");
+    expect(seenBody).not.toHaveProperty("memory_limit_mb");
+    expect(seenBody.image_id).toBe("debian-12");
+    expect(seenBody.network_mode).toBe("published");
   });
 });

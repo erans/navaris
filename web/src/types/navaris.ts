@@ -76,3 +76,28 @@ export interface Event {
   Timestamp: string;
   Data: Record<string, unknown> | null;
 }
+
+// Operation mirrors domain.Operation in internal/domain/operation.go. The Go
+// struct has no json tags, so wire field names are PascalCase. Lifecycle
+// handlers (create, start, stop, destroy) all return this envelope with
+// ResourceType="sandbox" and ResourceID set to the sandbox's UUID.
+export type OperationState =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface Operation {
+  OperationID: string;
+  ResourceType: string;
+  ResourceID: string;
+  SandboxID: string;
+  SnapshotID: string;
+  Type: string;
+  State: OperationState;
+  StartedAt: string;
+  FinishedAt: string | null;
+  ErrorText: string;
+  Metadata: Record<string, unknown> | null;
+}
