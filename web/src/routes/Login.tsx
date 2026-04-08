@@ -10,7 +10,11 @@ export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const next = params.get("next") ?? "/";
+  // Only accept same-origin relative paths. A value like "//evil.com" or
+  // "https://evil.com" would otherwise let an attacker craft a login link
+  // that bounces users off-site after they sign in.
+  const rawNext = params.get("next") ?? "/";
+  const next = rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
