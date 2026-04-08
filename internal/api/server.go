@@ -19,8 +19,9 @@ type ServerConfig struct {
 	Provider   domain.Provider
 	Events     domain.EventBus
 	Ports      domain.PortBindingStore
-	AuthToken  string
-	Logger     *slog.Logger
+	AuthToken    string
+	UISessionKey []byte
+	Logger       *slog.Logger
 }
 
 type Server struct {
@@ -98,7 +99,7 @@ func (s *Server) Handler() http.Handler {
 	// Apply middleware chain: requestID -> auth -> logging -> mux
 	var handler http.Handler = mux
 	handler = loggingMiddleware(s.log)(handler)
-	handler = authMiddleware(s.cfg.AuthToken)(handler)
+	handler = authMiddleware(s.cfg.AuthToken, s.cfg.UISessionKey)(handler)
 	handler = requestIDMiddleware(handler)
 
 	// Telemetry middleware (outermost when enabled):

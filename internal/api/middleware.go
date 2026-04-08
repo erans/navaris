@@ -4,11 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/webui"
 )
 
 type contextKey string
@@ -34,36 +36,100 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func authMiddleware(token string) func(http.Handler) http.Handler {
+// authMiddleware gates /v1/* with either a Bearer token or a signed
+// session cookie. When both token and sessionKey are empty, the middleware
+// is a pass-through (existing test-mode behaviour).
+//
+// Bearer always wins when an Authorization header is present — a programmatic
+// client explicitly sending a bearer shouldn't have its request cookie-checked.
+//
+// On cookie auth with an unsafe method (POST/PUT/DELETE/PATCH), the middleware
+// additionally verifies Origin (or Referer fallback) matches Host. Mismatch
+// returns 403, not 401, to distinguish "authenticated but refused" from
+// "not authenticated".
+func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Handler {
+	var signer *webui.Signer
+	if len(sessionKey) > 0 {
+		signer = webui.NewSigner(sessionKey)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip auth when token is empty (testing convenience)
-			if token == "" {
+			// Test-mode fallthrough: no auth configured at all.
+			if token == "" && signer == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			provided := extractToken(r)
-			if provided != token {
-				respondError(w, domain.ErrUnauthorized)
+			// 1. Bearer wins.
+			if bearer := extractBearerToken(r); bearer != "" {
+				if token == "" || bearer != token {
+					respondError(w, domain.ErrUnauthorized)
+					return
+				}
+				next.ServeHTTP(w, r)
 				return
 			}
-			next.ServeHTTP(w, r)
+
+			// 2. Cookie fallback.
+			if signer != nil {
+				if c, err := r.Cookie(webui.CookieName); err == nil && c.Value != "" {
+					if _, _, err := signer.Verify(c.Value); err != nil {
+						respondError(w, domain.ErrUnauthorized)
+						return
+					}
+					if isUnsafeMethod(r.Method) && !originMatchesHost(r) {
+						respondError(w, domain.ErrForbidden)
+						return
+					}
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			// 3. Nothing → 401.
+			respondError(w, domain.ErrUnauthorized)
 		})
 	}
 }
 
-func extractToken(r *http.Request) string {
-	// Check Authorization header first
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	// Fall back to query parameter only for WebSocket endpoints
-	if strings.HasPrefix(r.URL.Path, "/v1/events") {
-		return r.URL.Query().Get("token")
+// AuthMiddlewareForTest exposes the internal auth middleware to tests in
+// package api_test.
+func AuthMiddlewareForTest(token string, sessionKey []byte) func(http.Handler) http.Handler {
+	return authMiddleware(token, sessionKey)
+}
+
+func extractBearerToken(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
 	}
 	return ""
+}
+
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return true
+}
+
+func originMatchesHost(r *http.Request) bool {
+	host := r.Host
+	if origin := r.Header.Get("Origin"); origin != "" {
+		return sameHost(origin, host)
+	}
+	if referer := r.Header.Get("Referer"); referer != "" {
+		return sameHost(referer, host)
+	}
+	return false
+}
+
+func sameHost(rawURL, host string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Host == host
 }
 
 type statusCapture struct {
