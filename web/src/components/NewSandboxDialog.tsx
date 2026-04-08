@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type SyntheticEvent,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listProjects } from "@/api/projects";
@@ -100,7 +101,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
     return true;
   }, [pending, name, imageRef, projectId]);
 
-  function handleCancelEvent(e: React.SyntheticEvent<HTMLDialogElement>) {
+  function handleCancelEvent(e: SyntheticEvent<HTMLDialogElement>) {
     // ESC key triggers the native `cancel` event on the dialog. We
     // preventDefault to keep the dialog element alive — React unmounts
     // it cleanly when the parent flips `open` to false via onClose.
@@ -108,7 +109,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
     if (!pending) onClose();
   }
 
-  function handleBackdropClick(e: React.MouseEvent<HTMLDialogElement>) {
+  function handleBackdropClick(e: SyntheticEvent<HTMLDialogElement>) {
     // When showModal()-opened, a click that lands on the dialog's own
     // box (rather than any child) is a backdrop click. Close unless a
     // submit is in flight.
