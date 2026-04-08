@@ -100,21 +100,7 @@ export default function SandboxDetail() {
             {data.SandboxID}
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <StateBadge state={data.State} />
-          <Link
-            to={`/sandboxes/${data.SandboxID}/terminal`}
-            className={[
-              "font-mono text-[11px] border px-3 py-1.5",
-              running
-                ? "border-[var(--border-strong)] text-[var(--fg-primary)] hover:bg-[var(--bg-overlay)]"
-                : "border-[var(--border-subtle)] text-[var(--fg-muted)] pointer-events-none",
-            ].join(" ")}
-            aria-disabled={!running}
-          >
-            Terminal
-          </Link>
-        </div>
+        <StateBadge state={data.State} />
       </header>
 
       <section className="mb-6 grid grid-cols-2 gap-3 border border-[var(--border-subtle)] p-4">
@@ -143,6 +129,16 @@ export default function SandboxDetail() {
         >
           Stop
         </button>
+        <Link
+          to={`/sandboxes/${data.SandboxID}/terminal`}
+          aria-disabled={!running}
+          className={[
+            "font-mono text-xs border border-[var(--border-strong)] px-3 py-1.5 hover:bg-[var(--bg-overlay)]",
+            running ? "" : "opacity-50 pointer-events-none",
+          ].join(" ")}
+        >
+          Terminal
+        </Link>
 
         {!confirmingDelete ? (
           <button
