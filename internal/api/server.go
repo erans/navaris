@@ -97,7 +97,11 @@ func (s *Server) Handler() http.Handler {
 	apiHandler = authMiddleware(s.cfg.AuthToken, s.cfg.UISessionKey)(apiHandler)
 
 	// Root mux: dispatches /v1/* to the protected sub-mux and /ui/* + / to
-	// the UI handlers when enabled.
+	// the UI handlers when enabled. Note that only /v1/* requests flow
+	// through loggingMiddleware — /ui/* and / share requestID and telemetry
+	// wrapping but are not emitted on the structured access log. When
+	// operational visibility for UI auth events becomes important, move
+	// loggingMiddleware out to wrap `root` instead.
 	root := http.NewServeMux()
 	root.Handle("/v1/", apiHandler)
 
@@ -113,7 +117,11 @@ func (s *Server) Handler() http.Handler {
 		root.Handle("/", webui.NewAssetHandler(s.cfg.UIAssets))
 	}
 
-	// Outer middleware — requestID wraps everything.
+	// Outer middleware — requestID wraps everything. When telemetry is
+	// enabled, the full chain for /v1/* requests is:
+	//   tracing → metrics → requestID → root → auth → logging → api mux
+	// and for /ui/* and / requests it is:
+	//   tracing → metrics → requestID → root → (UI handler or asset)
 	var handler http.Handler = root
 	handler = requestIDMiddleware(handler)
 
