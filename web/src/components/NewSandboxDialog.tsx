@@ -6,8 +6,11 @@ import {
   type FormEvent,
   type SyntheticEvent,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { ApiError } from "@/api/client";
 import { listProjects } from "@/api/projects";
+import { createSandbox } from "@/api/sandboxes";
 import { useLastProject } from "@/hooks/useLastProject";
 import type { NetworkMode } from "@/types/navaris";
 
@@ -38,7 +41,9 @@ export interface NewSandboxDialogProps {
 
 export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const { readLastProject } = useLastProject();
+  const { readLastProject, writeLastProject } = useLastProject();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   // Form state lives on the component so each mount starts with a fresh
   // form. The parent uses `{open && <NewSandboxDialog ... />}` so closing
@@ -52,8 +57,8 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
   const [cpuLimit, setCpuLimit] = useState<string>("");
   const [memoryLimitMB, setMemoryLimitMB] = useState<string>("");
   const [networkMode, setNetworkMode] = useState<NetworkMode>("isolated");
-  const [pending] = useState(false);
-  const [error] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch projects once so the dropdown can populate. Retry is disabled
   // explicitly so a failing projects query surfaces immediately in the
@@ -121,7 +126,35 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!canSubmit) return;
-    // Submit handler wired in Task 7.
+    setError(null);
+    setPending(true);
+    try {
+      const req = {
+        project_id: projectId,
+        name: name.trim(),
+        image_id: imageRef,
+        network_mode: networkMode,
+        // Empty strings from type="number" inputs become NaN via Number,
+        // which we filter out here. The CreateSandboxRequest type treats
+        // these as optional so undefined is dropped by JSON.stringify.
+        cpu_limit: cpuLimit === "" ? undefined : Number(cpuLimit),
+        memory_limit_mb:
+          memoryLimitMB === "" ? undefined : Number(memoryLimitMB),
+      };
+      const op = await createSandbox(req);
+      writeLastProject(projectId);
+      await queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+      onClose();
+      navigate(`/sandboxes/${op.ResourceID}`);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? messageForCreateError(err)
+          : "Unable to create sandbox. Try again.",
+      );
+    } finally {
+      setPending(false);
+    }
   }
 
   const projects = projectsQuery.data ?? [];
@@ -337,4 +370,25 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
       </form>
     </dialog>
   );
+}
+
+// messageForCreateError maps common HTTP statuses to friendlier copy.
+// We key off err.status rather than err.code because the navarisd
+// errorResponse shape in internal/api/response.go is
+// `{"error": {"code": <int>, "message": "..."}}`, and apiFetch reads
+// body.code at the top level — so err.code falls back to `http_<N>`
+// and isn't useful for branching. Status is the reliable signal.
+// For 5xx, the server has already redacted the message before it
+// reaches the wire, so any fallback copy we use here is fine.
+function messageForCreateError(err: ApiError): string {
+  if (err.status === 409) {
+    return "A sandbox with that name already exists in this project.";
+  }
+  if (err.status === 422) {
+    return err.message || "Invalid request.";
+  }
+  if (err.status >= 500) {
+    return "Server error. Try again.";
+  }
+  return err.message || "Unable to create sandbox. Try again.";
 }

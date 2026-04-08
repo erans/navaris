@@ -198,3 +198,116 @@ describe("NewSandboxDialog — image picker", () => {
     expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
   });
 });
+
+describe("NewSandboxDialog — submit", () => {
+  it("POSTs the form, invalidates sandboxes, writes last project, and navigates", async () => {
+    let seenBody: Record<string, unknown> = {};
+    server.use(
+      http.post("/v1/sandboxes", async ({ request }) => {
+        seenBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          {
+            OperationID: "op_1",
+            ResourceType: "sandbox",
+            ResourceID: "sbx_created",
+            SandboxID: "sbx_created",
+            SnapshotID: "",
+            Type: "create_sandbox",
+            State: "pending",
+            StartedAt: "2026-04-08T12:00:00Z",
+            FinishedAt: null,
+            ErrorText: "",
+            Metadata: null,
+          },
+          { status: 202 },
+        );
+      }),
+    );
+    const { onClose } = renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "integration-test");
+    await userEvent.type(screen.getByLabelText(/cpu/i), "2");
+    await userEvent.type(screen.getByLabelText(/memory/i), "512");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    // Navigating to /sandboxes/:id renders the DetailStub.
+    expect(await screen.findByText("Detail for sbx_created")).toBeInTheDocument();
+    expect(onClose).toHaveBeenCalled();
+    expect(localStorage.getItem("navaris.lastProjectId")).toBe("prj_1");
+    expect(seenBody).toEqual({
+      project_id: "prj_1",
+      name: "integration-test",
+      image_id: "alpine/3.21",
+      cpu_limit: 2,
+      memory_limit_mb: 512,
+      network_mode: "isolated",
+    });
+  });
+
+  it("omits cpu_limit and memory_limit_mb when the inputs are empty", async () => {
+    let seenBody: Record<string, unknown> = {};
+    server.use(
+      http.post("/v1/sandboxes", async ({ request }) => {
+        seenBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          {
+            OperationID: "op_2",
+            ResourceType: "sandbox",
+            ResourceID: "sbx_nolimits",
+            SandboxID: "sbx_nolimits",
+            SnapshotID: "",
+            Type: "create_sandbox",
+            State: "pending",
+            StartedAt: "2026-04-08T12:00:00Z",
+            FinishedAt: null,
+            ErrorText: "",
+            Metadata: null,
+          },
+          { status: 202 },
+        );
+      }),
+    );
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.type(screen.getByLabelText(/name/i), "no-limits");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    await screen.findByText("Detail for sbx_nolimits");
+    expect(seenBody).not.toHaveProperty("cpu_limit");
+    expect(seenBody).not.toHaveProperty("memory_limit_mb");
+  });
+
+  it("sends a custom image ref when Custom… is picked", async () => {
+    let seenBody: Record<string, unknown> = {};
+    server.use(
+      http.post("/v1/sandboxes", async ({ request }) => {
+        seenBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          {
+            OperationID: "op_3",
+            ResourceType: "sandbox",
+            ResourceID: "sbx_custom",
+            SandboxID: "sbx_custom",
+            SnapshotID: "",
+            Type: "create_sandbox",
+            State: "pending",
+            StartedAt: "2026-04-08T12:00:00Z",
+            FinishedAt: null,
+            ErrorText: "",
+            Metadata: null,
+          },
+          { status: 202 },
+        );
+      }),
+    );
+    renderDialog();
+    await screen.findByText(/new sandbox/i);
+    await userEvent.click(screen.getByRole("button", { name: /custom…/i }));
+    await userEvent.type(
+      screen.getByLabelText(/custom image ref/i),
+      "images:ubuntu/24.04",
+    );
+    await userEvent.type(screen.getByLabelText(/name/i), "custom-image");
+    await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    await screen.findByText("Detail for sbx_custom");
+    expect(seenBody.image_id).toBe("images:ubuntu/24.04");
+  });
+});
