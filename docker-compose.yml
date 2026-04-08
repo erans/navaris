@@ -21,6 +21,9 @@ services:
       NAVARIS_AUTH_TOKEN: ${NAVARIS_AUTH_TOKEN:-}
       NAVARIS_LOG_LEVEL: ${NAVARIS_LOG_LEVEL:-info}
       INCUS_PRELOAD_IMAGE: ${INCUS_PRELOAD_IMAGE:-images:alpine/3.21,images:debian/12}
+      NAVARIS_UI_PASSWORD: ${NAVARIS_UI_PASSWORD:-}
+      NAVARIS_UI_SESSION_KEY: ${NAVARIS_UI_SESSION_KEY:-}
+      NAVARIS_UI_SESSION_TTL: ${NAVARIS_UI_SESSION_TTL:-24h}
     volumes:
       - navaris-data:/var/lib/navaris
       - incus-data:/var/lib/incus

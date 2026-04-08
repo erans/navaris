@@ -98,6 +98,16 @@ if [ -n "$NAVARIS_AUTH_TOKEN" ]; then
     ARGS+=(--auth-token="$NAVARIS_AUTH_TOKEN")
 fi
 
+if [ -n "${NAVARIS_UI_PASSWORD:-}" ]; then
+    ARGS+=(--ui-password="$NAVARIS_UI_PASSWORD")
+fi
+if [ -n "${NAVARIS_UI_SESSION_KEY:-}" ]; then
+    ARGS+=(--ui-session-key="$NAVARIS_UI_SESSION_KEY")
+fi
+if [ -n "${NAVARIS_UI_SESSION_TTL:-}" ]; then
+    ARGS+=(--ui-session-ttl="$NAVARIS_UI_SESSION_TTL")
+fi
+
 # Enable Firecracker if /dev/kvm is available.
 if [ -c /dev/kvm ]; then
     echo "KVM detected, enabling Firecracker backend."
