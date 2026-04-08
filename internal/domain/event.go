@@ -12,6 +12,10 @@ const (
 	EventOperationStateChanged EventType = "operation_state_changed"
 	EventExecOutput            EventType = "exec_output"
 	EventExecCompleted         EventType = "exec_completed"
+	EventUILogin               EventType = "ui.login"
+	EventUILoginFailed         EventType = "ui.login_failed"
+	EventUIAttachOpened        EventType = "ui.attach_opened"
+	EventUIAttachClosed        EventType = "ui.attach_closed"
 )
 
 type Event struct {
