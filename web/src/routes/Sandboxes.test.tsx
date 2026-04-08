@@ -162,4 +162,45 @@ describe("Sandboxes list", () => {
       screen.getByRole("heading", { name: /new sandbox/i }),
     ).toBeInTheDocument();
   });
+
+  it("unmounts the dialog on close and reopens with a fresh form", async () => {
+    // This is the regression-catch for the conditional-mount pattern
+    // ({newDialogOpen && <NewSandboxDialog ... />}). If the parent ever
+    // switches to a persistent-mount approach (e.g. visibility-toggling
+    // or hidden-attribute), the form state from the first open would
+    // leak into the second — this test fails loudly in that case.
+    renderPage();
+    await screen.findByText("fedora-test-01");
+
+    // Open the dialog, type into Name, verify the value stuck.
+    await userEvent.click(
+      screen.getByRole("button", { name: /new sandbox/i }),
+    );
+    const firstDialog = await screen.findByRole("dialog");
+    const firstName = within(firstDialog).getByLabelText(
+      /name/i,
+    ) as HTMLInputElement;
+    await userEvent.type(firstName, "my-typed-name");
+    expect(firstName.value).toBe("my-typed-name");
+
+    // Close via Cancel — the dialog should unmount so the form state
+    // is discarded.
+    await userEvent.click(
+      within(firstDialog).getByRole("button", { name: /^cancel$/i }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    // Reopen — the Name field must be empty, confirming the previous
+    // component instance was discarded rather than hidden.
+    await userEvent.click(
+      screen.getByRole("button", { name: /new sandbox/i }),
+    );
+    const secondDialog = await screen.findByRole("dialog");
+    const secondName = within(secondDialog).getByLabelText(
+      /name/i,
+    ) as HTMLInputElement;
+    expect(secondName.value).toBe("");
+  });
 });
