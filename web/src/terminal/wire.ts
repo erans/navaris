@@ -9,12 +9,7 @@
 // gives us the string form of the keystroke (already with escape sequences
 // for function/arrow keys), so we just UTF-8 encode it and ship it.
 export function encodeInputBytes(data: string): Uint8Array {
-  // Wrap in new Uint8Array() to ensure the result belongs to the local realm's
-  // Uint8Array constructor. In jsdom/VM environments TextEncoder is injected
-  // from the host realm, so its output fails instanceof checks in the VM
-  // context. The wrapping copies the bytes into a new, locally-constructed
-  // typed array without any observable difference for callers.
-  return new Uint8Array(new TextEncoder().encode(data));
+  return new TextEncoder().encode(data);
 }
 
 // ResizeMessage is the single text-frame message the client sends.

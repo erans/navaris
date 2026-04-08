@@ -4,7 +4,9 @@ import { encodeInputBytes, encodeResizeMessage } from "./wire";
 describe("terminal wire protocol", () => {
   it("encodeInputBytes returns the raw UTF-8 bytes of the input string", () => {
     const bytes = encodeInputBytes("hello");
-    expect(bytes).toBeInstanceOf(Uint8Array);
+    // Constructor-name check is cross-realm safe; toBeInstanceOf fails in
+    // jsdom because TextEncoder lives in a different realm than the jsdom VM.
+    expect(bytes.constructor.name).toBe("Uint8Array");
     expect(new TextDecoder().decode(bytes)).toBe("hello");
   });
 
