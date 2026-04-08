@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -124,12 +125,26 @@ func originMatchesHost(r *http.Request) bool {
 	return false
 }
 
+// sameHost reports whether the hostname in rawURL matches the hostname in
+// host, ignoring ports and case. Ports are stripped because r.Host typically
+// carries the internal listen address (e.g. 127.0.0.1:8080) while Origin
+// carries the public-facing hostname from the browser (e.g. navaris.example).
 func sameHost(rawURL, host string) bool {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
 		return false
 	}
-	return u.Host == host
+	return strings.EqualFold(u.Hostname(), hostnameOnly(host))
+}
+
+// hostnameOnly strips an optional ":port" suffix from host. It returns the
+// whole input unchanged if there is no port or if SplitHostPort cannot parse
+// it (which happens for bare hostnames without a port).
+func hostnameOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 type statusCapture struct {
