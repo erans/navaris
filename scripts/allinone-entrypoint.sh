@@ -29,6 +29,13 @@ if [ ! -f /var/lib/incus/.initialized ]; then
 storage_pools:
   - name: default
     driver: dir
+networks:
+  - name: incusbr0
+    type: bridge
+    config:
+      ipv4.address: 10.10.0.1/24
+      ipv4.nat: "true"
+      ipv6.address: none
 profiles:
   - name: default
     devices:
@@ -36,8 +43,30 @@ profiles:
         type: disk
         path: /
         pool: default
+      eth0:
+        type: nic
+        network: incusbr0
+        name: eth0
 PRESEED
     touch /var/lib/incus/.initialized
+fi
+
+# Heal pre-existing volumes that were initialised before the network was
+# baked into the preseed above. These commands are idempotent — skipped on
+# fresh containers, applied on upgraded ones — so every container ends up
+# with an incusbr0 bridge attached to the default profile regardless of
+# when its /var/lib/incus volume was created.
+if ! incus network list --format csv 2>/dev/null | grep -q "^incusbr0,"; then
+    echo "Creating incusbr0 managed bridge..."
+    incus network create incusbr0 \
+        ipv4.address=10.10.0.1/24 \
+        ipv4.nat=true \
+        ipv6.address=none
+fi
+
+if ! incus profile device list default 2>/dev/null | grep -qx "eth0"; then
+    echo "Attaching eth0 (incusbr0) to default profile..."
+    incus profile device add default eth0 nic network=incusbr0 name=eth0
 fi
 
 # Pre-pull Incus images (runs to completion before starting navarisd).
