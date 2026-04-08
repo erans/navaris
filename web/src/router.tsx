@@ -8,6 +8,7 @@ const Sandboxes = lazy(() => import("@/routes/Sandboxes"));
 const SandboxDetail = lazy(() => import("@/routes/SandboxDetail"));
 const Projects = lazy(() => import("@/routes/Projects"));
 const Events = lazy(() => import("@/routes/Events"));
+const Terminal = lazy(() => import("@/routes/Terminal"));
 
 function shell(element: ReactNode) {
   return (
@@ -24,6 +25,7 @@ export const router = createBrowserRouter(
     { path: "/projects", element: shell(<Projects />) },
     { path: "/sandboxes", element: shell(<Sandboxes />) },
     { path: "/sandboxes/:id", element: shell(<SandboxDetail />) },
+    { path: "/sandboxes/:id/terminal", element: shell(<Terminal />) },
     { path: "/events", element: shell(<Events />) },
     { path: "*", element: <Navigate to="/" replace /> },
   ],
