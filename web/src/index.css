@@ -8,12 +8,32 @@
 
   --radius: 2px;
 
-  /* Status palette — identical across themes */
+  /* Status palette — identical across themes. These are kept inside @theme
+     so Tailwind also exposes them as `bg-status-*` utilities if we ever
+     want them, but every consumer today reaches for them through the
+     arbitrary `bg-[var(--status-*)]` syntax — see the `:root` block below
+     for the short-name aliases those lookups actually resolve. */
   --color-status-running: #22c55e;
   --color-status-pending: #f59e0b;
   --color-status-stopped: #71717a;
   --color-status-failed: #ef4444;
   --color-status-destroyed: #3f3f46;
+}
+
+/* Status variable short-name aliases.
+   Tailwind v4's @theme block exposes theme colors as `--color-status-*`
+   on :root, but the codebase overwhelmingly uses the shorter
+   `var(--status-failed)` form inside arbitrary utility classes like
+   `bg-[var(--status-failed)]`. Those lookups were silently resolving to
+   the empty string, leaving red accents and the "Confirm delete" button
+   invisible. Expose the short aliases here so every existing usage
+   resolves to the intended color without touching the call sites. */
+:root {
+  --status-running: var(--color-status-running);
+  --status-pending: var(--color-status-pending);
+  --status-stopped: var(--color-status-stopped);
+  --status-failed: var(--color-status-failed);
+  --status-destroyed: var(--color-status-destroyed);
 }
 
 /* Dark theme (default) */
