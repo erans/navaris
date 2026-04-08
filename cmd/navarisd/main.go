@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -19,6 +21,7 @@ import (
 	"github.com/navaris/navaris/internal/service"
 	"github.com/navaris/navaris/internal/store/sqlite"
 	"github.com/navaris/navaris/internal/telemetry"
+	"github.com/navaris/navaris/internal/webui"
 	"github.com/navaris/navaris/internal/worker"
 )
 
@@ -113,6 +116,35 @@ func run(cfg config) error {
 	// Event bus
 	bus := eventbus.New(256)
 
+	// Web UI setup — only activates when --ui-password is set.
+	var (
+		uiHandlers *webui.Handlers
+		sessionKey []byte
+	)
+	if cfg.uiPassword != "" {
+		if cfg.uiSessionKey != "" {
+			sessionKey = []byte(cfg.uiSessionKey)
+		} else {
+			buf := make([]byte, 32)
+			if _, err := rand.Read(buf); err != nil {
+				return fmt.Errorf("generate ephemeral session key: %w", err)
+			}
+			sessionKey = []byte(hex.EncodeToString(buf))
+			logger.Warn("ui-session-key not set; generated ephemeral key; sessions will not survive restart")
+		}
+		uiHandlers = webui.NewHandlers(webui.Config{
+			Password:   cfg.uiPassword,
+			SessionKey: sessionKey,
+			SessionTTL: cfg.uiSessionTTL,
+		})
+		if webui.Assets == nil {
+			logger.Warn("web UI enabled but binary was built without -tags withui; SPA will not be served")
+		}
+		logger.Info("web UI enabled", "session_ttl", cfg.uiSessionTTL.String())
+	} else {
+		logger.Info("web UI disabled (--ui-password not set)")
+	}
+
 	// Worker dispatcher
 	disp := worker.NewDispatcher(store.OperationStore(), bus, cfg.concurrency)
 
@@ -178,17 +210,20 @@ func run(cfg config) error {
 
 	// API server
 	srv := api.NewServer(api.ServerConfig{
-		Projects:   projSvc,
-		Sandboxes:  sbxSvc,
-		Snapshots:  snapSvc,
-		Images:     imgSvc,
-		Sessions:   sessSvc,
-		Operations: opsSvc,
-		Provider:   prov,
-		Events:     bus,
-		Ports:      store.PortBindingStore(),
-		AuthToken:  cfg.authToken,
-		Logger:     logger,
+		Projects:     projSvc,
+		Sandboxes:    sbxSvc,
+		Snapshots:    snapSvc,
+		Images:       imgSvc,
+		Sessions:     sessSvc,
+		Operations:   opsSvc,
+		Provider:     prov,
+		Events:       bus,
+		Ports:        store.PortBindingStore(),
+		AuthToken:    cfg.authToken,
+		Logger:       logger,
+		UISessionKey: sessionKey,
+		UIHandlers:   uiHandlers,
+		UIAssets:     webui.Assets,
 	})
 
 	// Start dispatcher and GC
