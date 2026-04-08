@@ -2,13 +2,25 @@
 ARG FC_IMAGE=navarisd-firecracker
 FROM ${FC_IMAGE} AS fc-artifacts
 
+# ---- Stage 0.5: Build Web UI ----
+FROM node:20-bookworm-slim AS webui-build
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 # ---- Stage 1: Build Go binaries ----
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -tags firecracker,incus -o /navarisd ./cmd/navarisd
+
+# Bring in the built SPA so go:embed can find it.
+COPY --from=webui-build /src/web/dist/ internal/webui/dist/
+
+RUN CGO_ENABLED=0 go build -tags withui,firecracker,incus -o /navarisd ./cmd/navarisd
 RUN CGO_ENABLED=0 go build -o /navaris ./cmd/navaris
 
 # ---- Stage 2: Runtime ----
