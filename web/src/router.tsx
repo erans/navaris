@@ -6,6 +6,7 @@ import { AppShell } from "@/components/AppShell";
 
 const Login = lazy(() => import("@/routes/Login"));
 const Sandboxes = lazy(() => import("@/routes/Sandboxes"));
+const SandboxDetail = lazy(() => import("@/routes/SandboxDetail"));
 
 function shell(element: ReactNode) {
   return (
@@ -21,7 +22,7 @@ export const router = createBrowserRouter(
     { path: "/", element: shell(<Navigate to="/sandboxes" replace />) },
     { path: "/projects", element: shell(<Placeholder label="projects" />) },
     { path: "/sandboxes", element: shell(<Sandboxes />) },
-    { path: "/sandboxes/:id", element: shell(<Placeholder label="sandbox detail" />) },
+    { path: "/sandboxes/:id", element: shell(<SandboxDetail />) },
     { path: "/events", element: shell(<Placeholder label="events" />) },
     { path: "*", element: <Navigate to="/" replace /> },
   ],
