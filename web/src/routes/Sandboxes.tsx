@@ -5,6 +5,7 @@ import { listProjects } from "@/api/projects";
 import { listSandboxes } from "@/api/sandboxes";
 import type { Sandbox, SandboxState } from "@/types/navaris";
 import { StateBadge } from "@/components/StateBadge";
+import NewSandboxDialog from "@/components/NewSandboxDialog";
 
 type StateFilter = "all" | SandboxState;
 type BackendFilter = "all" | string;
@@ -40,6 +41,7 @@ export default function Sandboxes() {
   });
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("all");
+  const [newDialogOpen, setNewDialogOpen] = useState(false);
 
   const rows = useMemo(() => {
     const all = data ?? [];
@@ -64,6 +66,13 @@ export default function Sandboxes() {
             {(data ?? []).length} total · {runningCount} running
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setNewDialogOpen(true)}
+          className="border border-[var(--invert-bg)] bg-[var(--invert-bg)] px-4 py-2 text-xs font-medium tracking-[0.02em] text-[var(--fg-on-invert)]"
+        >
+          New sandbox
+        </button>
       </header>
 
       <div className="mb-4 flex items-center gap-3 font-mono text-[11px]">
@@ -96,6 +105,10 @@ export default function Sandboxes() {
       )}
 
       {rows.length > 0 && <SandboxTable rows={rows} />}
+
+      {newDialogOpen && (
+        <NewSandboxDialog onClose={() => setNewDialogOpen(false)} />
+      )}
     </div>
   );
 }

@@ -134,4 +134,32 @@ describe("Sandboxes list", () => {
       expect(screen.getByText(/no sandboxes/i)).toBeInTheDocument(),
     );
   });
+
+  it("shows a New sandbox button in the header", async () => {
+    renderPage();
+    await screen.findByText("fedora-test-01");
+    expect(
+      screen.getByRole("button", { name: /new sandbox/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not mount the dialog on initial render", async () => {
+    renderPage();
+    await screen.findByText("fedora-test-01");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens the dialog when New sandbox is clicked", async () => {
+    renderPage();
+    await screen.findByText("fedora-test-01");
+    await userEvent.click(
+      screen.getByRole("button", { name: /new sandbox/i }),
+    );
+    expect(
+      await screen.findByRole("dialog"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /new sandbox/i }),
+    ).toBeInTheDocument();
+  });
 });
