@@ -89,6 +89,18 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 				}
 			}
 
+			// 2b. WebSocket query-param fallback (/v1/events, /v1/sandboxes/{id}/attach).
+			if token != "" && isWebSocketRoute(r.URL.Path) {
+				if q := r.URL.Query().Get("token"); q != "" {
+					if q != token {
+						respondError(w, domain.ErrUnauthorized)
+						return
+					}
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
 			// 3. Nothing → 401.
 			respondError(w, domain.ErrUnauthorized)
 		})
@@ -167,6 +179,21 @@ func (sc *statusCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, errors.New("http.ResponseWriter does not implement http.Hijacker")
 	}
 	return hj.Hijack()
+}
+
+// isWebSocketRoute reports whether a path is a WebSocket endpoint that
+// accepts a ?token= query parameter as an auth fallback for CLI clients
+// that can't set headers on a handshake. Browsers always use the cookie
+// path and never append this query parameter.
+func isWebSocketRoute(path string) bool {
+	if path == "/v1/events" {
+		return true
+	}
+	// /v1/sandboxes/{id}/attach
+	if strings.HasPrefix(path, "/v1/sandboxes/") && strings.HasSuffix(path, "/attach") {
+		return true
+	}
+	return false
 }
 
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {

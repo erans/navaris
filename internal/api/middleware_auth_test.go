@@ -220,3 +220,45 @@ func TestAuthMiddlewareCookieHostCaseInsensitive(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (host compare must be case-insensitive)", rec.Code)
 	}
 }
+
+func TestAuthMiddlewareQueryTokenFallbackOnWebSocketEndpoint(t *testing.T) {
+	h := authTestEnv(t, "tok", nil)
+	req := httptest.NewRequest("GET", "/v1/events?token=tok", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestAuthMiddlewareQueryTokenFallbackOnAttachEndpoint(t *testing.T) {
+	h := authTestEnv(t, "tok", nil)
+	req := httptest.NewRequest("GET", "/v1/sandboxes/abc/attach?token=tok", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestAuthMiddlewareQueryTokenNotAcceptedOnRegularEndpoint(t *testing.T) {
+	h := authTestEnv(t, "tok", nil)
+	req := httptest.NewRequest("GET", "/v1/sandboxes?token=tok", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 401 {
+		t.Fatalf("status = %d, want 401 (query token only accepted on WS routes)", rec.Code)
+	}
+}
+
+func TestAuthMiddlewareQueryTokenIgnoredWhenCookiePresent(t *testing.T) {
+	key := []byte("k")
+	h := authTestEnv(t, "tok", key)
+	req := httptest.NewRequest("GET", "/v1/events?token=wrong", nil)
+	req.AddCookie(signedCookie(t, key))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200 (cookie should win)", rec.Code)
+	}
+}
