@@ -175,3 +175,26 @@ func TestLoginFixedDelay(t *testing.T) {
 		t.Fatalf("login returned in %v, want at least 50ms (fixed delay)", elapsed)
 	}
 }
+
+func TestNotAllowedUnknownPath(t *testing.T) {
+	h := webui.NewHandlers(newTestConfig(t))
+	req := httptest.NewRequest("GET", "/ui/foo", nil)
+	rec := httptest.NewRecorder()
+	h.NotAllowed(rec, req)
+	if rec.Code != 404 {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestNotAllowedWrongMethodOnKnownPath(t *testing.T) {
+	h := webui.NewHandlers(newTestConfig(t))
+	req := httptest.NewRequest("GET", "/ui/login", nil)
+	rec := httptest.NewRecorder()
+	h.NotAllowed(rec, req)
+	if rec.Code != 405 {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != "POST" {
+		t.Fatalf("Allow header = %q, want POST", allow)
+	}
+}

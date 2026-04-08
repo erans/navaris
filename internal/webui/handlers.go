@@ -183,3 +183,25 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// NotAllowed is the catch-all for /ui/* paths that aren't explicitly
+// registered. It returns 405 (with Allow: header) for the correct path
+// but wrong method, and 404 for everything else. This prevents unknown
+// /ui/* paths from falling through to the SPA asset handler.
+func (h *Handlers) NotAllowed(w http.ResponseWriter, r *http.Request) {
+	allowed, known := uiPathMethods[r.URL.Path]
+	if !known {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Allow", allowed)
+	w.WriteHeader(http.StatusMethodNotAllowed)
+}
+
+// uiPathMethods enumerates the legitimate /ui/* routes and their allowed
+// methods. NotAllowed uses this to decide between 404 and 405.
+var uiPathMethods = map[string]string{
+	"/ui/login":  "POST",
+	"/ui/logout": "POST",
+	"/ui/me":     "GET",
+}
