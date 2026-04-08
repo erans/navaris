@@ -375,6 +375,9 @@ describe("NewSandboxDialog — errors", () => {
     const { onClose } = renderDialog();
     await screen.findByText(/new sandbox/i);
     await userEvent.type(screen.getByLabelText(/name/i), "dup-name");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^create$/i })).toBeEnabled(),
+    );
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
     expect(
       await screen.findByText(/already exists in this project/i),
@@ -396,6 +399,9 @@ describe("NewSandboxDialog — errors", () => {
     renderDialog();
     await screen.findByText(/new sandbox/i);
     await userEvent.type(screen.getByLabelText(/name/i), "boom");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^create$/i })).toBeEnabled(),
+    );
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
     expect(
       await screen.findByText(/server error\. try again/i),
@@ -409,6 +415,9 @@ describe("NewSandboxDialog — errors", () => {
     renderDialog();
     await screen.findByText(/new sandbox/i);
     await userEvent.type(screen.getByLabelText(/name/i), "offline");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^create$/i })).toBeEnabled(),
+    );
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
     expect(
       await screen.findByText(/unable to create sandbox/i),
@@ -448,6 +457,9 @@ describe("NewSandboxDialog — pending guard", () => {
     const { onClose } = renderDialog();
     await screen.findByText(/new sandbox/i);
     await userEvent.type(screen.getByLabelText(/name/i), "pending");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^create$/i })).toBeEnabled(),
+    );
     await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
     // Now the mutation is in flight: Create button becomes "Creating…".
     expect(
