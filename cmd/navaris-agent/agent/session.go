@@ -132,6 +132,13 @@ func openPTY() (*os.File, string, error) {
 
 // allocPTY opens a master/slave PTY pair and starts the given shell inside it.
 func allocPTY(shell string) (*ptyFile, error) {
+	return allocPTYWithCmd(exec.Command(shell))
+}
+
+// allocPTYWithCmd opens a master/slave PTY pair and starts the given command
+// inside it. The caller is responsible for setting the command's Path/Args
+// but must not set Stdin/Stdout/Stderr or SysProcAttr — those are set here.
+func allocPTYWithCmd(cmd *exec.Cmd) (*ptyFile, error) {
 	master, slavePath, err := openPTY()
 	if err != nil {
 		return nil, err
@@ -144,7 +151,6 @@ func allocPTY(shell string) (*ptyFile, error) {
 	}
 	defer slave.Close()
 
-	cmd := exec.Command(shell)
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
@@ -172,12 +178,18 @@ func HandleSession(ctx context.Context, req *vsock.Message, send SendFunc, inbox
 		return
 	}
 
-	shell := payload.Shell
-	if shell == "" {
-		shell = "/bin/sh"
+	var cmd *exec.Cmd
+	if len(payload.Command) > 0 {
+		cmd = exec.CommandContext(ctx, payload.Command[0], payload.Command[1:]...)
+	} else {
+		shell := payload.Shell
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		cmd = exec.CommandContext(ctx, shell)
 	}
 
-	pty, err := allocPTY(shell)
+	pty, err := allocPTYWithCmd(cmd)
 	if err != nil {
 		sendExit(send, req.ID, -1)
 		return

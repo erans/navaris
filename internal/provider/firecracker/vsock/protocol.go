@@ -67,7 +67,8 @@ type ExecPayload struct {
 }
 
 type SessionPayload struct {
-	Shell string `json:"shell"`
+	Shell   string   `json:"shell"`
+	Command []string `json:"command,omitempty"`
 }
 
 type ExitPayload struct {

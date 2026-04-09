@@ -208,7 +208,11 @@ func (p *Provider) AttachSession(ctx context.Context, ref domain.BackendRef, req
 		return domain.SessionHandle{}, fmt.Errorf("firecracker session %s: %w", ref.Ref, err)
 	}
 
-	session, err := client.Session(fcvsock.SessionPayload{Shell: req.Shell})
+	payload := fcvsock.SessionPayload{
+		Shell:   req.Shell,
+		Command: req.Command,
+	}
+	session, err := client.Session(payload)
 	if err != nil {
 		client.Close()
 		return domain.SessionHandle{}, fmt.Errorf("firecracker session %s: %w", ref.Ref, err)
