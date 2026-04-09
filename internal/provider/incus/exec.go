@@ -150,14 +150,19 @@ func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef
 
 	shell := req.Shell
 	if shell == "" {
-		shell = "/bin/sh"
+		shell = p.detectShell(ref)
 	}
 
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
 
+	cmd := req.Command
+	if len(cmd) == 0 {
+		cmd = []string{shell}
+	}
+
 	execReq := incusapi.InstanceExecPost{
-		Command:     []string{shell},
+		Command:     cmd,
 		WaitForWS:   true,
 		Interactive: true,
 		Width:       80,
@@ -218,3 +223,30 @@ type sessionConn struct {
 func (c *sessionConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
 func (c *sessionConn) Write(p []byte) (int, error)  { return c.writer.Write(p) }
 func (c *sessionConn) Close() error                  { return c.closeFn() }
+
+// detectShell probes the container for a usable interactive shell.
+// It prefers /bin/bash and falls back to /bin/sh.
+func (p *IncusProvider) detectShell(ref domain.BackendRef) string {
+	stdout := new(bytes.Buffer)
+	execReq := incusapi.InstanceExecPost{
+		Command:     []string{"test", "-x", "/bin/bash"},
+		WaitForWS:   false,
+		Interactive: false,
+	}
+	args := incusclient.InstanceExecArgs{
+		Stdout: stdout,
+		Stderr: stdout,
+	}
+	op, err := p.client.ExecInstance(ref.Ref, execReq, &args)
+	if err != nil {
+		return "/bin/sh"
+	}
+	if err := op.Wait(); err != nil {
+		return "/bin/sh"
+	}
+	meta := op.Get()
+	if rc, ok := meta.Metadata["return"].(float64); ok && rc == 0 {
+		return "/bin/bash"
+	}
+	return "/bin/sh"
+}
