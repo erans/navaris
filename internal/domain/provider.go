@@ -27,7 +27,8 @@ type ExecRequest struct {
 }
 
 type SessionRequest struct {
-	Shell string
+	Shell   string
+	Command []string // Full command with args; takes precedence over Shell if non-empty.
 }
 
 type PublishPortOptions struct{}
