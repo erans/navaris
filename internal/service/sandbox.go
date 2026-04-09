@@ -44,10 +44,19 @@ type SandboxService struct {
 	ops            domain.OperationStore
 	ports          domain.PortBindingStore
 	sessions       domain.SessionStore
+	sessionSvc     *SessionService
 	provider       domain.Provider
 	events         domain.EventBus
 	workers        *worker.Dispatcher
 	defaultBackend string
+}
+
+// SetSessionService injects the SessionService after construction.
+// This avoids circular init ordering: SandboxService is created before
+// SessionService because both depend on stores provided by the same
+// initialisation sequence.
+func (s *SandboxService) SetSessionService(svc *SessionService) {
+	s.sessionSvc = svc
 }
 
 func NewSandboxService(
@@ -514,6 +523,18 @@ func (s *SandboxService) handleStop(ctx context.Context, op *domain.Operation) e
 	sbx.UpdatedAt = time.Now().UTC()
 	s.sandboxes.Update(ctx, sbx)
 	s.publishStateChange(ctx, sbx)
+
+	// Mark all active/detached sessions as exited and clear tmux cache.
+	if s.sessionSvc != nil {
+		if err := s.sessionSvc.ExitAllForSandbox(ctx, sbx.SandboxID); err != nil {
+			_, span := otel.Tracer("navaris.service").Start(ctx, "service.handleStop.exitSessions")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to exit sessions on sandbox stop")
+			span.End()
+		}
+		s.sessionSvc.ClearTmuxCache(sbx.SandboxID)
+	}
+
 	return nil
 }
 
@@ -529,6 +550,9 @@ func (s *SandboxService) handleDestroy(ctx context.Context, op *domain.Operation
 	sessions, _ := s.sessions.ListBySandbox(ctx, sbx.SandboxID)
 	for _, sess := range sessions {
 		s.sessions.Delete(ctx, sess.SessionID)
+	}
+	if s.sessionSvc != nil {
+		s.sessionSvc.ClearTmuxCache(sbx.SandboxID)
 	}
 	ports, _ := s.ports.ListBySandbox(ctx, sbx.SandboxID)
 	for _, pb := range ports {

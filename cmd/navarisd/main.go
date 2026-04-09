@@ -208,6 +208,7 @@ func run(cfg config) error {
 	sessSvc := service.NewSessionService(
 		store.SessionStore(), store.SandboxStore(), prov, bus,
 	)
+	sbxSvc.SetSessionService(sessSvc)
 	opsSvc := service.NewOperationService(store.OperationStore(), disp)
 
 	// API server
