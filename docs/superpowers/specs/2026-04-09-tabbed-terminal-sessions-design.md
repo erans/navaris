@@ -32,26 +32,56 @@ The frontend has:
 
 ## Section 1: Session lifecycle (backend)
 
+### SessionRequest changes
+
+The current `SessionRequest` struct has a single `Shell` field (string). The Incus provider uses it as `Command: []string{shell}`, which means a multi-word string like `tmux attach -t <id>` would fail (it would try to exec a single binary with that name).
+
+Add a `Command []string` field to `SessionRequest`:
+
+```go
+type SessionRequest struct {
+    Shell   string   // bare shell path (existing behavior)
+    Command []string // full command with args (takes precedence over Shell if set)
+}
+```
+
+The Incus `AttachSession` implementation checks `Command` first; if set, uses it directly as the `Command` field in `InstanceExecPost`. If empty, falls back to `[]string{shell}` (current behavior). Same change for Firecracker.
+
 ### Session creation (`POST /v1/sandboxes/:id/sessions`)
 
 1. `SessionService.Create` creates the DB record with `Backing: tmux`, `State: active`.
 2. Service ensures tmux is installed in the container (see Section 2).
-3. Service runs `Provider.Exec` with command `["tmux", "new-session", "-d", "-s", "<session-id>", "<shell>"]` to start a detached tmux session inside the container.
-4. If tmux new-session fails, the DB record is cleaned up and an error is returned.
+3. Service runs `Provider.Exec` with command `["tmux", "new-session", "-d", "-s", "<session-id>", "<shell>"]` to start a detached tmux session inside the container. Must call `handle.Wait()` to confirm exit code 0, then close `handle.Stdout` and `handle.Stderr`.
+4. If tmux new-session fails (non-zero exit code), the DB record is cleaned up and an error is returned.
 
 ### Attaching (`GET /v1/sandboxes/:id/attach?session=<session-id>`)
 
 1. Attach handler reads the `session` query parameter.
-2. Looks up the session record via `SessionService.Get`.
+2. Looks up the session record via `SessionService.Get` (the handler already has access to `s.cfg.Sessions`).
 3. Validates the session belongs to the sandbox in the URL path.
 4. Validates session state is `active` or `detached`.
-5. Calls `Provider.AttachSession` with `SessionRequest{Shell: "tmux attach -t <session-id>"}`.
-6. On WebSocket close, updates session state to `detached` and sets `LastAttachedAt`.
+5. Calls `Provider.AttachSession` with `SessionRequest{Command: []string{"tmux", "attach", "-t", "<session-id>"}}`.
+6. On WebSocket close, calls `SessionService.Detach(id)` (new method — see below) to set state to `detached` and `LastAttachedAt`.
+
+### Concurrent attaches
+
+Two browser tabs can attach to the same tmux session simultaneously. tmux handles this natively — both see the same output. On disconnect, both close handlers call `Detach`, which is idempotent (sets state to `detached` regardless of current state, as long as the transition is valid).
+
+### SessionService new methods
+
+Add `Detach(ctx, id)` — validates `CanTransitionTo(SessionDetached)`, sets state and `LastAttachedAt`. All state transitions in the service (Create, Destroy, Detach) must use the domain's `CanTransitionTo` validation.
 
 ### Session destroy (`DELETE /v1/sessions/:id`)
 
-1. Runs `Provider.Exec` with `["tmux", "kill-session", "-t", "<session-id>"]` to terminate the tmux session.
-2. Updates DB record state to `destroyed`.
+1. Looks up the session and the associated sandbox to get the `BackendRef`.
+2. Runs `Provider.Exec` with `["tmux", "kill-session", "-t", "<session-id>"]`. Calls `handle.Wait()` and closes streams.
+3. Validates `CanTransitionTo(SessionDestroyed)`, updates DB record state to `destroyed`.
+
+### Sandbox stop/destroy cleanup
+
+When a sandbox is stopped, all tmux processes inside it die. The sandbox stop handler (`internal/service/sandbox.go`) must mark all `active`/`detached` sessions for that sandbox as `exited`. This prevents stale session records that claim to be alive when the tmux processes no longer exist. Add a `SessionService.ExitAllForSandbox(ctx, sandboxID)` method that bulk-transitions sessions.
+
+Clear the tmux-installed cache entry for the sandbox ID on stop.
 
 ### Backward compatibility
 
@@ -70,9 +100,11 @@ On the first session creation for a sandbox, before running `tmux new-session`:
    - `command -v apk` exists: run `apk add --no-cache tmux`
    - `command -v apt-get` exists: run `apt-get update && apt-get install -y --no-install-recommends tmux`
    - Neither found: fail session creation with error "tmux not available and no supported package manager found"
-3. Cache the result in the session service (in-memory map, keyed by sandbox ID) so subsequent session creates for the same sandbox skip the probe.
+3. Cache the result in the session service (in-memory map, keyed by sandbox ID) so subsequent session creates for the same sandbox skip the probe. Clear the cache entry when the sandbox is stopped or destroyed.
 
-This runs synchronously during `POST /sessions`. Install typically takes 2-5 seconds.
+This runs synchronously during `POST /sessions`. Install typically takes 2-5 seconds. The frontend should show a loading indicator while the first session is being created.
+
+All `Exec` calls must consume the `ExecHandle` properly: call `handle.Wait()` for exit code, then close `handle.Stdout` and `handle.Stderr`.
 
 ## Section 3: Attach handler changes
 
@@ -80,15 +112,15 @@ Changes to `internal/api/attach.go`:
 
 1. `attachSandbox` reads optional `session` query parameter from the WebSocket URL.
 2. If present:
-   - Look up session record via `SessionService.Get`.
+   - Look up session record via `s.cfg.Sessions.Get`.
    - Validate it belongs to the sandbox in the URL.
    - Validate state is `active` or `detached`.
-   - Call `Provider.AttachSession` with `SessionRequest{Shell: "tmux attach -t <session-id>"}`.
-   - On WebSocket close, update session state to `detached` and set `LastAttachedAt`.
+   - Call `Provider.AttachSession` with `SessionRequest{Command: []string{"tmux", "attach", "-t", "<session-id>"}}`.
+   - On WebSocket close, call `s.cfg.Sessions.Detach(id)` to set state to `detached` and `LastAttachedAt`.
 3. If absent:
    - Current behavior unchanged: bare shell, no persistence.
 
-The `SessionRequest` struct already has a `Shell` field. The Incus `AttachSession` implementation uses whatever shell string it receives. No provider interface changes needed.
+The `SessionRequest` struct gains a `Command []string` field (see Section 1). Both Incus and Firecracker providers must be updated to check `Command` first, falling back to `[]string{shell}`.
 
 ## Section 4: Frontend tab bar and session management
 
@@ -101,7 +133,7 @@ The `SessionRequest` struct already has a `Shell` field. The Incus `AttachSessio
 ### Tab bar UI
 
 - Horizontal tab strip above the terminal, matching the existing design system (monospace, small text, subtle borders).
-- Each tab shows a label: "Session 1", "Session 2", etc. (derived from creation order among live sessions).
+- Each tab shows a stable label: "Session 1", "Session 2", etc. Labels are assigned at creation time based on order and do not change when other sessions are destroyed.
 - Active tab has a distinct border/color; inactive tabs are muted.
 - `+` button at the end creates a new session. Hidden when 5 live sessions already exist (UI-only cap).
 - Each tab has a small `x` to destroy that session, using an HTML `<dialog>` for confirmation (same pattern as the sandbox destroy dialog).
@@ -115,7 +147,11 @@ The `SessionRequest` struct already has a `Shell` field. The Incus `AttachSessio
 
 ### Reconnection indicator
 
-When attaching to a `detached` session, show a brief "Reconnected" flash in the status area (where `ws . open` currently appears).
+When attaching to a `detached` session, show a brief "Reconnected" flash in the status area (where `ws . open` currently appears). Note: scrollback from previous connections is not restored — only new output from tmux appears. The tmux session preserves running processes and state, but the xterm.js buffer starts fresh on reconnect.
+
+### Loading state
+
+While the first session is being created (which may involve tmux installation taking 2-5 seconds), show a loading indicator in the terminal area.
 
 ## Section 5: Frontend API client
 
@@ -132,8 +168,12 @@ Uses the existing `apiFetch` wrapper. Types mirror the backend `Session` struct.
 ## Files affected
 
 ### Backend (modify)
-- `internal/service/session.go` — add tmux orchestration to Create/Destroy, add tmux install logic
-- `internal/api/attach.go` — read `session` query param, look up session, update state on close
+- `internal/domain/provider.go` — add `Command []string` to `SessionRequest`
+- `internal/service/session.go` — add tmux orchestration to Create/Destroy, add tmux install logic, add `Detach` and `ExitAllForSandbox` methods
+- `internal/service/sandbox.go` — call `SessionService.ExitAllForSandbox` on sandbox stop
+- `internal/api/attach.go` — read `session` query param, look up session, call `Detach` on close
+- `internal/provider/incus/exec.go` — update `AttachSession` to use `Command` field when set
+- `internal/provider/firecracker/exec.go` — same `Command` field support
 
 ### Frontend (modify)
 - `web/src/routes/Terminal.tsx` — tab bar, multi-instance xterm management, session lifecycle
