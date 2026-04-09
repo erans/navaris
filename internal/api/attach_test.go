@@ -155,3 +155,53 @@ func TestAttachBridgesStdinAndStdout(t *testing.T) {
 		t.Fatal("resize callback not invoked")
 	}
 }
+
+func TestAttachWithSessionParam(t *testing.T) {
+	env := newTestEnv(t)
+	projectID := createTestProject(t, env)
+	sandboxID := createTestSandbox(t, env, projectID)
+
+	// Create a session via the service so it exists in the DB.
+	sess, err := env.sessions.Create(context.Background(), sandboxID, domain.SessionBackingDirect, "/bin/bash")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sessionID := sess.SessionID
+
+	// Capture the SessionRequest passed to AttachSession.
+	var captured domain.SessionRequest
+	conn, _, _ := newPipeConn()
+	env.mock.AttachSessionFn = func(_ context.Context, _ domain.BackendRef, req domain.SessionRequest) (domain.SessionHandle, error) {
+		captured = req
+		return domain.SessionHandle{
+			Conn:  conn,
+			Close: func() error { return conn.Close() },
+		}, nil
+	}
+
+	srv := httptest.NewServer(env.handler)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") +
+		"/v1/sandboxes/" + sandboxID + "/attach?session=" + sessionID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+
+	// Verify the command passed to the provider is tmux attach.
+	want := []string{"tmux", "attach", "-t", sessionID}
+	if len(captured.Command) != len(want) {
+		t.Fatalf("Command = %v, want %v", captured.Command, want)
+	}
+	for i := range want {
+		if captured.Command[i] != want[i] {
+			t.Fatalf("Command[%d] = %q, want %q", i, captured.Command[i], want[i])
+		}
+	}
+}

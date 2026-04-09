@@ -33,7 +33,24 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, domain.ErrConflict)
 		return
 	}
-	s.bridgeAttach(w, r, sbx)
+
+	sessionID := r.URL.Query().Get("session")
+	if sessionID != "" {
+		sess, err := s.cfg.Sessions.Get(ctx, sessionID)
+		if err != nil {
+			respondError(w, err)
+			return
+		}
+		if sess.SandboxID != sandboxID {
+			respondError(w, domain.ErrNotFound)
+			return
+		}
+		if sess.State != domain.SessionActive && sess.State != domain.SessionDetached {
+			respondError(w, domain.ErrConflict)
+			return
+		}
+	}
+	s.bridgeAttach(w, r, sbx, sessionID)
 }
 
 type resizeMessage struct {
@@ -42,8 +59,14 @@ type resizeMessage struct {
 	Rows int    `json:"rows"`
 }
 
-func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domain.Sandbox) {
-	shell := r.URL.Query().Get("shell") // optional; empty → provider default
+func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domain.Sandbox, sessionID string) {
+	var sessReq domain.SessionRequest
+	if sessionID != "" {
+		sessReq = domain.SessionRequest{Command: []string{"tmux", "attach", "-t", sessionID}}
+	} else {
+		shell := r.URL.Query().Get("shell") // optional; empty → provider default
+		sessReq = domain.SessionRequest{Shell: shell}
+	}
 
 	// Accept the WebSocket handshake BEFORE calling AttachSession so a client
 	// that disconnects mid-handshake does not leave a PTY orphaned on the
@@ -64,11 +87,16 @@ func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domai
 	handle, err := s.cfg.Provider.AttachSession(bridgeCtx, domain.BackendRef{
 		Backend: sbx.Backend,
 		Ref:     sbx.BackendRef,
-	}, domain.SessionRequest{Shell: shell})
+	}, sessReq)
 	if err != nil {
 		s.log.Error("attach: provider AttachSession failed", "error", err, "sandbox_id", sbx.SandboxID)
 		// Close the WS with a policy-violation status so the browser sees
 		// a distinct reason, not a silent bye.
+		conn.Close(websocket.StatusInternalError, "attach failed")
+		return
+	}
+	if handle.Conn == nil {
+		s.log.Error("attach: provider returned nil Conn", "sandbox_id", sbx.SandboxID)
 		conn.Close(websocket.StatusInternalError, "attach failed")
 		return
 	}
@@ -77,6 +105,15 @@ func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domai
 	// session first (so its goroutines unblock), then the WS.
 	defer conn.Close(websocket.StatusNormalClosure, "bye")
 	defer handle.Close()
+
+	// Mark session as detached when the WebSocket closes. Placed after
+	// defer conn.Close / defer handle.Close so it runs last (LIFO),
+	// i.e. after the bridge loop has fully stopped.
+	if sessionID != "" {
+		defer func() {
+			_ = s.cfg.Sessions.Detach(context.Background(), sessionID)
+		}()
+	}
 
 	// Fire ui.attach_opened on open and ui.attach_closed on close, with
 	// sandbox ID and duration — matches the spec's Observability section.
