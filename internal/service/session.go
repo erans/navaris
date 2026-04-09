@@ -121,3 +121,58 @@ func (s *SessionService) Destroy(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+func (s *SessionService) Detach(ctx context.Context, id string) error {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.DetachSession")
+	defer span.End()
+
+	sess, err := s.sessions.Get(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	if !sess.State.CanTransitionTo(domain.SessionDetached) {
+		err := domain.ErrInvalidState
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	now := time.Now().UTC()
+	sess.State = domain.SessionDetached
+	sess.UpdatedAt = now
+	sess.LastAttachedAt = &now
+	if err := s.sessions.Update(ctx, sess); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
+}
+
+func (s *SessionService) ExitAllForSandbox(ctx context.Context, sandboxID string) error {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.ExitAllSessionsForSandbox")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("sandbox.id", sandboxID))
+
+	list, err := s.sessions.ListBySandbox(ctx, sandboxID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	for _, sess := range list {
+		if !sess.State.CanTransitionTo(domain.SessionExited) {
+			continue
+		}
+		sess.State = domain.SessionExited
+		sess.UpdatedAt = time.Now().UTC()
+		if err := s.sessions.Update(ctx, sess); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
+	}
+	return nil
+}
