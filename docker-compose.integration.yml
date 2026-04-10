@@ -21,11 +21,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.navarisd
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
     command:
       - --listen=:8080
       - --db-path=/tmp/navaris.db
       - --incus-socket=/var/lib/incus/unix.socket
+      - --firecracker-bin=/usr/local/bin/firecracker
+      - --jailer-bin=/usr/local/bin/jailer
+      - --kernel-path=/opt/firecracker/vmlinux
+      - --image-dir=/opt/firecracker/images
+      - --chroot-base=/srv/firecracker
+      - --snapshot-dir=/srv/firecracker/snapshots
+      - --enable-jailer=false
       - --auth-token=test-token
+      - --ui-password=dev
+      - --ui-session-key=ab44eacb2cc8934bf050b2fc463e979847637905ab6b6789516a0715a14905ff
       - --log-level=debug
     volumes:
       - incus-socket:/var/lib/incus:ro
@@ -37,7 +49,7 @@ services:
       interval: 2s
       timeout: 5s
       retries: 15
-      start_period: 5s
+      start_period: 10s
 
   navarisd-dev:
     extends:

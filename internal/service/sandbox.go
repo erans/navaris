@@ -547,12 +547,13 @@ func (s *SandboxService) handleDestroy(ctx context.Context, op *domain.Operation
 	ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
 
 	// Best-effort cleanup: sessions, port bindings
+	if s.sessionSvc != nil {
+		s.sessionSvc.ExitAllForSandbox(ctx, sbx.SandboxID)
+		s.sessionSvc.ClearTmuxCache(sbx.SandboxID)
+	}
 	sessions, _ := s.sessions.ListBySandbox(ctx, sbx.SandboxID)
 	for _, sess := range sessions {
 		s.sessions.Delete(ctx, sess.SessionID)
-	}
-	if s.sessionSvc != nil {
-		s.sessionSvc.ClearTmuxCache(sbx.SandboxID)
 	}
 	ports, _ := s.ports.ListBySandbox(ctx, sbx.SandboxID)
 	for _, pb := range ports {

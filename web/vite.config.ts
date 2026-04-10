@@ -19,6 +19,16 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
         ws: true,
+        // Rewrite Origin so the backend's WebSocket accept check
+        // (nhooyr/websocket compares Origin host to request Host) passes
+        // in dev. Without this, /v1/events and /v1/sandboxes/*/attach
+        // are rejected with "Origin localhost:5173 is not authorized for
+        // Host localhost:8080".
+        configure: (proxy) => {
+          proxy.on("proxyReqWs", (proxyReq) => {
+            proxyReq.setHeader("origin", "http://localhost:8080");
+          });
+        },
       },
       "/ui": {
         target: "http://localhost:8080",

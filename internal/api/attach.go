@@ -35,8 +35,9 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := r.URL.Query().Get("session")
+	var sess *domain.Session
 	if sessionID != "" {
-		sess, err := s.cfg.Sessions.Get(ctx, sessionID)
+		sess, err = s.cfg.Sessions.Get(ctx, sessionID)
 		if err != nil {
 			respondError(w, err)
 			return
@@ -50,7 +51,7 @@ func (s *Server) attachSandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.bridgeAttach(w, r, sbx, sessionID)
+	s.bridgeAttach(w, r, sbx, sess)
 }
 
 type resizeMessage struct {
@@ -59,10 +60,14 @@ type resizeMessage struct {
 	Rows int    `json:"rows"`
 }
 
-func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domain.Sandbox, sessionID string) {
+func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domain.Sandbox, sess *domain.Session) {
 	var sessReq domain.SessionRequest
-	if sessionID != "" {
-		sessReq = domain.SessionRequest{Command: []string{"tmux", "attach", "-t", sessionID}}
+	if sess != nil && sess.Backing == domain.SessionBackingTmux {
+		sessReq = domain.SessionRequest{Command: []string{"tmux", "attach", "-t", sess.SessionID}}
+	} else if sess != nil {
+		// Direct session — bare shell. Pass empty Shell so the provider's
+		// detectShell picks the right one for the container's distro.
+		sessReq = domain.SessionRequest{}
 	} else {
 		shell := r.URL.Query().Get("shell") // optional; empty → provider default
 		sessReq = domain.SessionRequest{Shell: shell}
@@ -109,9 +114,9 @@ func (s *Server) bridgeAttach(w http.ResponseWriter, r *http.Request, sbx *domai
 	// Mark session as detached when the WebSocket closes. Placed after
 	// defer conn.Close / defer handle.Close so it runs last (LIFO),
 	// i.e. after the bridge loop has fully stopped.
-	if sessionID != "" {
+	if sess != nil {
 		defer func() {
-			_ = s.cfg.Sessions.Detach(context.Background(), sessionID)
+			_ = s.cfg.Sessions.Detach(context.Background(), sess.SessionID)
 		}()
 	}
 

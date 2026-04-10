@@ -176,8 +176,20 @@ func run(cfg config) error {
 	}
 
 	if reg.Len() == 0 {
-		reg.Register("mock", provider.NewMock())
-		logger.Info("no providers configured, using mock")
+		// In dev (no real providers configured) register the same mock
+		// instance under every known backend name. resolveBackend picks
+		// "incus" or "firecracker" from the image ref alone, so without
+		// these aliases any UI preset would 500 with `provider
+		// "incus"/"firecracker" not available` — see
+		// internal/service/sandbox.go:resolveBackend and
+		// internal/provider/registry.go:resolve. This branch only runs
+		// when neither --incus-socket nor --firecracker-bin is set, so
+		// production behavior is unchanged.
+		mock := provider.NewMock()
+		reg.Register("mock", mock)
+		reg.Register("incus", mock)
+		reg.Register("firecracker", mock)
+		logger.Info("no providers configured, using mock (aliased as incus/firecracker)")
 	}
 
 	// Set default backend: incus > firecracker > mock.
@@ -210,6 +222,15 @@ func run(cfg config) error {
 	)
 	sbxSvc.SetSessionService(sessSvc)
 	opsSvc := service.NewOperationService(store.OperationStore(), disp)
+
+	// Ensure a default project exists so the UI is usable immediately.
+	if _, err := projSvc.GetByName(context.Background(), "default"); err != nil {
+		if _, createErr := projSvc.Create(context.Background(), "default", nil); createErr != nil {
+			logger.Warn("could not create default project", "error", createErr)
+		} else {
+			logger.Info("created default project")
+		}
+	}
 
 	// API server
 	srv := api.NewServer(api.ServerConfig{

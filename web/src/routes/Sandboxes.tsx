@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listProjects } from "@/api/projects";
-import { listSandboxes } from "@/api/sandboxes";
+import { listSandboxes, startSandbox, stopSandbox, destroySandbox } from "@/api/sandboxes";
 import type { Sandbox, SandboxState } from "@/types/navaris";
 import { StateBadge } from "@/components/StateBadge";
 import NewSandboxDialog from "@/components/NewSandboxDialog";
@@ -139,62 +139,185 @@ function Chip({
 }
 
 function SandboxTable({ rows }: { rows: Sandbox[] }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [destroyTarget, setDestroyTarget] = useState<Sandbox | null>(null);
+  const destroyDialogRef = useRef<HTMLDialogElement>(null);
+
+  const handleStart = async (id: string) => {
+    await startSandbox(id);
+    queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+  };
+  const handleStop = async (id: string) => {
+    await stopSandbox(id);
+    queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+  };
+
+  const openDestroyDialog = useCallback((s: Sandbox) => {
+    setDestroyTarget(s);
+    destroyDialogRef.current?.showModal();
+  }, []);
+
+  const confirmDestroy = useCallback(async () => {
+    if (!destroyTarget) return;
+    await destroySandbox(destroyTarget.SandboxID);
+    queryClient.invalidateQueries({ queryKey: ["sandboxes"] });
+    destroyDialogRef.current?.close();
+    setDestroyTarget(null);
+  }, [destroyTarget, queryClient]);
+
+  const cancelDestroy = useCallback(() => {
+    destroyDialogRef.current?.close();
+    setDestroyTarget(null);
+  }, []);
+
   return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr>
-          {["Name / ID", "Backend", "CPU · Mem", "Created", "State"].map((h) => (
-            <th
-              key={h}
-              className="text-left font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)] py-2 pr-3 border-b border-[var(--border-subtle)] font-medium"
-            >
-              {h}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((s) => (
-          <tr key={s.SandboxID} className="group hover:bg-[var(--bg-overlay)]">
-            <td
-              className={[
-                "py-2.5 pl-3 pr-3 border-b border-[var(--border-subtle)] relative",
-                s.State === "running"
-                  ? "before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-0.5 before:bg-[var(--status-running)]"
-                  : "",
-                s.State === "failed"
-                  ? "before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-0.5 before:bg-[var(--status-failed)]"
-                  : "",
-              ].join(" ")}
-            >
-              <div className="flex flex-col">
-                <Link
-                  to={`/sandboxes/${s.SandboxID}`}
-                  className="text-[13px] font-medium text-[var(--fg-primary)] hover:underline"
-                >
-                  {s.Name}
-                </Link>
-                <span className="font-mono text-[10px] text-[var(--fg-muted)] mt-0.5">
-                  {s.SandboxID}
-                </span>
-              </div>
-            </td>
-            <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
-              {s.Backend}
-            </td>
-            <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
-              {s.CPULimit ?? "—"} · {s.MemoryLimitMB ?? "—"}
-            </td>
-            <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
-              {formatAgo(s.CreatedAt)}
-            </td>
-            <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)]">
-              <StateBadge state={s.State} />
-            </td>
+    <>
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            {["Name / ID", "Image", "Backend", "CPU · Mem", "Created", "State", ""].map((h, i) => (
+              <th
+                key={h || i}
+                className="text-left font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)] py-2 pr-3 border-b border-[var(--border-subtle)] font-medium"
+              >
+                {h}
+              </th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.SandboxID} className="group hover:bg-[var(--bg-overlay)]">
+              <td
+                className={[
+                  "py-2.5 pl-3 pr-3 border-b border-[var(--border-subtle)] relative",
+                  s.State === "running"
+                    ? "before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-0.5 before:bg-[var(--status-running)]"
+                    : "",
+                  s.State === "failed"
+                    ? "before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-0.5 before:bg-[var(--status-failed)]"
+                    : "",
+                  s.State === "starting" || s.State === "stopping" || s.State === "pending"
+                    ? "before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-0.5 before:bg-[var(--status-pending)] before:animate-pulse"
+                    : "",
+                ].join(" ")}
+              >
+                <div className="flex flex-col">
+                  <Link
+                    to={`/sandboxes/${s.SandboxID}`}
+                    className="text-[13px] font-medium text-[var(--fg-primary)] hover:underline"
+                  >
+                    {s.Name}
+                  </Link>
+                  <span className="font-mono text-[10px] text-[var(--fg-muted)] mt-0.5">
+                    {s.SandboxID}
+                  </span>
+                </div>
+              </td>
+              <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
+                {s.SourceImageID || "—"}
+              </td>
+              <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
+                {s.Backend}
+              </td>
+              <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
+                {s.CPULimit ?? "—"} · {s.MemoryLimitMB ?? "—"}
+              </td>
+              <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)] font-mono text-[11px] text-[var(--fg-secondary)]">
+                {formatAgo(s.CreatedAt)}
+              </td>
+              <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)]">
+                <StateBadge state={s.State} />
+              </td>
+              <td className="py-2.5 pr-3 border-b border-[var(--border-subtle)]">
+                <div className="flex items-center gap-1">
+                  {(s.State === "stopped" || s.State === "failed") && (
+                    <ActionBtn title="Start" onClick={() => handleStart(s.SandboxID)}>▶</ActionBtn>
+                  )}
+                  {s.State === "running" && (
+                    <ActionBtn title="Stop" onClick={() => handleStop(s.SandboxID)}>■</ActionBtn>
+                  )}
+                  {s.State === "running" && (
+                    <ActionBtn title="Terminal" onClick={() => navigate(`/sandboxes/${s.SandboxID}/terminal`)}>
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="2,4 7,8 2,12" />
+                        <line x1="9" y1="12" x2="14" y2="12" />
+                      </svg>
+                    </ActionBtn>
+                  )}
+                  <ActionBtn title="Delete" onClick={() => openDestroyDialog(s)} destructive>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3,4 13,4" />
+                      <path d="M6 4V2.5A.5.5 0 0 1 6.5 2h3a.5.5 0 0 1 .5.5V4" />
+                      <path d="M4.5 4l.7 9.1a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9L11.5 4" />
+                    </svg>
+                  </ActionBtn>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <dialog
+        ref={destroyDialogRef}
+        onClick={(e) => { if (e.target === e.currentTarget) cancelDestroy(); }}
+        className="fixed inset-0 m-auto backdrop:bg-black/50 bg-[var(--bg-primary)] border border-[var(--border-subtle)] p-0 max-w-sm w-full h-fit"
+      >
+        <div className="p-6">
+          <h2 className="text-sm font-medium text-[var(--fg-primary)] mb-2">Destroy sandbox</h2>
+          <p className="text-xs text-[var(--fg-secondary)] mb-1">
+            Are you sure you want to destroy <span className="font-medium text-[var(--fg-primary)]">{destroyTarget?.Name}</span>?
+          </p>
+          <p className="text-xs text-[var(--fg-muted)] mb-5">This action cannot be undone.</p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={cancelDestroy}
+              className="px-3 py-1.5 text-xs border border-[var(--border-subtle)] text-[var(--fg-secondary)] hover:text-[var(--fg-primary)]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmDestroy}
+              className="px-3 py-1.5 text-xs border border-[var(--status-failed)] bg-[var(--status-failed)] text-white hover:opacity-90"
+            >
+              Destroy
+            </button>
+          </div>
+        </div>
+      </dialog>
+    </>
+  );
+}
+
+function ActionBtn({
+  children,
+  title,
+  onClick,
+  destructive,
+}: {
+  children: React.ReactNode;
+  title: string;
+  onClick: () => void;
+  destructive?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className={[
+        "w-6 h-6 flex items-center justify-center border text-[11px] transition-colors",
+        destructive
+          ? "border-[var(--border-subtle)] text-[var(--fg-muted)] hover:border-[var(--status-failed)] hover:text-[var(--status-failed)]"
+          : "border-[var(--border-subtle)] text-[var(--fg-muted)] hover:border-[var(--fg-primary)] hover:text-[var(--fg-primary)]",
+      ].join(" ")}
+    >
+      {children}
+    </button>
   );
 }
 

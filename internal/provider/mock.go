@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/google/uuid"
@@ -52,7 +53,7 @@ func NewMock() *MockProvider {
 			return domain.DetachedExecHandle{}, nil
 		},
 		AttachSessionFn: func(_ context.Context, _ domain.BackendRef, _ domain.SessionRequest) (domain.SessionHandle, error) {
-			return domain.SessionHandle{}, nil
+			return domain.SessionHandle{}, fmt.Errorf("mock provider does not support attach")
 		},
 		CreateSnapshotFn: func(_ context.Context, _ domain.BackendRef, _ string, _ domain.ConsistencyMode) (domain.BackendRef, error) {
 			return domain.BackendRef{Backend: "mock", Ref: "snap-" + uuid.NewString()[:8]}, nil

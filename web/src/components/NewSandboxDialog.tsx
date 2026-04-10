@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { ApiError } from "@/api/client";
+import { ApiError, apiFetch } from "@/api/client";
 import { listProjects } from "@/api/projects";
 import { createSandbox } from "@/api/sandboxes";
 import { useLastProject } from "@/hooks/useLastProject";
@@ -50,15 +50,36 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
   // the dialog unmounts this tree — no need to reset state manually.
   const [name, setName] = useState("");
   const [projectId, setProjectId] = useState<string>("");
-  const [imageSelection, setImageSelection] = useState<string>(
-    IMAGE_PRESETS[0].ref,
-  );
+  const [imageSelection, setImageSelection] = useState<string>("");
   const [customImage, setCustomImage] = useState<string>("");
   const [cpuLimit, setCpuLimit] = useState<string>("");
   const [memoryLimitMB, setMemoryLimitMB] = useState<string>("");
   const [networkMode, setNetworkMode] = useState<NetworkMode>("isolated");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch health to discover which backends are available, then filter
+  // the preset list so users only see images they can actually launch.
+  const healthQuery = useQuery({
+    queryKey: ["health"],
+    queryFn: () => apiFetch<{ Backend: string }>("/v1/health"),
+    retry: false,
+  });
+  const availableBackends = useMemo(() => {
+    if (!healthQuery.data) return new Set<string>();
+    return new Set(healthQuery.data.Backend.split(",").map((s) => s.trim()).filter(Boolean));
+  }, [healthQuery.data]);
+  const visiblePresets = useMemo(
+    () => IMAGE_PRESETS.filter((p) => availableBackends.has(p.backend)),
+    [availableBackends],
+  );
+
+  // Select the first visible preset once health data arrives.
+  useEffect(() => {
+    if (visiblePresets.length > 0 && imageSelection === "") {
+      setImageSelection(visiblePresets[0].ref);
+    }
+  }, [visiblePresets, imageSelection]);
 
   // Fetch projects once so the dropdown can populate. Retry is disabled
   // explicitly so a failing projects query surfaces immediately in the
@@ -188,7 +209,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
       onCancel={handleCancelEvent}
       onClick={handleBackdropClick}
       aria-labelledby="new-sandbox-title"
-      className="bg-transparent p-0 backdrop:bg-black/60"
+      className="m-auto bg-transparent p-0 backdrop:bg-black/60"
     >
       <form
         onSubmit={onSubmit}
@@ -255,7 +276,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
             Image
           </legend>
           <div className="grid grid-cols-2 gap-2">
-            {IMAGE_PRESETS.map((preset) => (
+            {visiblePresets.map((preset) => (
               <button
                 type="button"
                 key={preset.ref}
@@ -263,8 +284,8 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
                 className={[
                   "flex flex-col items-start border px-3 py-2 text-left transition-colors",
                   imageSelection === preset.ref
-                    ? "border-[var(--fg-primary)] text-[var(--fg-primary)]"
-                    : "border-[var(--border-subtle)] text-[var(--fg-secondary)]",
+                    ? "border-[var(--fg-primary)] bg-[var(--bg-overlay)] text-[var(--fg-primary)]"
+                    : "border-[var(--border-subtle)] text-[var(--fg-secondary)] hover:border-[var(--border-strong)]",
                 ].join(" ")}
               >
                 <span className="text-[12px]">{preset.label}</span>
@@ -279,8 +300,8 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
               className={[
                 "col-span-2 flex flex-col items-start border px-3 py-2 text-left transition-colors",
                 imageSelection === CUSTOM_SENTINEL
-                  ? "border-[var(--fg-primary)] text-[var(--fg-primary)]"
-                  : "border-[var(--border-subtle)] text-[var(--fg-secondary)]",
+                  ? "border-[var(--fg-primary)] bg-[var(--bg-overlay)] text-[var(--fg-primary)]"
+                  : "border-[var(--border-subtle)] text-[var(--fg-secondary)] hover:border-[var(--border-strong)]",
               ].join(" ")}
             >
               <span className="text-[12px]">Custom…</span>
@@ -339,8 +360,26 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
         </div>
 
         <fieldset className="mb-6">
-          <legend className="mb-2 block font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
-            Network
+          <legend className="mb-2 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+            <span>Network</span>
+            {/* Native `title` tooltip — no extra deps, keyboard + screen reader
+                friendly, and hover-reveal on desktop. The copy mirrors the
+                backend semantics: isolated blocks inbound traffic from the host
+                network; published applies the provider's NAT/port-proxy
+                machinery so exposed ports become reachable. See
+                internal/provider/firecracker/sandbox.go:201 for the firecracker
+                masquerade gate and internal/domain/sandbox.go for the enum. */}
+            <span
+              tabIndex={0}
+              aria-label="What do isolated and published mean?"
+              title={
+                "isolated — no inbound access from the host network; only this sandbox's own processes can reach it.\n\n" +
+                "published — the provider installs NAT/port-proxy rules so explicitly published ports are reachable from outside the sandbox."
+              }
+              className="inline-flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-[var(--border-strong)] text-[8px] font-semibold text-[var(--fg-secondary)] hover:border-[var(--fg-primary)] hover:text-[var(--fg-primary)] focus:border-[var(--fg-primary)] focus:text-[var(--fg-primary)] focus:outline-none"
+            >
+              ?
+            </span>
           </legend>
           <div className="flex gap-4 text-sm text-[var(--fg-primary)]">
             <label className="flex items-center gap-2">

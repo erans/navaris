@@ -7,12 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
-	"os"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/navaris/navaris/internal/domain"
 	fcvsock "github.com/navaris/navaris/internal/provider/firecracker/vsock"
@@ -31,26 +27,6 @@ func (p *Provider) connectAgent(vmID string) (*agentConn, error) {
 	for attempt := 0; attempt < 30; attempt++ {
 		if attempt > 0 {
 			time.Sleep(500 * time.Millisecond)
-		}
-
-		// Debug: check file type on first attempt.
-		if attempt == 0 {
-			if fi, err := os.Stat(udsPath); err != nil {
-				slog.Warn("vsock UDS stat failed", "path", udsPath, "error", err)
-			} else {
-				slog.Info("vsock UDS file info", "path", udsPath, "mode", fi.Mode().String(), "size", fi.Size(), "isSocket", fi.Mode()&os.ModeSocket != 0)
-			}
-		}
-
-		// Debug: also try raw Unix connect.
-		if attempt == 0 {
-			rawFd, sockErr := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
-			if sockErr == nil {
-				sa := &unix.SockaddrUnix{Name: udsPath}
-				connErr := unix.Connect(rawFd, sa)
-				slog.Info("vsock UDS raw connect", "path", udsPath, "error", connErr)
-				unix.Close(rawFd)
-			}
 		}
 
 		conn, err := net.DialTimeout("unix", udsPath, 2*time.Second)

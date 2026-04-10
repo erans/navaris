@@ -54,6 +54,21 @@ export interface ListResponse<T> {
   pagination: unknown;
 }
 
+export type SessionState = "active" | "detached" | "exited" | "destroyed";
+
+export interface Session {
+  SessionID: string;
+  SandboxID: string;
+  Backing: string;
+  Shell: string;
+  State: SessionState;
+  CreatedAt: string;
+  UpdatedAt: string;
+  LastAttachedAt: string | null;
+  IdleTimeout: number | null;
+  Metadata: Record<string, unknown> | null;
+}
+
 // EventType mirrors domain.EventType. The set is fixed by the backend; new
 // values must be added in lockstep with internal/domain/event.go.
 export type EventType =

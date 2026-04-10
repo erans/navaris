@@ -154,6 +154,28 @@ func allocPTYWithCmd(cmd *exec.Cmd) (*ptyFile, error) {
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
+
+	// Ensure TERM is xterm-256color so the shell and tmux enable ANSI
+	// colors. The agent may inherit TERM=linux from init (e.g. OpenRC on
+	// Alpine) which only supports 8 colors and causes tmux to strip
+	// 256-color escape sequences. Always override TERM.
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	replaced := false
+	for i, e := range env {
+		if len(e) >= 5 && e[:5] == "TERM=" {
+			env[i] = "TERM=xterm-256color"
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		env = append(env, "TERM=xterm-256color")
+	}
+	cmd.Env = env
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,

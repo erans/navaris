@@ -7,7 +7,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
+	"sync"
 
+	"github.com/gorilla/websocket"
 	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
@@ -101,11 +104,32 @@ func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef,
 		Width:       80,
 		Height:      24,
 	}
+	// Set TERM if the caller didn't provide one.
+	if execReq.Environment == nil {
+		execReq.Environment = map[string]string{}
+	}
+	if execReq.Environment["TERM"] == "" {
+		execReq.Environment["TERM"] = "xterm-256color"
+	}
+
+	// controlConn is set by the Control callback and used by Resize.
+	var controlConn *websocket.Conn
+	var controlMu sync.Mutex
 
 	args := incusclient.InstanceExecArgs{
 		Stdin:  stdinR,
 		Stdout: stdoutW,
 		Stderr: stdoutW, // PTY merges stderr into stdout.
+		Control: func(conn *websocket.Conn) {
+			controlMu.Lock()
+			controlConn = conn
+			controlMu.Unlock()
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		},
 	}
 
 	op, err := p.client.ExecInstance(ref.Ref, execReq, &args)
@@ -121,13 +145,19 @@ func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef,
 		Stdin:  stdinW,
 		Stdout: stdoutR,
 		Resize: func(w, h int) error {
-			// Incus window resize is done via the control socket which
-			// is available through the operation's websocket.
-			// For now, this is a placeholder -- full resize requires
-			// the control websocket channel.
-			_ = w
-			_ = h
-			return nil
+			controlMu.Lock()
+			c := controlConn
+			controlMu.Unlock()
+			if c == nil {
+				return nil
+			}
+			return c.WriteJSON(incusapi.InstanceExecControl{
+				Command: "window-resize",
+				Args: map[string]string{
+					"width":  strconv.Itoa(w),
+					"height": strconv.Itoa(h),
+				},
+			})
 		},
 		Close: func() error {
 			stdinR.Close()
@@ -167,12 +197,30 @@ func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef
 		Interactive: true,
 		Width:       80,
 		Height:      24,
+		Environment: map[string]string{"TERM": "xterm-256color"},
 	}
+
+	// controlConn is set by the Control callback and used by Resize.
+	var controlConn *websocket.Conn
+	var controlMu sync.Mutex
 
 	args := incusclient.InstanceExecArgs{
 		Stdin:  stdinR,
 		Stdout: stdoutW,
 		Stderr: stdoutW,
+		Control: func(conn *websocket.Conn) {
+			controlMu.Lock()
+			controlConn = conn
+			controlMu.Unlock()
+			// Block until the peer closes the control socket. If we
+			// return early, the Incus client tears it down and Resize
+			// stops working.
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		},
 	}
 
 	op, err := p.client.ExecInstance(ref.Ref, execReq, &args)
@@ -199,9 +247,19 @@ func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef
 	handle := domain.SessionHandle{
 		Conn: conn,
 		Resize: func(w, h int) error {
-			_ = w
-			_ = h
-			return nil
+			controlMu.Lock()
+			c := controlConn
+			controlMu.Unlock()
+			if c == nil {
+				return nil // control socket not ready yet
+			}
+			return c.WriteJSON(incusapi.InstanceExecControl{
+				Command: "window-resize",
+				Args: map[string]string{
+					"width":  strconv.Itoa(w),
+					"height": strconv.Itoa(h),
+				},
+			})
 		},
 		Close: func() error {
 			conn.Close()

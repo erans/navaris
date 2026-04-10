@@ -36,6 +36,32 @@
   --status-destroyed: var(--color-status-destroyed);
 }
 
+/* Bg/fg/border/invert short-name aliases.
+   Same problem as the status block above: consumers reach for
+   `var(--bg-raised)`, `var(--fg-primary)`, `var(--border-strong)`,
+   etc. inside arbitrary utilities, but only the `--color-*` forms
+   are declared by the theme blocks below. The lookups were silently
+   empty — which looked fine on flat pages (background-color falls
+   back to transparent and shows the body's dark background through,
+   text inherits the body color, * { border-color } provides a
+   default), but broke visibly the moment an element had to stand
+   on top of something else, notably NewSandboxDialog's form and
+   its selected-preset indicator. Aliases track the theme because
+   var() resolves at paint time, so dark/light switching still
+   works. */
+:root {
+  --bg-base: var(--color-bg-base);
+  --bg-raised: var(--color-bg-raised);
+  --bg-overlay: var(--color-bg-overlay);
+  --fg-primary: var(--color-fg-primary);
+  --fg-secondary: var(--color-fg-secondary);
+  --fg-muted: var(--color-fg-muted);
+  --border-subtle: var(--color-border-subtle);
+  --border-strong: var(--color-border-strong);
+  --fg-on-invert: var(--color-fg-on-invert);
+  --invert-bg: var(--color-invert-bg);
+}
+
 /* Dark theme (default) */
 :root,
 :root[data-theme="dark"] {
@@ -44,7 +70,7 @@
   --color-bg-overlay: #1c1c1f;
   --color-fg-primary: #f4f4f5;
   --color-fg-secondary: #a1a1aa;
-  --color-fg-muted: #52525b;
+  --color-fg-muted: #8b8b93;
   --color-border-subtle: #1f1f22;
   --color-border-strong: #2e2e33;
   --color-fg-on-invert: #0b0b0c;
@@ -58,7 +84,7 @@
   --color-bg-overlay: #f4f4f5;
   --color-fg-primary: #18181b;
   --color-fg-secondary: #52525b;
-  --color-fg-muted: #a1a1aa;
+  --color-fg-muted: #71717a;
   --color-border-subtle: #e4e4e7;
   --color-border-strong: #d4d4d8;
   --color-fg-on-invert: #fafaf9;

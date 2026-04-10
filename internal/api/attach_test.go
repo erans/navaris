@@ -194,14 +194,12 @@ func TestAttachWithSessionParam(t *testing.T) {
 	}
 	c.Close(websocket.StatusNormalClosure, "")
 
-	// Verify the command passed to the provider is tmux attach.
-	want := []string{"tmux", "attach", "-t", sessionID}
-	if len(captured.Command) != len(want) {
-		t.Fatalf("Command = %v, want %v", captured.Command, want)
+	// Verify that for a direct session the provider gets an empty Shell
+	// (so detectShell picks the right one for the container).
+	if len(captured.Command) != 0 {
+		t.Fatalf("Command = %v, want empty (direct session uses detectShell)", captured.Command)
 	}
-	for i := range want {
-		if captured.Command[i] != want[i] {
-			t.Fatalf("Command[%d] = %q, want %q", i, captured.Command[i], want[i])
-		}
+	if captured.Shell != "" {
+		t.Fatalf("Shell = %q, want empty", captured.Shell)
 	}
 }

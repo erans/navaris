@@ -23,8 +23,14 @@ fi
 # Initialize Incus on first run (use a sentinel file for idempotency).
 if [ ! -f /var/lib/incus/.initialized ]; then
     echo "Initializing Incus..."
-    # Use preseed to skip network creation (nftables not available in container).
     cat <<PRESEED | incus admin init --preseed
+networks:
+  - name: incusbr0
+    type: bridge
+    config:
+      ipv4.address: 10.75.0.1/24
+      ipv4.nat: "true"
+      ipv6.address: none
 storage_pools:
   - name: default
     driver: dir
@@ -35,6 +41,10 @@ profiles:
         type: disk
         path: /
         pool: default
+      eth0:
+        type: nic
+        network: incusbr0
+        name: eth0
 PRESEED
     touch /var/lib/incus/.initialized
 fi

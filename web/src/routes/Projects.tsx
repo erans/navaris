@@ -1,24 +1,35 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listProjects } from "@/api/projects";
+import NewProjectDialog from "@/components/NewProjectDialog";
 
-// Projects renders a read-only list of the projects known to navarisd. In
-// v1 we don't support create/delete from the UI — the name + id + created
-// timestamp is what a developer wants to see to verify their setup. Field
-// names are PascalCase because the backend's domain.Project has no json
-// tags; see web/src/types/navaris.ts for the full shape.
+// Projects renders the list of projects known to navarisd and a button to
+// create new ones. Field names are PascalCase because the backend's
+// domain.Project has no json tags; see web/src/types/navaris.ts for the
+// full shape.
 export default function Projects() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["projects"],
     queryFn: listProjects,
   });
+  const [newDialogOpen, setNewDialogOpen] = useState(false);
 
   return (
     <div>
-      <header className="pb-4 border-b border-[var(--border-subtle)] mb-5">
-        <h1 className="text-xl font-medium tracking-[-0.01em]">Projects</h1>
-        <div className="mt-1 font-mono text-[10px] tracking-[0.04em] text-[var(--fg-muted)]">
-          {(data ?? []).length} total
+      <header className="flex items-start justify-between pb-4 border-b border-[var(--border-subtle)] mb-5">
+        <div>
+          <h1 className="text-xl font-medium tracking-[-0.01em]">Projects</h1>
+          <div className="mt-1 font-mono text-[10px] tracking-[0.04em] text-[var(--fg-muted)]">
+            {(data ?? []).length} total
+          </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setNewDialogOpen(true)}
+          className="border border-[var(--invert-bg)] bg-[var(--invert-bg)] px-4 py-2 text-xs font-medium tracking-[0.02em] text-[var(--fg-on-invert)]"
+        >
+          New project
+        </button>
       </header>
 
       {isLoading && <div className="text-sm text-[var(--fg-muted)]">Loading…</div>}
@@ -58,6 +69,10 @@ export default function Projects() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {newDialogOpen && (
+        <NewProjectDialog onClose={() => setNewDialogOpen(false)} />
       )}
     </div>
   );

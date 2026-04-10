@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -19,6 +20,9 @@ type SessionService struct {
 	provider   domain.Provider
 	events     domain.EventBus
 	tmuxReady  sync.Map
+	tmuxMu     sync.Map // per-sandbox *sync.Mutex for serializing ensureTmux
+	bashReady  sync.Map
+	bashMu     sync.Map // per-sandbox *sync.Mutex for serializing ensureBash
 }
 
 func NewSessionService(
@@ -76,14 +80,33 @@ func (s *SessionService) Create(ctx context.Context, sandboxID string, backing d
 	}
 
 	ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
-	if err := s.ensureTmux(ctx, sbx.SandboxID, ref); err != nil {
-		_ = s.sessions.Delete(ctx, sess.SessionID)
-		return nil, fmt.Errorf("ensure tmux: %w", err)
+
+	// Ensure bash is available before setting up the session shell.
+	if shell == "/bin/bash" {
+		if err := s.ensureBash(ctx, sbx.SandboxID, ref); err != nil {
+			// bash unavailable — fall back to /bin/sh.
+			sess.Shell = "/bin/sh"
+			sess.UpdatedAt = time.Now().UTC()
+			_ = s.sessions.Update(ctx, sess)
+		}
 	}
-	tmuxCmd := []string{"tmux", "new-session", "-d", "-s", sess.SessionID, shell}
-	if err := s.execRun(ctx, ref, tmuxCmd); err != nil {
-		_ = s.sessions.Delete(ctx, sess.SessionID)
-		return nil, fmt.Errorf("tmux new-session: %w", err)
+
+	if sess.Backing == domain.SessionBackingTmux {
+		if err := s.ensureTmux(ctx, sbx.SandboxID, ref); err != nil {
+			// tmux unavailable — fall back to a direct (non-persistent) session.
+			sess.Backing = domain.SessionBackingDirect
+			sess.UpdatedAt = time.Now().UTC()
+			_ = s.sessions.Update(ctx, sess)
+			return sess, nil
+		}
+		tmuxCmd := []string{"tmux", "new-session", "-d", "-s", sess.SessionID}
+		if err := s.execRun(ctx, ref, tmuxCmd); err != nil {
+			// tmux session failed to start — fall back to direct.
+			sess.Backing = domain.SessionBackingDirect
+			sess.UpdatedAt = time.Now().UTC()
+			_ = s.sessions.Update(ctx, sess)
+			return sess, nil
+		}
 	}
 
 	return sess, nil
@@ -154,7 +177,7 @@ func (s *SessionService) Detach(ctx context.Context, id string) error {
 		return err
 	}
 	if !sess.State.CanTransitionTo(domain.SessionDetached) {
-		err := domain.ErrInvalidState
+		err := fmt.Errorf("cannot detach session in state %s: %w", sess.State, domain.ErrInvalidState)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -202,23 +225,120 @@ func (s *SessionService) ensureTmux(ctx context.Context, sandboxID string, ref d
 	if _, ok := s.tmuxReady.Load(sandboxID); ok {
 		return nil
 	}
-	if s.execCheck(ctx, ref, []string{"command", "-v", "tmux"}) {
-		s.tmuxReady.Store(sandboxID, true)
+
+	// Serialize concurrent callers per sandbox so only one goroutine
+	// runs the probe+install sequence while the others wait.
+	muI, _ := s.tmuxMu.LoadOrStore(sandboxID, &sync.Mutex{})
+	mu := muI.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-check after acquiring the lock — another goroutine may have
+	// already completed the install while we were waiting.
+	if _, ok := s.tmuxReady.Load(sandboxID); ok {
 		return nil
 	}
-	var installCmd []string
-	switch {
-	case s.execCheck(ctx, ref, []string{"command", "-v", "apk"}):
-		installCmd = []string{"apk", "add", "--no-cache", "tmux"}
-	case s.execCheck(ctx, ref, []string{"command", "-v", "apt-get"}):
-		installCmd = []string{"sh", "-c", "apt-get update && apt-get install -y --no-install-recommends tmux"}
-	default:
-		return fmt.Errorf("tmux not available and no supported package manager found")
+
+	// Probe for binaries using "test -x <path>" which is a coreutil,
+	// not a shell builtin like "command -v" and not "which" (missing
+	// on minimal Alpine images).
+	testExec := func(path string) bool {
+		return s.execCheck(ctx, ref, []string{"test", "-x", path})
 	}
-	if err := s.execRun(ctx, ref, installCmd); err != nil {
-		return fmt.Errorf("install tmux: %w", err)
+	if !testExec("/usr/bin/tmux") {
+		var installCmd []string
+		switch {
+		case testExec("/sbin/apk"):
+			installCmd = []string{"apk", "add", "--no-cache", "tmux"}
+		case testExec("/usr/bin/apt-get"):
+			installCmd = []string{"sh", "-c", "apt-get update && apt-get install -y --no-install-recommends tmux"}
+		default:
+			return fmt.Errorf("tmux not available and no supported package manager found")
+		}
+		if err := s.execRun(ctx, ref, installCmd); err != nil {
+			return fmt.Errorf("install tmux: %w", err)
+		}
 	}
+
+	// Write a tmux.conf so the settings apply from server start (before
+	// any windows are created). Skip if the rootfs already has one baked in.
+	if !s.execCheck(ctx, ref, []string{"test", "-f", "/root/.tmux.conf"}) {
+		hasBash := testExec("/bin/bash")
+		tmuxConf := `set -g default-terminal "xterm-256color"
+set -g mouse on
+set -s set-clipboard on`
+		if hasBash {
+			tmuxConf += "\nset -g default-shell /bin/bash\nset -g default-command \"/bin/bash -l\""
+		}
+		_ = s.execRun(ctx, ref, []string{"sh", "-c",
+			"cat > /root/.tmux.conf << 'TMUXEOF'\n" + tmuxConf + "\nTMUXEOF"})
+	}
+
 	s.tmuxReady.Store(sandboxID, true)
+	return nil
+}
+
+func (s *SessionService) ensureBash(ctx context.Context, sandboxID string, ref domain.BackendRef) error {
+	if _, ok := s.bashReady.Load(sandboxID); ok {
+		return nil
+	}
+
+	muI, _ := s.bashMu.LoadOrStore(sandboxID, &sync.Mutex{})
+	mu := muI.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if _, ok := s.bashReady.Load(sandboxID); ok {
+		return nil
+	}
+
+	testExec := func(path string) bool {
+		return s.execCheck(ctx, ref, []string{"test", "-x", path})
+	}
+	isAlpine := testExec("/sbin/apk")
+
+	if !testExec("/bin/bash") {
+		var installCmd []string
+		switch {
+		case isAlpine:
+			installCmd = []string{"apk", "add", "--no-cache", "bash"}
+		case testExec("/usr/bin/apt-get"):
+			installCmd = []string{"sh", "-c", "apt-get update && apt-get install -y --no-install-recommends bash"}
+		default:
+			return fmt.Errorf("bash not available and no supported package manager found")
+		}
+		if err := s.execRun(ctx, ref, installCmd); err != nil {
+			return fmt.Errorf("install bash: %w", err)
+		}
+	}
+
+	// Alpine has no default color setup for bash. Write color config files
+	// only if they don't already exist (rootfs images may have them baked in;
+	// overwriting via heredoc-through-exec can truncate them).
+	if isAlpine && !s.execCheck(ctx, ref, []string{"test", "-f", "/root/.bashrc"}) {
+		_ = s.execRun(ctx, ref, []string{"sh", "-c", `mkdir -p /etc/profile.d && cat > /etc/profile.d/colors.sh << 'COLORSEOF'
+export LS_OPTIONS='--color=auto'
+alias ls='ls $LS_OPTIONS'
+alias grep='grep --color=auto'
+if [ "$(id -u)" -eq 0 ]; then
+  PS1='\[\e[1;31m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '
+else
+  PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+fi
+COLORSEOF`})
+		_ = s.execRun(ctx, ref, []string{"sh", "-c", `cat > /root/.bashrc << 'COLORSEOF'
+export LS_OPTIONS='--color=auto'
+alias ls='ls $LS_OPTIONS'
+alias grep='grep --color=auto'
+if [ "$(id -u)" -eq 0 ]; then
+  PS1='\[\e[1;31m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '
+else
+  PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+fi
+COLORSEOF`})
+	}
+
+	s.bashReady.Store(sandboxID, true)
 	return nil
 }
 
@@ -227,9 +347,12 @@ func (s *SessionService) execCheck(ctx context.Context, ref domain.BackendRef, c
 	if err != nil {
 		return false
 	}
-	defer handle.Stdout.Close()
-	defer handle.Stderr.Close()
+	// Drain pipes so the process doesn't block on output.
+	go io.Copy(io.Discard, handle.Stdout)
+	go io.Copy(io.Discard, handle.Stderr)
 	code, err := handle.Wait()
+	handle.Stdout.Close()
+	handle.Stderr.Close()
 	return err == nil && code == 0
 }
 
@@ -238,9 +361,12 @@ func (s *SessionService) execRun(ctx context.Context, ref domain.BackendRef, cmd
 	if err != nil {
 		return err
 	}
-	defer handle.Stdout.Close()
-	defer handle.Stderr.Close()
+	// Drain pipes so the process doesn't block on output.
+	go io.Copy(io.Discard, handle.Stdout)
+	go io.Copy(io.Discard, handle.Stderr)
 	code, err := handle.Wait()
+	handle.Stdout.Close()
+	handle.Stderr.Close()
 	if err != nil {
 		return err
 	}
@@ -252,4 +378,5 @@ func (s *SessionService) execRun(ctx context.Context, ref domain.BackendRef, cmd
 
 func (s *SessionService) ClearTmuxCache(sandboxID string) {
 	s.tmuxReady.Delete(sandboxID)
+	s.bashReady.Delete(sandboxID)
 }
