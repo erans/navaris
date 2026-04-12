@@ -81,9 +81,17 @@ func (s *SessionService) Create(ctx context.Context, sandboxID string, backing d
 
 	ref := domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}
 
+	// Cap the total time spent probing/installing bash and tmux inside the
+	// sandbox. On slow guests (e.g. Debian Firecracker) the sequential exec
+	// calls can exceed the HTTP server's WriteTimeout, causing the client to
+	// see an EOF. A 45s budget gives enough room for package installs while
+	// staying under the 60s WriteTimeout.
+	ensureCtx, ensureCancel := context.WithTimeout(ctx, 45*time.Second)
+	defer ensureCancel()
+
 	// Ensure bash is available before setting up the session shell.
 	if shell == "/bin/bash" {
-		if err := s.ensureBash(ctx, sbx.SandboxID, ref); err != nil {
+		if err := s.ensureBash(ensureCtx, sbx.SandboxID, ref); err != nil {
 			// bash unavailable — fall back to /bin/sh.
 			sess.Shell = "/bin/sh"
 			sess.UpdatedAt = time.Now().UTC()
@@ -92,7 +100,7 @@ func (s *SessionService) Create(ctx context.Context, sandboxID string, backing d
 	}
 
 	if sess.Backing == domain.SessionBackingTmux {
-		if err := s.ensureTmux(ctx, sbx.SandboxID, ref); err != nil {
+		if err := s.ensureTmux(ensureCtx, sbx.SandboxID, ref); err != nil {
 			// tmux unavailable — fall back to a direct (non-persistent) session.
 			sess.Backing = domain.SessionBackingDirect
 			sess.UpdatedAt = time.Now().UTC()
@@ -350,10 +358,30 @@ func (s *SessionService) execCheck(ctx context.Context, ref domain.BackendRef, c
 	// Drain pipes so the process doesn't block on output.
 	go io.Copy(io.Discard, handle.Stdout)
 	go io.Copy(io.Discard, handle.Stderr)
-	code, err := handle.Wait()
-	handle.Stdout.Close()
-	handle.Stderr.Close()
-	return err == nil && code == 0
+
+	type waitResult struct {
+		code int
+		err  error
+	}
+	ch := make(chan waitResult, 1)
+	go func() {
+		code, err := handle.Wait()
+		ch <- waitResult{code, err}
+	}()
+
+	select {
+	case res := <-ch:
+		handle.Stdout.Close()
+		handle.Stderr.Close()
+		return res.err == nil && res.code == 0
+	case <-ctx.Done():
+		if handle.Cancel != nil {
+			_ = handle.Cancel()
+		}
+		handle.Stdout.Close()
+		handle.Stderr.Close()
+		return false
+	}
 }
 
 func (s *SessionService) execRun(ctx context.Context, ref domain.BackendRef, cmd []string) error {
@@ -364,14 +392,36 @@ func (s *SessionService) execRun(ctx context.Context, ref domain.BackendRef, cmd
 	// Drain pipes so the process doesn't block on output.
 	go io.Copy(io.Discard, handle.Stdout)
 	go io.Copy(io.Discard, handle.Stderr)
-	code, err := handle.Wait()
+
+	type waitResult struct {
+		code int
+		err  error
+	}
+	ch := make(chan waitResult, 1)
+	go func() {
+		code, err := handle.Wait()
+		ch <- waitResult{code, err}
+	}()
+
+	var res waitResult
+	select {
+	case res = <-ch:
+	case <-ctx.Done():
+		if handle.Cancel != nil {
+			_ = handle.Cancel()
+		}
+		handle.Stdout.Close()
+		handle.Stderr.Close()
+		return ctx.Err()
+	}
+
 	handle.Stdout.Close()
 	handle.Stderr.Close()
-	if err != nil {
-		return err
+	if res.err != nil {
+		return res.err
 	}
-	if code != 0 {
-		return fmt.Errorf("command %v exited with code %d", cmd, code)
+	if res.code != 0 {
+		return fmt.Errorf("command %v exited with code %d", cmd, res.code)
 	}
 	return nil
 }
