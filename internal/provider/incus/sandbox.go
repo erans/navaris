@@ -223,13 +223,22 @@ func (p *IncusProvider) CreateSandboxFromSnapshot(ctx context.Context, snapshotR
 	}
 
 	// Apply resource limits after copy if any were specified.
-	if len(instanceCfg) > 0 {
+	// Also clear volatile NIC keys so Incus assigns a fresh MAC address —
+	// without this the copied instance keeps the source's MAC and Incus
+	// rejects the duplicate on start.
+	{
 		inst, etag, err := p.client.GetInstance(name)
 		if err != nil {
 			return domain.BackendRef{}, fmt.Errorf("incus get copied instance: %w", err)
 		}
 		for k, v := range instanceCfg {
 			inst.Config[k] = v
+		}
+		// Remove volatile.*.hwaddr keys that carry the source's MAC.
+		for k := range inst.Config {
+			if strings.HasPrefix(k, "volatile.") && strings.HasSuffix(k, ".hwaddr") {
+				delete(inst.Config, k)
+			}
 		}
 		op, err := p.client.UpdateInstance(name, inst.Writable(), etag)
 		if err != nil {
