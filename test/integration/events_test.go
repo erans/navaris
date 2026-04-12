@@ -56,8 +56,8 @@ func TestEventStreamReceivesSandboxEvents(t *testing.T) {
 
 	// Collect events in background.
 	type event struct {
-		Type       string `json:"type"`
-		ResourceID string `json:"resource_id"`
+		Type string                 `json:"Type"`
+		Data map[string]interface{} `json:"Data"`
 	}
 	eventCh := make(chan event, 100)
 	go func() {
@@ -97,8 +97,8 @@ func TestEventStreamReceivesSandboxEvents(t *testing.T) {
 	for !received {
 		select {
 		case ev := <-eventCh:
-			if ev.ResourceID == sandboxID {
-				t.Logf("received event: type=%s resource=%s", ev.Type, ev.ResourceID)
+			if sid, ok := ev.Data["sandbox_id"].(string); ok && sid == sandboxID {
+				t.Logf("received event: type=%s sandbox_id=%s", ev.Type, sid)
 				received = true
 			}
 		case <-timeout:
