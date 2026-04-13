@@ -5,9 +5,11 @@ package firecracker
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,6 +131,9 @@ func New(cfg Config) (*Provider, error) {
 		return counts
 	})
 
+	// Warm OS page cache so the first VM starts faster.
+	go p.warmCache()
+
 	return p, nil
 }
 
@@ -247,6 +252,34 @@ func (p *Provider) Health(ctx context.Context) domain.ProviderHealth {
 	return domain.ProviderHealth{
 		Backend: backendName, Healthy: true, LatencyMS: latency,
 	}
+}
+
+// warmCache reads the kernel and rootfs images sequentially so the OS
+// page cache is hot before the first VM boots. This eliminates the cold-start
+// penalty (~seconds of disk I/O) that makes the first Firecracker VM feel slow.
+func (p *Provider) warmCache() {
+	start := time.Now()
+	warm := func(path string) {
+		f, err := os.Open(path)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		io.Copy(io.Discard, f)
+	}
+
+	warm(p.config.KernelPath)
+
+	entries, err := os.ReadDir(p.config.ImageDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".ext4") {
+			warm(filepath.Join(p.config.ImageDir, e.Name()))
+		}
+	}
+	slog.Info("firecracker: page cache warm-up complete", "duration", time.Since(start).Round(time.Millisecond))
 }
 
 var _ domain.Provider = (*Provider)(nil)

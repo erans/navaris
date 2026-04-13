@@ -1,0 +1,51 @@
+# All-in-one Navaris: Incus + Firecracker in a single container.
+#
+# Usage:
+#   Incus only:              docker compose --profile default up
+#   Incus + Firecracker:     docker compose --profile kvm up
+#
+# Requirements:
+#   Docker Engine 25+, Docker Compose v2.15+
+#   Firecracker requires /dev/kvm on the host (Linux with KVM support)
+
+services:
+  navaris:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    privileged: true
+    cgroup: host
+    ports:
+      - "${NAVARIS_HOST_PORT:-8080}:8080"
+    environment:
+      NAVARIS_AUTH_TOKEN: ${NAVARIS_AUTH_TOKEN:-}
+      NAVARIS_LOG_LEVEL: ${NAVARIS_LOG_LEVEL:-info}
+      INCUS_PRELOAD_IMAGE: ${INCUS_PRELOAD_IMAGE:-images:alpine/3.21,images:debian/12}
+      NAVARIS_UI_PASSWORD: ${NAVARIS_UI_PASSWORD:-}
+      NAVARIS_UI_SESSION_KEY: ${NAVARIS_UI_SESSION_KEY:-}
+      NAVARIS_UI_SESSION_TTL: ${NAVARIS_UI_SESSION_TTL:-24h}
+    volumes:
+      - navaris-data:/var/lib/navaris
+      - incus-data:/var/lib/incus
+      - firecracker-data:/srv/firecracker
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    profiles:
+      - default
+
+  navaris-kvm:
+    extends:
+      service: navaris
+    devices:
+      - /dev/kvm:/dev/kvm
+    profiles:
+      - kvm
+
+volumes:
+  navaris-data:
+  incus-data:
+  firecracker-data:

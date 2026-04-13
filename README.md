@@ -169,6 +169,42 @@ Backend selection for new sandboxes follows this priority:
 | `--otlp-protocol` | `grpc` | OTLP transport: `grpc` or `http` |
 | `--service-name` | `navarisd` | Service name in telemetry data |
 
+## Web UI
+
+Navaris ships with an optional web UI for inspecting projects, sandboxes, and events, triggering lifecycle actions, and attaching to sandbox terminals. It is disabled by default.
+
+### Enabling the UI
+
+Pass `--ui-password` to `navarisd`:
+
+```bash
+navarisd --ui-password "$(openssl rand -base64 24)" --auth-token your-token
+```
+
+The UI is served from the root of the listen address. Visit `http://HOST:8080/`, sign in with the password, and you're in. API endpoints for the UI itself live under `/ui/` (`/ui/login`, `/ui/logout`, `/ui/me`) and are not meant to be visited directly.
+
+### UI flags
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--ui-password` | `NAVARIS_UI_PASSWORD` | Password required to sign in. Leaving it unset disables the UI entirely. |
+| `--ui-session-key` | `NAVARIS_UI_SESSION_KEY` | Base64-encoded 32-byte key used to sign session cookies. Auto-generated at startup if omitted — existing sessions are invalidated on every restart in that case. |
+| `--ui-session-ttl` | `NAVARIS_UI_SESSION_TTL` | How long a session cookie is valid (default `24h`). |
+
+### Security notes
+
+- The UI does **not** support TLS termination itself. Put it behind a reverse proxy in any environment where network traffic can be observed.
+- Login attempts are rate-limited to 5 failures per IP per minute.
+- Session cookies are HMAC-signed, `HttpOnly`, `SameSite=Lax`, and flagged `Secure` when the request arrives over HTTPS.
+
+### Building from source
+
+```bash
+make web-deps web-build build-ui
+```
+
+The SPA sources live in `web/`. See `web/MANUAL_TERMINAL_SMOKE.md` for a manual smoke-test procedure.
+
 ## CLI usage
 
 Configure the CLI via flags or environment variables:

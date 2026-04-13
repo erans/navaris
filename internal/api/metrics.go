@@ -22,6 +22,11 @@ func isExcluded(path string) bool {
 	if strings.HasSuffix(path, "/exec") && strings.HasPrefix(path, "/v1/sandboxes/") {
 		return true
 	}
+	// Match /v1/sandboxes/{id}/attach — same reason as /exec: WebSocket upgrade
+	// needs http.Hijacker, which statusCapturingWriter does not implement.
+	if strings.HasSuffix(path, "/attach") && strings.HasPrefix(path, "/v1/sandboxes/") {
+		return true
+	}
 	return false
 }
 

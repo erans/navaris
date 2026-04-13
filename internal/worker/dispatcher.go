@@ -106,8 +106,18 @@ func (d *Dispatcher) Enqueue(op *domain.Operation) {
 	d.wg.Add(1)
 	d.mu.Unlock()
 
+	// Copy the operation before handing it to the dispatcher goroutine so
+	// the caller's pointer stays stable. Services return the caller's
+	// pointer directly to the HTTP handler, which JSON-encodes it — that
+	// serialization races with state-transition writes in run() if the
+	// pointer is shared. The caller's copy remains at its pre-enqueue
+	// snapshot (typically OpPending); the authoritative state lives in
+	// the operation store and is re-read by subsequent GET /v1/operations
+	// calls. Metadata is deliberately shallow-copied: handlers do not
+	// mutate the map in-place, and poll callers read from the store.
+	internal := *op
 	select {
-	case d.queue <- op:
+	case d.queue <- &internal:
 	case <-d.done:
 		d.wg.Done()
 		slog.Warn("dispatcher: enqueue during shutdown, dropping operation", "operation_id", op.OperationID)

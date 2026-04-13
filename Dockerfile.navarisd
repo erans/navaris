@@ -1,12 +1,153 @@
+# ---- Stage 1: Build Go binaries ----
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -tags incus -o /navarisd ./cmd/navarisd
+RUN CGO_ENABLED=0 go build -tags "incus,firecracker" -o /navarisd ./cmd/navarisd
+RUN GOOS=linux CGO_ENABLED=0 go build -o /navaris-agent ./cmd/navaris-agent
 
+# ---- Stage 2: Build Firecracker-compatible kernel ----
+FROM golang:1.26-bookworm AS kernel-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bc bison flex libelf-dev libssl-dev wget xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG KERNEL_VERSION=6.1.128
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz" \
+        -O /tmp/linux.tar.xz && \
+    tar -xf /tmp/linux.tar.xz -C /tmp && \
+    rm /tmp/linux.tar.xz
+
+COPY resources/microvm-kernel.config /tmp/linux-${KERNEL_VERSION}/.microvm.config
+
+WORKDIR /tmp/linux-${KERNEL_VERSION}
+RUN make defconfig && \
+    make olddefconfig && \
+    ./scripts/config --disable CONFIG_ACPI && \
+    ./scripts/config --set-val CONFIG_VIRTIO y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_MMIO y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_BLK y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_NET y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS_COMMON y && \
+    ./scripts/config --set-val CONFIG_VSOCKETS y && \
+    ./scripts/config --set-val CONFIG_VSOCKETS_DIAG y && \
+    ./scripts/config --set-val CONFIG_IP_PNP y && \
+    ./scripts/config --set-val CONFIG_IP_PNP_DHCP y && \
+    ./scripts/config --set-val CONFIG_RANDOM_TRUST_CPU y && \
+    ./scripts/config --set-val CONFIG_SECCOMP y && \
+    ./scripts/config --set-val CONFIG_SECCOMP_FILTER y && \
+    ./scripts/config --set-val CONFIG_SECURITY_LANDLOCK y && \
+    ./scripts/config --set-val CONFIG_FUSE_FS y && \
+    ./scripts/config --set-val CONFIG_IKCONFIG y && \
+    ./scripts/config --set-val CONFIG_IKCONFIG_PROC y && \
+    make olddefconfig && \
+    make -j"$(nproc)" vmlinux
+RUN cp vmlinux /vmlinux
+
+# ---- Stage 3a: Build Alpine rootfs ext4 image ----
+FROM alpine:3.21 AS rootfs-alpine
+
+RUN apk add --no-cache openrc e2fsprogs fuse3 bash tmux
+COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
+
+RUN printf '#!/sbin/openrc-run\nname="navaris-agent"\ndescription="Navaris guest agent"\ncommand="/usr/local/bin/navaris-agent"\ncommand_background="yes"\npidfile="/run/navaris-agent.pid"\noutput_log="/dev/console"\nerror_log="/dev/console"\n' \
+    > /etc/init.d/navaris-agent && \
+    chmod +x /etc/init.d/navaris-agent && \
+    rc-update add navaris-agent default
+
+RUN sed -i 's/^#rc_sys=""/rc_sys="lxc"/' /etc/rc.conf 2>/dev/null || true
+
+# Color prompt and aliases for bash (interactive non-login + login shells).
+RUN { \
+      echo 'export LS_OPTIONS="--color=auto"'; \
+      echo 'alias ls="ls \$LS_OPTIONS"'; \
+      echo 'alias grep="grep --color=auto"'; \
+      echo 'if [ "$(id -u)" -eq 0 ]; then'; \
+      echo '  PS1='"'"'\[\e[1;31m\]\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]# '"'"''; \
+      echo 'else'; \
+      echo '  PS1='"'"'\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '"'"''; \
+      echo 'fi'; \
+    } | tee /etc/profile.d/colors.sh /root/.bashrc > /dev/null && \
+    chmod +x /etc/profile.d/colors.sh
+
+# tmux defaults (colors, mouse, clipboard).
+RUN printf 'set -g default-terminal "xterm-256color"\nset -g mouse on\nset -s set-clipboard on\nset -g default-shell /bin/bash\nset -g default-command "/bin/bash -l"\n' \
+    > /root/.tmux.conf
+
+RUN mkdir /staging && \
+    for d in bin etc home lib media mnt opt root run sbin srv usr var; do \
+        [ -d "/$d" ] && cp -a "/$d" /staging/; \
+    done && \
+    mkdir -p /staging/tmp && chmod 1777 /staging/tmp && \
+    mkdir -p /staging/proc /staging/sys /staging/dev && \
+    mke2fs -t ext4 -d /staging -L rootfs /tmp/alpine-3.21.ext4 512M && \
+    mkdir -p /opt/firecracker/images && \
+    mv /tmp/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
+
+# ---- Stage 3b: Build Debian 12 rootfs ext4 image ----
+FROM debian:12-slim AS rootfs-debian
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv e2fsprogs fuse3 bash tmux \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
+
+RUN printf '[Unit]\nDescription=Navaris guest agent\nAfter=network.target\n\n[Service]\nExecStart=/usr/local/bin/navaris-agent\nRestart=on-failure\nStandardOutput=journal+console\nStandardError=journal+console\n\n[Install]\nWantedBy=multi-user.target\n' \
+    > /etc/systemd/system/navaris-agent.service && \
+    systemctl enable navaris-agent.service
+
+# tmux defaults (colors, mouse, clipboard).
+RUN printf 'set -g default-terminal "xterm-256color"\nset -g mouse on\nset -s set-clipboard on\nset -g default-shell /bin/bash\nset -g default-command "/bin/bash -l"\n' \
+    > /root/.tmux.conf
+
+RUN mkdir /staging && \
+    for d in bin etc home lib lib64 media mnt opt root run sbin srv usr var; do \
+        [ -d "/$d" ] && cp -a "/$d" /staging/; \
+    done && \
+    mkdir -p /staging/tmp && chmod 1777 /staging/tmp && \
+    mkdir -p /staging/proc /staging/sys /staging/dev && \
+    mke2fs -t ext4 -d /staging -L rootfs /tmp/debian-12.ext4 1024M && \
+    mkdir -p /opt/firecracker/images && \
+    mv /tmp/debian-12.ext4 /opt/firecracker/images/debian-12.ext4
+
+# ---- Stage 4: Runtime ----
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends wget && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ARG FC_VERSION=v1.15.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget iproute2 iptables e2fsprogs procps ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Download Firecracker and jailer binaries.
+RUN ARCH=$(uname -m) && \
+    wget -q "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz" \
+        -O /tmp/fc.tgz && \
+    tar -xzf /tmp/fc.tgz -C /tmp && \
+    mv /tmp/release-${FC_VERSION}-${ARCH}/firecracker-${FC_VERSION}-${ARCH} /usr/local/bin/firecracker && \
+    mv /tmp/release-${FC_VERSION}-${ARCH}/jailer-${FC_VERSION}-${ARCH} /usr/local/bin/jailer && \
+    chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer && \
+    rm -rf /tmp/fc.tgz /tmp/release-*
+
+# Copy kernel.
+RUN mkdir -p /opt/firecracker
+COPY --from=kernel-builder /vmlinux /opt/firecracker/vmlinux
+
+# Copy rootfs images.
+RUN mkdir -p /opt/firecracker/images
+COPY --from=rootfs-alpine /opt/firecracker/images/alpine-3.21.ext4 /opt/firecracker/images/alpine-3.21.ext4
+COPY --from=rootfs-debian /opt/firecracker/images/debian-12.ext4 /opt/firecracker/images/debian-12.ext4
+
+# Copy navarisd.
 COPY --from=build /navarisd /usr/local/bin/navarisd
-ENTRYPOINT ["navarisd"]
+
+# Copy entrypoint script.
+COPY scripts/firecracker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

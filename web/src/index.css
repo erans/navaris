@@ -1,0 +1,125 @@
+@import "tailwindcss";
+@import "@fontsource-variable/mona-sans";
+@import "@fontsource/commit-mono";
+
+@theme {
+  --font-sans: "Mona Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Commit Mono", ui-monospace, "JetBrains Mono", "Menlo", monospace;
+
+  --radius: 2px;
+
+  /* Status palette — identical across themes. These are kept inside @theme
+     so Tailwind also exposes them as `bg-status-*` utilities if we ever
+     want them, but every consumer today reaches for them through the
+     arbitrary `bg-[var(--status-*)]` syntax — see the `:root` block below
+     for the short-name aliases those lookups actually resolve. */
+  --color-status-running: #22c55e;
+  --color-status-pending: #f59e0b;
+  --color-status-stopped: #71717a;
+  --color-status-failed: #ef4444;
+  --color-status-destroyed: #3f3f46;
+}
+
+/* Status variable short-name aliases.
+   Tailwind v4's @theme block exposes theme colors as `--color-status-*`
+   on :root, but the codebase overwhelmingly uses the shorter
+   `var(--status-failed)` form inside arbitrary utility classes like
+   `bg-[var(--status-failed)]`. Those lookups were silently resolving to
+   the empty string, leaving red accents and the "Confirm delete" button
+   invisible. Expose the short aliases here so every existing usage
+   resolves to the intended color without touching the call sites. */
+:root {
+  --status-running: var(--color-status-running);
+  --status-pending: var(--color-status-pending);
+  --status-stopped: var(--color-status-stopped);
+  --status-failed: var(--color-status-failed);
+  --status-destroyed: var(--color-status-destroyed);
+}
+
+/* Bg/fg/border/invert short-name aliases.
+   Same problem as the status block above: consumers reach for
+   `var(--bg-raised)`, `var(--fg-primary)`, `var(--border-strong)`,
+   etc. inside arbitrary utilities, but only the `--color-*` forms
+   are declared by the theme blocks below. The lookups were silently
+   empty — which looked fine on flat pages (background-color falls
+   back to transparent and shows the body's dark background through,
+   text inherits the body color, * { border-color } provides a
+   default), but broke visibly the moment an element had to stand
+   on top of something else, notably NewSandboxDialog's form and
+   its selected-preset indicator. Aliases track the theme because
+   var() resolves at paint time, so dark/light switching still
+   works. */
+:root {
+  --bg-base: var(--color-bg-base);
+  --bg-raised: var(--color-bg-raised);
+  --bg-overlay: var(--color-bg-overlay);
+  --fg-primary: var(--color-fg-primary);
+  --fg-secondary: var(--color-fg-secondary);
+  --fg-muted: var(--color-fg-muted);
+  --border-subtle: var(--color-border-subtle);
+  --border-strong: var(--color-border-strong);
+  --fg-on-invert: var(--color-fg-on-invert);
+  --invert-bg: var(--color-invert-bg);
+}
+
+/* Dark theme (default) */
+:root,
+:root[data-theme="dark"] {
+  --color-bg-base: #0b0b0c;
+  --color-bg-raised: #141416;
+  --color-bg-overlay: #1c1c1f;
+  --color-fg-primary: #f4f4f5;
+  --color-fg-secondary: #a1a1aa;
+  --color-fg-muted: #8b8b93;
+  --color-border-subtle: #1f1f22;
+  --color-border-strong: #2e2e33;
+  --color-fg-on-invert: #0b0b0c;
+  --color-invert-bg: #f4f4f5;
+}
+
+/* Light theme (warm, stone-based) */
+:root[data-theme="light"] {
+  --color-bg-base: #fafaf9;
+  --color-bg-raised: #ffffff;
+  --color-bg-overlay: #f4f4f5;
+  --color-fg-primary: #18181b;
+  --color-fg-secondary: #52525b;
+  --color-fg-muted: #71717a;
+  --color-border-subtle: #e4e4e7;
+  --color-border-strong: #d4d4d8;
+  --color-fg-on-invert: #fafaf9;
+  --color-invert-bg: #18181b;
+}
+
+@theme inline {
+  --color-bg-base: var(--color-bg-base);
+  --color-bg-raised: var(--color-bg-raised);
+  --color-bg-overlay: var(--color-bg-overlay);
+  --color-fg-primary: var(--color-fg-primary);
+  --color-fg-secondary: var(--color-fg-secondary);
+  --color-fg-muted: var(--color-fg-muted);
+  --color-border-subtle: var(--color-border-subtle);
+  --color-border-strong: var(--color-border-strong);
+  --color-fg-on-invert: var(--color-fg-on-invert);
+  --color-invert-bg: var(--color-invert-bg);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border-subtle);
+  }
+  html, body {
+    background-color: var(--color-bg-base);
+    color: var(--color-fg-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

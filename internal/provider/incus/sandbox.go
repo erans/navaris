@@ -63,6 +63,22 @@ func (p *IncusProvider) StartSandbox(ctx context.Context, ref domain.BackendRef)
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "StartSandbox")
 	defer func() { endSpan(retErr) }()
 
+	// Idempotency: if Incus already considers the instance running, return
+	// success without issuing another start. This matters after a navarisd
+	// restart — the Incus daemon auto-starts instances that were running
+	// before it went down, and if reconciliation observes the instance
+	// mid-restart (stopped) and later a user hits Start, Incus would
+	// otherwise return "The instance is already running" and handleStart
+	// would treat that as fatal, flipping a healthy sandbox to failed.
+	// A failed GetInstanceState is swallowed so a transient query error
+	// doesn't block a legitimate start; the real start call below will
+	// surface any persistent connectivity issue.
+	if state, _, err := p.client.GetInstanceState(ref.Ref); err == nil {
+		if mapIncusStatus(state.Status) == domain.SandboxRunning {
+			return nil
+		}
+	}
+
 	reqState := incusapi.InstanceStatePut{
 		Action:  "start",
 		Timeout: -1,
@@ -80,6 +96,15 @@ func (p *IncusProvider) StartSandbox(ctx context.Context, ref domain.BackendRef)
 func (p *IncusProvider) StopSandbox(ctx context.Context, ref domain.BackendRef, force bool) (retErr error) {
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "StopSandbox")
 	defer func() { endSpan(retErr) }()
+
+	// Idempotency: mirror StartSandbox. If Incus already considers the
+	// instance stopped, there's nothing to do and we must not let Incus'
+	// "The instance is already stopped" error propagate as fatal.
+	if state, _, err := p.client.GetInstanceState(ref.Ref); err == nil {
+		if mapIncusStatus(state.Status) == domain.SandboxStopped {
+			return nil
+		}
+	}
 
 	reqState := incusapi.InstanceStatePut{
 		Action:  "stop",
@@ -198,13 +223,22 @@ func (p *IncusProvider) CreateSandboxFromSnapshot(ctx context.Context, snapshotR
 	}
 
 	// Apply resource limits after copy if any were specified.
-	if len(instanceCfg) > 0 {
+	// Also clear volatile NIC keys so Incus assigns a fresh MAC address —
+	// without this the copied instance keeps the source's MAC and Incus
+	// rejects the duplicate on start.
+	{
 		inst, etag, err := p.client.GetInstance(name)
 		if err != nil {
 			return domain.BackendRef{}, fmt.Errorf("incus get copied instance: %w", err)
 		}
 		for k, v := range instanceCfg {
 			inst.Config[k] = v
+		}
+		// Remove volatile.*.hwaddr keys that carry the source's MAC.
+		for k := range inst.Config {
+			if strings.HasPrefix(k, "volatile.") && strings.HasSuffix(k, ".hwaddr") {
+				delete(inst.Config, k)
+			}
 		}
 		op, err := p.client.UpdateInstance(name, inst.Writable(), etag)
 		if err != nil {

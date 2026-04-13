@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/navaris/navaris/internal/service"
 	"github.com/navaris/navaris/internal/store/sqlite"
 	"github.com/navaris/navaris/internal/telemetry"
+	"github.com/navaris/navaris/internal/webui"
 	"github.com/navaris/navaris/internal/worker"
 )
 
@@ -41,6 +43,9 @@ type config struct {
 	otlpEndpoint   string
 	otlpProtocol   string
 	serviceName    string
+	uiPassword     string
+	uiSessionKey   string
+	uiSessionTTL   time.Duration
 }
 
 func main() {
@@ -71,6 +76,9 @@ func parseFlags() config {
 	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
 	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
 	flag.StringVar(&cfg.serviceName, "service-name", "navarisd", "service name in telemetry data")
+	flag.StringVar(&cfg.uiPassword, "ui-password", "", "web UI password (empty disables the UI)")
+	flag.StringVar(&cfg.uiSessionKey, "ui-session-key", "", "HMAC key for UI session cookies (empty = ephemeral per-process)")
+	flag.DurationVar(&cfg.uiSessionTTL, "ui-session-ttl", 24*time.Hour, "lifetime of UI session cookies")
 	flag.Parse()
 	return cfg
 }
@@ -107,6 +115,38 @@ func run(cfg config) error {
 	// Event bus
 	bus := eventbus.New(256)
 
+	// Web UI setup — only activates when --ui-password is set.
+	var (
+		uiHandlers *webui.Handlers
+		sessionKey []byte
+	)
+	if cfg.uiPassword != "" {
+		if cfg.uiSessionKey != "" {
+			sessionKey = []byte(cfg.uiSessionKey)
+		} else {
+			// 32 random bytes — used directly as the HMAC-SHA256 key.
+			// Hex-encoding would be log-friendly but we never log the key,
+			// so the extra step just wastes entropy on redundant encoding
+			// and creates a format asymmetry with the operator-supplied path.
+			sessionKey = make([]byte, 32)
+			if _, err := rand.Read(sessionKey); err != nil {
+				return fmt.Errorf("generate ephemeral session key: %w", err)
+			}
+			logger.Warn("ui-session-key not set; generated ephemeral key; sessions will not survive restart — set --ui-session-key to persist sessions")
+		}
+		uiHandlers = webui.NewHandlers(webui.Config{
+			Password:   cfg.uiPassword,
+			SessionKey: sessionKey,
+			SessionTTL: cfg.uiSessionTTL,
+		})
+		if webui.Assets == nil {
+			logger.Warn("web UI enabled but binary was built without -tags withui; /ui/* API routes are reachable but the SPA shell will not be served")
+		}
+		logger.Info("web UI enabled", "session_ttl", cfg.uiSessionTTL.String())
+	} else {
+		logger.Info("web UI disabled (--ui-password not set)")
+	}
+
 	// Worker dispatcher
 	disp := worker.NewDispatcher(store.OperationStore(), bus, cfg.concurrency)
 
@@ -136,8 +176,20 @@ func run(cfg config) error {
 	}
 
 	if reg.Len() == 0 {
-		reg.Register("mock", provider.NewMock())
-		logger.Info("no providers configured, using mock")
+		// In dev (no real providers configured) register the same mock
+		// instance under every known backend name. resolveBackend picks
+		// "incus" or "firecracker" from the image ref alone, so without
+		// these aliases any UI preset would 500 with `provider
+		// "incus"/"firecracker" not available` — see
+		// internal/service/sandbox.go:resolveBackend and
+		// internal/provider/registry.go:resolve. This branch only runs
+		// when neither --incus-socket nor --firecracker-bin is set, so
+		// production behavior is unchanged.
+		mock := provider.NewMock()
+		reg.Register("mock", mock)
+		reg.Register("incus", mock)
+		reg.Register("firecracker", mock)
+		logger.Info("no providers configured, using mock (aliased as incus/firecracker)")
 	}
 
 	// Set default backend: incus > firecracker > mock.
@@ -168,21 +220,34 @@ func run(cfg config) error {
 	sessSvc := service.NewSessionService(
 		store.SessionStore(), store.SandboxStore(), prov, bus,
 	)
+	sbxSvc.SetSessionService(sessSvc)
 	opsSvc := service.NewOperationService(store.OperationStore(), disp)
+
+	// Ensure a default project exists so the UI is usable immediately.
+	if _, err := projSvc.GetByName(context.Background(), "default"); err != nil {
+		if _, createErr := projSvc.Create(context.Background(), "default", nil); createErr != nil {
+			logger.Warn("could not create default project", "error", createErr)
+		} else {
+			logger.Info("created default project")
+		}
+	}
 
 	// API server
 	srv := api.NewServer(api.ServerConfig{
-		Projects:   projSvc,
-		Sandboxes:  sbxSvc,
-		Snapshots:  snapSvc,
-		Images:     imgSvc,
-		Sessions:   sessSvc,
-		Operations: opsSvc,
-		Provider:   prov,
-		Events:     bus,
-		Ports:      store.PortBindingStore(),
-		AuthToken:  cfg.authToken,
-		Logger:     logger,
+		Projects:     projSvc,
+		Sandboxes:    sbxSvc,
+		Snapshots:    snapSvc,
+		Images:       imgSvc,
+		Sessions:     sessSvc,
+		Operations:   opsSvc,
+		Provider:     prov,
+		Events:       bus,
+		Ports:        store.PortBindingStore(),
+		AuthToken:    cfg.authToken,
+		Logger:       logger,
+		UISessionKey: sessionKey,
+		UIHandlers:   uiHandlers,
+		UIAssets:     webui.Assets,
 	})
 
 	// Start dispatcher and GC

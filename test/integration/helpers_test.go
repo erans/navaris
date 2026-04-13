@@ -55,6 +55,7 @@ func waitOpts() *client.WaitOptions {
 // --- Test scaffolding helpers ---
 
 // createTestProject creates a project with a unique name and registers cleanup.
+// The server cascades sandbox/session/snapshot deletes via FK ON DELETE CASCADE.
 func createTestProject(t *testing.T, c *client.Client) *client.Project {
 	t.Helper()
 	ctx := context.Background()
@@ -67,7 +68,21 @@ func createTestProject(t *testing.T, c *client.Client) *client.Project {
 		t.Fatalf("create project: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := c.DeleteProject(context.Background(), proj.ProjectID); err != nil {
+		cleanCtx := context.Background()
+		// Best-effort destroy running sandboxes so the provider cleans up
+		// resources, then delete the project (cascade removes DB rows).
+		sandboxes, err := c.ListSandboxes(cleanCtx, proj.ProjectID, "")
+		if err == nil {
+			for _, sbx := range sandboxes {
+				if sbx.State != "destroyed" && sbx.State != "stopped" && sbx.State != "failed" {
+					c.StopSandboxAndWait(cleanCtx, sbx.SandboxID, client.StopSandboxRequest{}, waitOpts())
+				}
+				if sbx.State != "destroyed" {
+					c.DestroySandboxAndWait(cleanCtx, sbx.SandboxID, waitOpts())
+				}
+			}
+		}
+		if err := c.DeleteProject(cleanCtx, proj.ProjectID); err != nil {
 			t.Logf("warning: cleanup project %s: %v", proj.ProjectID, err)
 		}
 	})

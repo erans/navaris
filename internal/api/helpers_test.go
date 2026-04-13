@@ -65,6 +65,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	sessSvc := service.NewSessionService(
 		s.SessionStore(), s.SandboxStore(), mock, bus,
 	)
+	sbxSvc.SetSessionService(sessSvc)
 	opsSvc := service.NewOperationService(s.OperationStore(), disp)
 
 	srv := api.NewServer(api.ServerConfig{

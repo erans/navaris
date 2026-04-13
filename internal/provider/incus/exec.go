@@ -7,7 +7,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
+	"sync"
 
+	"github.com/gorilla/websocket"
 	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
@@ -101,11 +104,32 @@ func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef,
 		Width:       80,
 		Height:      24,
 	}
+	// Set TERM if the caller didn't provide one.
+	if execReq.Environment == nil {
+		execReq.Environment = map[string]string{}
+	}
+	if execReq.Environment["TERM"] == "" {
+		execReq.Environment["TERM"] = "xterm-256color"
+	}
+
+	// controlConn is set by the Control callback and used by Resize.
+	var controlConn *websocket.Conn
+	var controlMu sync.Mutex
 
 	args := incusclient.InstanceExecArgs{
 		Stdin:  stdinR,
 		Stdout: stdoutW,
 		Stderr: stdoutW, // PTY merges stderr into stdout.
+		Control: func(conn *websocket.Conn) {
+			controlMu.Lock()
+			controlConn = conn
+			controlMu.Unlock()
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		},
 	}
 
 	op, err := p.client.ExecInstance(ref.Ref, execReq, &args)
@@ -121,13 +145,19 @@ func (p *IncusProvider) ExecDetached(ctx context.Context, ref domain.BackendRef,
 		Stdin:  stdinW,
 		Stdout: stdoutR,
 		Resize: func(w, h int) error {
-			// Incus window resize is done via the control socket which
-			// is available through the operation's websocket.
-			// For now, this is a placeholder -- full resize requires
-			// the control websocket channel.
-			_ = w
-			_ = h
-			return nil
+			controlMu.Lock()
+			c := controlConn
+			controlMu.Unlock()
+			if c == nil {
+				return nil
+			}
+			return c.WriteJSON(incusapi.InstanceExecControl{
+				Command: "window-resize",
+				Args: map[string]string{
+					"width":  strconv.Itoa(w),
+					"height": strconv.Itoa(h),
+				},
+			})
 		},
 		Close: func() error {
 			stdinR.Close()
@@ -150,24 +180,47 @@ func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef
 
 	shell := req.Shell
 	if shell == "" {
-		shell = "/bin/sh"
+		shell = p.detectShell(ref)
 	}
 
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
 
+	cmd := req.Command
+	if len(cmd) == 0 {
+		cmd = []string{shell}
+	}
+
 	execReq := incusapi.InstanceExecPost{
-		Command:     []string{shell},
+		Command:     cmd,
 		WaitForWS:   true,
 		Interactive: true,
 		Width:       80,
 		Height:      24,
+		Environment: map[string]string{"TERM": "xterm-256color"},
 	}
+
+	// controlConn is set by the Control callback and used by Resize.
+	var controlConn *websocket.Conn
+	var controlMu sync.Mutex
 
 	args := incusclient.InstanceExecArgs{
 		Stdin:  stdinR,
 		Stdout: stdoutW,
 		Stderr: stdoutW,
+		Control: func(conn *websocket.Conn) {
+			controlMu.Lock()
+			controlConn = conn
+			controlMu.Unlock()
+			// Block until the peer closes the control socket. If we
+			// return early, the Incus client tears it down and Resize
+			// stops working.
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		},
 	}
 
 	op, err := p.client.ExecInstance(ref.Ref, execReq, &args)
@@ -194,9 +247,19 @@ func (p *IncusProvider) AttachSession(ctx context.Context, ref domain.BackendRef
 	handle := domain.SessionHandle{
 		Conn: conn,
 		Resize: func(w, h int) error {
-			_ = w
-			_ = h
-			return nil
+			controlMu.Lock()
+			c := controlConn
+			controlMu.Unlock()
+			if c == nil {
+				return nil // control socket not ready yet
+			}
+			return c.WriteJSON(incusapi.InstanceExecControl{
+				Command: "window-resize",
+				Args: map[string]string{
+					"width":  strconv.Itoa(w),
+					"height": strconv.Itoa(h),
+				},
+			})
 		},
 		Close: func() error {
 			conn.Close()
@@ -218,3 +281,30 @@ type sessionConn struct {
 func (c *sessionConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
 func (c *sessionConn) Write(p []byte) (int, error)  { return c.writer.Write(p) }
 func (c *sessionConn) Close() error                  { return c.closeFn() }
+
+// detectShell probes the container for a usable interactive shell.
+// It prefers /bin/bash and falls back to /bin/sh.
+func (p *IncusProvider) detectShell(ref domain.BackendRef) string {
+	stdout := new(bytes.Buffer)
+	execReq := incusapi.InstanceExecPost{
+		Command:     []string{"test", "-x", "/bin/bash"},
+		WaitForWS:   false,
+		Interactive: false,
+	}
+	args := incusclient.InstanceExecArgs{
+		Stdout: stdout,
+		Stderr: stdout,
+	}
+	op, err := p.client.ExecInstance(ref.Ref, execReq, &args)
+	if err != nil {
+		return "/bin/sh"
+	}
+	if err := op.Wait(); err != nil {
+		return "/bin/sh"
+	}
+	meta := op.Get()
+	if rc, ok := meta.Metadata["return"].(float64); ok && rc == 0 {
+		return "/bin/bash"
+	}
+	return "/bin/sh"
+}

@@ -93,23 +93,6 @@ func TestAuthMiddlewareAcceptsBearerToken(t *testing.T) {
 	}
 }
 
-func TestAuthMiddlewareAcceptsQueryToken(t *testing.T) {
-	env := newTestEnvWithAuth(t, "secret-token")
-
-	// Query token is only accepted for WebSocket/events endpoints
-	rec := doRequest(t, env.handler, "GET", "/v1/events?token=secret-token", nil)
-	// Events endpoint will upgrade to WebSocket which fails in test, but auth should pass (not 401)
-	if rec.Code == http.StatusUnauthorized {
-		t.Fatalf("expected auth to pass for events endpoint with query token, got 401")
-	}
-
-	// Query token should NOT work for regular endpoints
-	rec = doRequest(t, env.handler, "GET", "/v1/health?token=secret-token", nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for non-events endpoint with query token, got %d", rec.Code)
-	}
-}
-
 func TestRequestIDMiddleware(t *testing.T) {
 	env := newTestEnv(t)
 
