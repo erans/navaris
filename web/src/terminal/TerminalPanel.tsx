@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
@@ -29,6 +29,8 @@ const TERM_THEME = {
   selectionBackground: "#2e2e33",
 };
 
+const MAX_ATTEMPTS = 8;
+
 interface ReconnectState {
   attempt: number;
   timer: number | null;
@@ -53,6 +55,13 @@ export default function TerminalPanel({
   useEffect(() => {
     onStatusChangeRef.current = onStatusChange;
   });
+
+  const [status, setStatus] = useState<PanelStatus>("connecting");
+
+  const updateStatus = useCallback((s: PanelStatus) => {
+    setStatus(s);
+    onStatusChangeRef.current(s);
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -128,6 +137,10 @@ export default function TerminalPanel({
   const scheduleRetry = () => {
     if (reconnectRef.current.stopped) return;
     const attempt = reconnectRef.current.attempt;
+    if (attempt >= MAX_ATTEMPTS) {
+      updateStatus("failed");
+      return;
+    }
     reconnectRef.current.attempt = attempt + 1;
     reconnectRef.current.timer = window.setTimeout(() => {
       reconnectRef.current.timer = null;
@@ -137,7 +150,7 @@ export default function TerminalPanel({
 
   function connect() {
     if (reconnectRef.current.stopped) return;
-    onStatusChangeRef.current("connecting");
+    updateStatus("connecting");
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
       `${proto}//${window.location.host}/v1/sandboxes/${encodeURIComponent(sandboxId)}/attach?session=${encodeURIComponent(sessionId)}`,
@@ -152,7 +165,7 @@ export default function TerminalPanel({
         fit.fit();
         ws.send(encodeResizeMessage(term.cols, term.rows));
       }
-      onStatusChangeRef.current("connected");
+      updateStatus("connected");
     };
 
     ws.onmessage = (msg) => {
@@ -167,14 +180,14 @@ export default function TerminalPanel({
 
     ws.onclose = async () => {
       if (reconnectRef.current.stopped) return;
-      onStatusChangeRef.current("reconnecting");
+      updateStatus("reconnecting");
       try {
         const all = await listSessions(sandboxId);
         if (reconnectRef.current.stopped) return;
         const me = all.find((s) => s.SessionID === sessionId);
         if (!me || me.State === "exited" || me.State === "destroyed") {
           reconnectRef.current.stopped = true;
-          onStatusChangeRef.current("exited");
+          updateStatus("exited");
           return;
         }
       } catch {
@@ -186,6 +199,12 @@ export default function TerminalPanel({
     wsRef.current = ws;
   }
 
+  const manualReconnect = () => {
+    reconnectRef.current.attempt = 0;
+    reconnectRef.current.stopped = false;
+    connect();
+  };
+
   return (
     <div
       className={[
@@ -194,6 +213,22 @@ export default function TerminalPanel({
       ].join(" ")}
     >
       <div ref={containerRef} className="h-full w-full bg-black" />
+      {status === "failed" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+          <div className="flex flex-col items-center gap-3">
+            <span className="font-mono text-xs text-[var(--fg-secondary)]">
+              Disconnected
+            </span>
+            <button
+              type="button"
+              onClick={manualReconnect}
+              className="px-3 py-1.5 text-xs border border-[var(--border-subtle)] text-[var(--fg-primary)] hover:bg-[var(--bg-secondary)]"
+            >
+              Reconnect
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -307,4 +307,49 @@ describe("TerminalPanel", () => {
     expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
     vi.useRealTimers();
   });
+
+  it("transitions to failed after 8 attempts and reconnects on manual trigger", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "detached",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { onStatusChange, getByRole } = renderPanel();
+    // Each iteration closes the current ws WITHOUT opening it (simulates
+    // the server refusing the upgrade). ws.onopen is what would reset
+    // attempt to 0; without it, attempt increments monotonically. After
+    // 9 closes (attempts 0..8), scheduleRetry hits the cap and reports
+    // failed instead of creating a 10th ws.
+    for (let i = 0; i < 9; i++) {
+      const ws = MockWebSocket.instances[i];
+      ws.simulateClose();
+      await vi.runAllTimersAsync();
+    }
+
+    expect(onStatusChange).toHaveBeenCalledWith("failed");
+    expect(MockWebSocket.instances.length).toBe(9);
+
+    vi.useRealTimers();
+    const btn = getByRole("button", { name: /reconnect/i });
+    btn.click();
+    expect(MockWebSocket.instances.length).toBe(10);
+  });
 });
