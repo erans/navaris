@@ -382,4 +382,68 @@ describe("TerminalPanel", () => {
     fireEvent.click(btn);
     expect(MockWebSocket.instances.length).toBe(10);
   });
+
+  it("shows a reconnecting pill with attempt count while retrying", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "detached",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { findByText } = renderPanel();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+      MockWebSocket.instances[0].simulateClose();
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+    expect(await findByText(/reconnecting/i)).toBeInTheDocument();
+  });
+
+  it("shows 'Session ended' overlay when exited", async () => {
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "exited",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { findByText } = renderPanel();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+      MockWebSocket.instances[0].simulateClose();
+    });
+    expect(await findByText(/session ended/i)).toBeInTheDocument();
+  });
 });

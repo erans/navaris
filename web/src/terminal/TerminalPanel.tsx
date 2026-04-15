@@ -216,6 +216,23 @@ export default function TerminalPanel({
       ].join(" ")}
     >
       <div ref={containerRef} className="h-full w-full bg-black" />
+      {status === "reconnecting" && (
+        <div className="absolute top-2 right-2 px-2 py-0.5 text-[10px] font-mono text-[var(--fg-secondary)] bg-[var(--bg-primary)]/80 border border-[var(--border-subtle)]">
+          Reconnecting… ({reconnectRef.current.attempt}/{MAX_ATTEMPTS})
+        </div>
+      )}
+      {status === "exited" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+          <div className="flex flex-col items-center gap-1">
+            <span className="font-mono text-xs text-[var(--fg-primary)]">
+              Session ended
+            </span>
+            <span className="font-mono text-[10px] text-[var(--fg-muted)]">
+              Close the tab to remove it.
+            </span>
+          </div>
+        </div>
+      )}
       {status === "failed" && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70">
           <div className="flex flex-col items-center gap-3">
