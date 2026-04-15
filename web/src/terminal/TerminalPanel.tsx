@@ -118,6 +118,22 @@ export default function TerminalPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const delayFor = (attempt: number): number => {
+    const base = Math.min(1000 * Math.pow(2, attempt), 30_000);
+    const jitter = 0.8 + Math.random() * 0.4;
+    return base * jitter;
+  };
+
+  const scheduleRetry = () => {
+    if (reconnectRef.current.stopped) return;
+    const attempt = reconnectRef.current.attempt;
+    reconnectRef.current.attempt = attempt + 1;
+    reconnectRef.current.timer = window.setTimeout(() => {
+      reconnectRef.current.timer = null;
+      connect();
+    }, delayFor(attempt));
+  };
+
   function connect() {
     if (reconnectRef.current.stopped) return;
     onStatusChangeRef.current("connecting");
@@ -150,7 +166,9 @@ export default function TerminalPanel({
 
     ws.onclose = () => {
       if (reconnectRef.current.stopped) return;
-      // Reconnect handling lands in Task 3; for now, no-op.
+      onStatusChangeRef.current("reconnecting");
+      // This will gain exit detection in the next task. For now, always retry.
+      scheduleRetry();
     };
 
     wsRef.current = ws;

@@ -133,4 +133,79 @@ describe("TerminalPanel", () => {
     // triggered onclose (reconnect.stopped must gate it).
     expect(onStatusChange.mock.calls.length).toBe(callsBefore);
   });
+
+  it("retries on ws.close with exponential backoff + jitter", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5); // jitter = 1.0 exactly
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "detached",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { onStatusChange } = renderPanel();
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose();
+
+    // refetch listSessions runs async; flush microtasks + the 1s timer.
+    await vi.runAllTimersAsync();
+
+    expect(onStatusChange).toHaveBeenCalledWith("reconnecting");
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+    vi.useRealTimers();
+  });
+
+  it("resets attempt count on successful reconnect", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "detached",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderPanel();
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose();
+    await vi.runAllTimersAsync();
+    // A second ws is created by the retry; open + close it again. The
+    // third attempt should still be the first-delay (1s * jitter=1.0).
+    const second = MockWebSocket.instances[1];
+    second.simulateOpen();
+    second.simulateClose();
+    // Advance 1s; if attempt was reset, the retry fires at this time.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances.length).toBe(3);
+    vi.useRealTimers();
+  });
 });
