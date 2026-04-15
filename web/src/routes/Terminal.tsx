@@ -31,62 +31,88 @@ export default function Terminal() {
     if (!id) return;
     let cancelled = false;
     (async () => {
+      // Phase 1: fetch and render existing sessions (including exited) so the
+      // user sees them immediately, before the auto-create round-trip.
+      let labels: Map<string, number>;
+      let visible: Session[];
       try {
         const all = await listSessions(id);
 
         // Stable labels: assign from full history sorted by creation time.
         const sorted = [...all].sort((a, b) => a.CreatedAt.localeCompare(b.CreatedAt));
-        const labels = new Map<string, number>();
+        labels = new Map<string, number>();
         sorted.forEach((s, i) => labels.set(s.SessionID, i + 1));
 
         // visible includes exited sessions so the user sees "Session ended"
         // tabs until they close them manually.
-        let visible = all.filter((s) => s.State !== "destroyed");
-
-        const allExitedOrEmpty =
-          visible.length === 0 || visible.every((s) => s.State === "exited");
-        if (allExitedOrEmpty) {
-          const created = await createSession(id);
-          labels.set(created.SessionID, labels.size + 1);
-          visible = [...visible, created];
-        }
-        if (cancelled) return;
-
-        setSessionLabels(labels);
-        setSessions(visible);
-
-        // Initial active pick: remembered id wins if it still exists and
-        // isn't exited. Otherwise sort non-exited first, then LastAttachedAt
-        // desc, then take the head.
-        const remembered = readActive();
-        const rememberedMatch = remembered
-          ? visible.find((s) => s.SessionID === remembered && s.State !== "exited")
-          : undefined;
-        let pick: string | null = rememberedMatch?.SessionID ?? null;
-        if (!pick) {
-          const sortedPick = [...visible].sort((a, b) => {
-            const aExited = a.State === "exited" ? 1 : 0;
-            const bExited = b.State === "exited" ? 1 : 0;
-            if (aExited !== bExited) return aExited - bExited;
-            const aTime = a.LastAttachedAt ?? a.CreatedAt;
-            const bTime = b.LastAttachedAt ?? b.CreatedAt;
-            return bTime.localeCompare(aTime);
-          });
-          pick = sortedPick[0]?.SessionID ?? null;
-        }
-        setActiveSessionId(pick);
-        setLoading(false);
+        visible = all.filter((s) => s.State !== "destroyed");
       } catch {
         if (!cancelled) {
           setStatusFlash("Failed to load sessions");
           setLoading(false);
+        }
+        return;
+      }
+
+      if (cancelled) return;
+
+      // Render existing sessions now so the UI is responsive before the
+      // optional auto-create below.
+      setSessionLabels(labels);
+      setSessions(visible);
+
+      // Initial active pick: remembered id wins if it still exists and
+      // isn't exited. Otherwise sort non-exited first, then LastAttachedAt
+      // desc, then take the head.
+      const remembered = readActive();
+      const rememberedMatch = remembered
+        ? visible.find((s) => s.SessionID === remembered && s.State !== "exited")
+        : undefined;
+      let pick: string | null = rememberedMatch?.SessionID ?? null;
+      if (!pick) {
+        const sortedPick = [...visible].sort((a, b) => {
+          const aExited = a.State === "exited" ? 1 : 0;
+          const bExited = b.State === "exited" ? 1 : 0;
+          if (aExited !== bExited) return aExited - bExited;
+          const aTime = a.LastAttachedAt ?? a.CreatedAt;
+          const bTime = b.LastAttachedAt ?? b.CreatedAt;
+          return bTime.localeCompare(aTime);
+        });
+        pick = sortedPick[0]?.SessionID ?? null;
+      }
+      setActiveSessionId(pick);
+      setLoading(false);
+
+      // Phase 2: if all visible sessions are exited (or the list is empty),
+      // auto-create a fresh session. This is a best-effort step — if it fails
+      // the user still sees their exited session tabs.
+      const allExitedOrEmpty =
+        visible.length === 0 || visible.every((s) => s.State === "exited");
+      if (allExitedOrEmpty) {
+        try {
+          const created = await createSession(id);
+          if (cancelled) return;
+          const newLabel = labels.size + 1;
+          setSessionLabels((prev) => {
+            const next = new Map(prev);
+            next.set(created.SessionID, newLabel);
+            return next;
+          });
+          setSessions((prev) => [...prev, created]);
+          setActiveSessionId(created.SessionID);
+          writeActive(created.SessionID);
+        } catch {
+          if (!cancelled) {
+            setStatusFlash("Failed to create session");
+            setTimeout(() => setStatusFlash(null), 3000);
+          }
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [id, readActive]);
+  }, [id, readActive, writeActive]);
 
   const handleTabClick = useCallback(
     (s: Session) => {
@@ -139,6 +165,7 @@ export default function Terminal() {
   const confirmDestroy = useCallback(async () => {
     if (!destroyTarget) return;
     const sessionId = destroyTarget.SessionID;
+    const wasRemembered = readActive() === sessionId;
     try {
       await destroySession(sessionId);
     } catch {
@@ -149,13 +176,15 @@ export default function Terminal() {
       return;
     }
 
-    if (readActive() === sessionId) clearActive();
+    if (wasRemembered) clearActive();
 
     setSessions((prev) => {
       const next = prev.filter((s) => s.SessionID !== sessionId);
       if (activeSessionId === sessionId && next.length > 0) {
         setActiveSessionId(next[0].SessionID);
-        writeActive(next[0].SessionID);
+        // Only persist the fallback active session if the destroyed session
+        // was NOT the remembered one — we intentionally cleared that above.
+        if (!wasRemembered) writeActive(next[0].SessionID);
       }
       return next;
     });

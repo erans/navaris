@@ -186,4 +186,57 @@ describe("Terminal route — reload restore", () => {
     await user.click(screen.getByText("Session 2"));
     expect(localStorage.getItem("navaris.terminal.sbx_1.activeSession")).toBe("sess_2");
   });
+
+  it("renders exited sessions with always-visible close button", async () => {
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({ data: [sess("sess_1", "exited")] }),
+      ),
+    );
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("Session 1")).toBeInTheDocument());
+    const tab = screen.getByText("Session 1").closest("button")!;
+    expect(tab.className).toContain("opacity-60");
+    expect(tab.className).toContain("line-through");
+    // Close affordance (×) is present even though there's only one tab.
+    expect(tab.textContent).toContain("×");
+  });
+
+  it("auto-creates a session when all existing sessions are exited", async () => {
+    let createCalled = false;
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({ data: [sess("sess_old", "exited")] }),
+      ),
+      http.post("/v1/sandboxes/sbx_1/sessions", () => {
+        createCalled = true;
+        return HttpResponse.json(sess("sess_new"));
+      }),
+    );
+    renderRoute();
+    await waitFor(() => {
+      expect(createCalled).toBe(true);
+      expect(screen.getByText("Session 2")).toBeInTheDocument();
+    });
+  });
+
+  it("clears remembered tab when destroying the remembered session", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("navaris.terminal.sbx_1.activeSession", "sess_1");
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({ data: [sess("sess_1"), sess("sess_2")] }),
+      ),
+      http.delete("/v1/sessions/sess_1", () => new HttpResponse(null, { status: 204 })),
+    );
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("Session 1")).toBeInTheDocument());
+    const closeX = screen.getAllByText("×")[0];
+    await user.click(closeX);
+    const confirmBtn = await screen.findByRole("button", { name: "Close" });
+    await user.click(confirmBtn);
+    await waitFor(() =>
+      expect(localStorage.getItem("navaris.terminal.sbx_1.activeSession")).toBeNull(),
+    );
+  });
 });
