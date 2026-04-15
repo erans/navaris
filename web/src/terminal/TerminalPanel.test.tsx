@@ -79,22 +79,12 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
-let originalWS: typeof WebSocket;
 beforeEach(() => {
-  originalWS = globalThis.WebSocket;
-  Object.defineProperty(globalThis, "WebSocket", {
-    value: MockWebSocket,
-    writable: true,
-    configurable: true,
-  });
+  vi.stubGlobal("WebSocket", MockWebSocket);
   MockWebSocket.instances = [];
 });
 afterEach(() => {
-  Object.defineProperty(globalThis, "WebSocket", {
-    value: originalWS,
-    writable: true,
-    configurable: true,
-  });
+  vi.unstubAllGlobals();
 });
 
 function renderPanel(overrides: Partial<React.ComponentProps<typeof TerminalPanel>> = {}) {

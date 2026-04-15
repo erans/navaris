@@ -48,6 +48,10 @@ export default function TerminalPanel({
   const roRef = useRef<ResizeObserver | null>(null);
   const pasteHandlerRef = useRef<((e: ClipboardEvent) => void) | null>(null);
   const reconnectRef = useRef<ReconnectState>({ attempt: 0, timer: null, stopped: false });
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -116,7 +120,7 @@ export default function TerminalPanel({
 
   function connect() {
     if (reconnectRef.current.stopped) return;
-    onStatusChange("connecting");
+    onStatusChangeRef.current("connecting");
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
       `${proto}//${window.location.host}/v1/sandboxes/${encodeURIComponent(sandboxId)}/attach?session=${encodeURIComponent(sessionId)}`,
@@ -131,7 +135,7 @@ export default function TerminalPanel({
         fit.fit();
         ws.send(encodeResizeMessage(term.cols, term.rows));
       }
-      onStatusChange("connected");
+      onStatusChangeRef.current("connected");
     };
 
     ws.onmessage = (msg) => {
