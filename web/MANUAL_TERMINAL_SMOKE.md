@@ -44,3 +44,21 @@ against a live backend.
   tracked separately.
 - The terminal theme is hardcoded dark. Toggling the UI theme to light does
   not recolour the xterm canvas — addressed in a future task.
+
+## Reload & resilience smoke
+
+1. **Reload preserves tabs + active tab**
+   - Open 3 tabs. Click Session 2 so it's active.
+   - Reload the page.
+   - Verify: all 3 tabs present; Session 2 is the active tab.
+
+2. **Auto-reconnect on server blip**
+   - Attach to a session, run `while true; do date; sleep 1; done`.
+   - Stop `navarisd` for 10 seconds, then restart it.
+   - Verify: panel shows a small "Reconnecting…" pill during the outage; resumes streaming once `navarisd` is back; tab bar shows a yellow dot while reconnecting.
+
+3. **Exited session UI**
+   - Open 2 tabs. In Session 1, type `exit` to terminate the shell.
+   - Verify: Session 1's tab becomes greyed with a line-through; the panel shows "Session ended"; Session 2 is unaffected.
+   - Click Session 1's × to remove the tab.
+   - Verify: only Session 2 remains.
