@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, afterAll, vi } from "vitest";
 import React from "react";
-import { render } from "@testing-library/react";
+import { render, fireEvent, act } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 
@@ -114,7 +114,9 @@ describe("TerminalPanel", () => {
   it("reports connecting, then connected on ws.onopen", () => {
     const { onStatusChange } = renderPanel();
     expect(onStatusChange).toHaveBeenCalledWith("connecting");
-    MockWebSocket.instances[0].simulateOpen();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+    });
     expect(onStatusChange).toHaveBeenCalledWith("connected");
   });
 
@@ -125,9 +127,13 @@ describe("TerminalPanel", () => {
 
   it("closes the WebSocket on unmount without reporting further status", () => {
     const { onStatusChange, unmount } = renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+    });
     const callsBefore = onStatusChange.mock.calls.length;
-    unmount();
+    act(() => {
+      unmount();
+    });
     expect(MockWebSocket.instances[0].readyState).toBe(MockWebSocket.CLOSED);
     // After unmount, no further status should be reported from the
     // triggered onclose (reconnect.stopped must gate it).
@@ -159,11 +165,17 @@ describe("TerminalPanel", () => {
     );
 
     const { onStatusChange } = renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
-    MockWebSocket.instances[0].simulateClose();
-
-    // refetch listSessions runs async; flush microtasks + the 1s timer.
-    await vi.runAllTimersAsync();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+    });
+    await act(async () => {
+      MockWebSocket.instances[0].simulateClose();
+      // refetch listSessions runs async; flush microtasks then timers, then
+      // microtasks again to drain the fetch-response→scheduleRetry chain.
+      await Promise.resolve();
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+    });
 
     expect(onStatusChange).toHaveBeenCalledWith("reconnecting");
     expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
@@ -195,16 +207,22 @@ describe("TerminalPanel", () => {
     );
 
     renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
-    MockWebSocket.instances[0].simulateClose();
-    await vi.runAllTimersAsync();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+    });
+    await act(async () => {
+      MockWebSocket.instances[0].simulateClose();
+      await vi.runAllTimersAsync();
+    });
     // A second ws is created by the retry; open + close it again. The
     // third attempt should still be the first-delay (1s * jitter=1.0).
     const second = MockWebSocket.instances[1];
-    second.simulateOpen();
-    second.simulateClose();
-    // Advance 1s; if attempt was reset, the retry fires at this time.
-    await vi.advanceTimersByTimeAsync(1000);
+    await act(async () => {
+      second.simulateOpen();
+      second.simulateClose();
+      // Advance 1s; if attempt was reset, the retry fires at this time.
+      await vi.advanceTimersByTimeAsync(1000);
+    });
     expect(MockWebSocket.instances.length).toBe(3);
     vi.useRealTimers();
   });
@@ -232,10 +250,12 @@ describe("TerminalPanel", () => {
     );
 
     const { onStatusChange } = renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
-    MockWebSocket.instances[0].simulateClose();
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
+    await act(async () => {
+      MockWebSocket.instances[0].simulateOpen();
+      MockWebSocket.instances[0].simulateClose();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
     expect(onStatusChange).toHaveBeenCalledWith("exited");
     // No new WS instance created (retry suppressed).
     expect(MockWebSocket.instances).toHaveLength(1);
@@ -264,10 +284,12 @@ describe("TerminalPanel", () => {
     );
 
     const { onStatusChange } = renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
-    MockWebSocket.instances[0].simulateClose();
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
+    await act(async () => {
+      MockWebSocket.instances[0].simulateOpen();
+      MockWebSocket.instances[0].simulateClose();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
     expect(onStatusChange).toHaveBeenCalledWith("exited");
     expect(MockWebSocket.instances).toHaveLength(1);
   });
@@ -280,10 +302,12 @@ describe("TerminalPanel", () => {
     );
 
     const { onStatusChange } = renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
-    MockWebSocket.instances[0].simulateClose();
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
+    await act(async () => {
+      MockWebSocket.instances[0].simulateOpen();
+      MockWebSocket.instances[0].simulateClose();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
     expect(onStatusChange).toHaveBeenCalledWith("exited");
     expect(MockWebSocket.instances).toHaveLength(1);
   });
@@ -298,9 +322,13 @@ describe("TerminalPanel", () => {
     );
 
     const { onStatusChange } = renderPanel();
-    MockWebSocket.instances[0].simulateOpen();
-    MockWebSocket.instances[0].simulateClose();
-    await vi.runAllTimersAsync();
+    act(() => {
+      MockWebSocket.instances[0].simulateOpen();
+    });
+    await act(async () => {
+      MockWebSocket.instances[0].simulateClose();
+      await vi.runAllTimersAsync();
+    });
 
     expect(onStatusChange).toHaveBeenCalledWith("reconnecting");
     expect(onStatusChange).not.toHaveBeenCalledWith("exited");
@@ -340,8 +368,10 @@ describe("TerminalPanel", () => {
     // failed instead of creating a 10th ws.
     for (let i = 0; i < 9; i++) {
       const ws = MockWebSocket.instances[i];
-      ws.simulateClose();
-      await vi.runAllTimersAsync();
+      await act(async () => {
+        ws.simulateClose();
+        await vi.runAllTimersAsync();
+      });
     }
 
     expect(onStatusChange).toHaveBeenCalledWith("failed");
@@ -349,7 +379,7 @@ describe("TerminalPanel", () => {
 
     vi.useRealTimers();
     const btn = getByRole("button", { name: /reconnect/i });
-    btn.click();
+    fireEvent.click(btn);
     expect(MockWebSocket.instances.length).toBe(10);
   });
 });

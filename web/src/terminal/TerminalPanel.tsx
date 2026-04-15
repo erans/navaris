@@ -199,6 +199,9 @@ export default function TerminalPanel({
     wsRef.current = ws;
   }
 
+  // Only invoked via the "Reconnect" button in the failed-state overlay.
+  // stopped=true came from scheduleRetry hitting MAX_ATTEMPTS — not from
+  // exit detection — so resetting it here is safe.
   const manualReconnect = () => {
     reconnectRef.current.attempt = 0;
     reconnectRef.current.stopped = false;
