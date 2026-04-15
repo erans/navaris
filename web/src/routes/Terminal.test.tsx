@@ -70,7 +70,7 @@ function sess(id: string, state: "active" | "detached" | "exited" | "destroyed" 
     Backing: "tmux",
     Shell: "",
     State: state,
-    CreatedAt: `2026-04-14T00:00:0${id.slice(-1)}Z`,
+    CreatedAt: "2026-04-14T00:00:00Z",
     UpdatedAt: "2026-04-14T00:00:00Z",
     LastAttachedAt: attachedAt,
     IdleTimeout: null,
