@@ -5,7 +5,6 @@ import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import { encodeInputBytes, encodeResizeMessage } from "@/terminal/wire";
 import { listSessions } from "@/api/sandboxSessions";
-import type { SessionState } from "@/types/navaris";
 
 export type PanelStatus =
   | "connecting"
@@ -18,7 +17,6 @@ export interface TerminalPanelProps {
   sandboxId: string;
   sessionId: string;
   isVisible: boolean;
-  initialSessionState: SessionState;
   onStatusChange: (status: PanelStatus) => void;
 }
 
@@ -41,7 +39,6 @@ export default function TerminalPanel({
   sandboxId,
   sessionId,
   isVisible,
-  initialSessionState: _initialSessionState,
   onStatusChange,
 }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);

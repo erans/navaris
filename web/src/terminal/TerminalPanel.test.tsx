@@ -94,7 +94,6 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof TerminalPane
       sandboxId="sbx_1"
       sessionId="sess_1"
       isVisible={true}
-      initialSessionState="active"
       onStatusChange={onStatusChange}
       {...overrides}
     />,

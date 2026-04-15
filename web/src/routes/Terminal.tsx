@@ -319,7 +319,6 @@ export default function Terminal() {
           sandboxId={id!}
           sessionId={s.SessionID}
           isVisible={s.SessionID === activeSessionId}
-          initialSessionState={s.State}
           onStatusChange={(st) => handlePanelStatus(s.SessionID, st)}
         />
       ))}
