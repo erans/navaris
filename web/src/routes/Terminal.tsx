@@ -91,7 +91,7 @@ export default function Terminal() {
   const handleTabClick = useCallback(
     (s: Session) => {
       setActiveSessionId(s.SessionID);
-      writeActive(s.SessionID);
+      if (s.State !== "exited") writeActive(s.SessionID);
     },
     [writeActive],
   );
@@ -108,7 +108,8 @@ export default function Terminal() {
   );
 
   const handleNewSession = useCallback(async () => {
-    if (!id || sessions.length >= MAX_UI_SESSIONS) return;
+    const liveCount = sessions.filter((s) => s.State !== "exited").length;
+    if (!id || liveCount >= MAX_UI_SESSIONS) return;
     try {
       const created = await createSession(id);
       setSessionLabels((prev) => {
@@ -123,7 +124,7 @@ export default function Terminal() {
       setStatusFlash("Failed to create session");
       setTimeout(() => setStatusFlash(null), 3000);
     }
-  }, [id, sessions.length, writeActive]);
+  }, [id, sessions, writeActive]);
 
   const openDestroyDialog = useCallback((s: Session) => {
     setDestroyTarget(s);
@@ -266,7 +267,7 @@ export default function Terminal() {
             </button>
           );
         })}
-        {sessions.length < MAX_UI_SESSIONS && (
+        {sessions.filter((s) => s.State !== "exited").length < MAX_UI_SESSIONS && (
           <button
             type="button"
             onClick={handleNewSession}
