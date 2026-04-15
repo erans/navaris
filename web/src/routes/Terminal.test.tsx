@@ -192,6 +192,12 @@ describe("Terminal route — reload restore", () => {
       http.get("/v1/sandboxes/sbx_1/sessions", () =>
         HttpResponse.json({ data: [sess("sess_1", "exited")] }),
       ),
+      // All-exited triggers Phase 2 auto-create. Stub it here so MSW doesn't
+      // log an "unhandled request" error — the 500 is fine because Phase 2
+      // failures are caught silently and the exited tab still renders.
+      http.post("/v1/sandboxes/sbx_1/sessions", () =>
+        new HttpResponse(null, { status: 500 }),
+      ),
     );
     renderRoute();
     await waitFor(() => expect(screen.getByText("Session 1")).toBeInTheDocument());
