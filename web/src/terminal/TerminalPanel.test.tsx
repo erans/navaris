@@ -241,6 +241,37 @@ describe("TerminalPanel", () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
+  it("transitions to exited when refetch shows session destroyed", async () => {
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "destroyed",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { onStatusChange } = renderPanel();
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onStatusChange).toHaveBeenCalledWith("exited");
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
   it("transitions to exited when session missing from list", async () => {
     server.use(
       http.get("/v1/sandboxes/sbx_1/sessions", () =>
