@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import { encodeInputBytes, encodeResizeMessage } from "@/terminal/wire";
+import { listSessions } from "@/api/sandboxSessions";
 import type { SessionState } from "@/types/navaris";
 
 export type PanelStatus =
@@ -164,10 +165,21 @@ export default function TerminalPanel({
       // onclose always follows; state machine lives there.
     };
 
-    ws.onclose = () => {
+    ws.onclose = async () => {
       if (reconnectRef.current.stopped) return;
       onStatusChangeRef.current("reconnecting");
-      // This will gain exit detection in the next task. For now, always retry.
+      try {
+        const all = await listSessions(sandboxId);
+        if (reconnectRef.current.stopped) return;
+        const me = all.find((s) => s.SessionID === sessionId);
+        if (!me || me.State === "exited" || me.State === "destroyed") {
+          reconnectRef.current.stopped = true;
+          onStatusChangeRef.current("exited");
+          return;
+        }
+      } catch {
+        // Server unreachable — treat as network blip and retry.
+      }
       scheduleRetry();
     };
 

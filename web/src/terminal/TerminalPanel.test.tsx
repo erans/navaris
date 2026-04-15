@@ -208,4 +208,72 @@ describe("TerminalPanel", () => {
     expect(MockWebSocket.instances.length).toBe(3);
     vi.useRealTimers();
   });
+
+  it("transitions to exited when refetch shows session exited", async () => {
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({
+          data: [
+            {
+              SessionID: "sess_1",
+              SandboxID: "sbx_1",
+              Backing: "tmux",
+              Shell: "",
+              State: "exited",
+              CreatedAt: "2026-04-14T00:00:00Z",
+              UpdatedAt: "2026-04-14T00:00:00Z",
+              LastAttachedAt: null,
+              IdleTimeout: null,
+              Metadata: null,
+            },
+          ],
+        }),
+      ),
+    );
+
+    const { onStatusChange } = renderPanel();
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onStatusChange).toHaveBeenCalledWith("exited");
+    // No new WS instance created (retry suppressed).
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("transitions to exited when session missing from list", async () => {
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({ data: [] }),
+      ),
+    );
+
+    const { onStatusChange } = renderPanel();
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onStatusChange).toHaveBeenCalledWith("exited");
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("retries when refetch itself fails", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    server.use(
+      http.get("/v1/sandboxes/sbx_1/sessions", () =>
+        HttpResponse.json({ message: "boom" }, { status: 500 }),
+      ),
+    );
+
+    const { onStatusChange } = renderPanel();
+    MockWebSocket.instances[0].simulateOpen();
+    MockWebSocket.instances[0].simulateClose();
+    await vi.runAllTimersAsync();
+
+    expect(onStatusChange).toHaveBeenCalledWith("reconnecting");
+    expect(onStatusChange).not.toHaveBeenCalledWith("exited");
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+    vi.useRealTimers();
+  });
 });
