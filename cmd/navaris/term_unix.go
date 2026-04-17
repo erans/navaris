@@ -34,3 +34,5 @@ func signalStop(c chan os.Signal) {
 }
 
 func sigwinch() os.Signal { return syscall.SIGWINCH }
+
+func sigterm() os.Signal { return syscall.SIGTERM }

@@ -346,14 +346,15 @@ var sandboxAttachCmd = &cobra.Command{
 		}
 		defer conn.Close()
 
-		return runAttachLoop(conn)
+		return runAttachLoop(cmd.Context(), conn)
 	},
 }
 
 // runAttachLoop wires os.Stdin/os.Stdout to the attach connection. SIGWINCH
-// triggers a Resize frame. Returns when stdin closes, the WS closes, or the
-// context is cancelled.
-func runAttachLoop(conn *client.AttachConn) error {
+// triggers a Resize frame. SIGINT/SIGTERM cancel the context, which closes
+// the connection cleanly so the deferred termRestore runs. Returns when
+// stdin closes, the WS closes, or a signal cancels the context.
+func runAttachLoop(ctx context.Context, conn *client.AttachConn) error {
 	stdin := int(os.Stdin.Fd())
 	oldState, err := termSetRaw(stdin)
 	if err != nil {
@@ -361,21 +362,37 @@ func runAttachLoop(conn *client.AttachConn) error {
 	}
 	defer termRestore(stdin, oldState)
 
-	if cols, rows, err := termSize(stdin); err == nil {
-		_ = conn.Resize(cols, rows)
-	}
+	// Install signal handlers BEFORE the initial resize so a SIGWINCH that
+	// fires during startup isn't dropped, and so SIGINT from this point on
+	// triggers a clean shutdown path that runs deferred termRestore.
+	signals := make(chan os.Signal, 1)
+	signalNotify(signals, sigwinch(), os.Interrupt, sigterm())
+	defer signalStop(signals)
 
-	winch := make(chan os.Signal, 1)
-	signalNotify(winch, sigwinch())
-	defer signalStop(winch)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	go func() {
-		for range winch {
-			if cols, rows, err := termSize(stdin); err == nil {
-				_ = conn.Resize(cols, rows)
+		for sig := range signals {
+			switch sig {
+			case sigwinch():
+				if cols, rows, err := termSize(stdin); err == nil {
+					_ = conn.Resize(cols, rows)
+				}
+			case os.Interrupt, sigterm():
+				cancel()
+				return
 			}
 		}
 	}()
 
+	if cols, rows, err := termSize(stdin); err == nil {
+		_ = conn.Resize(cols, rows)
+	}
+
+	// Note: this goroutine leaks until process exit if the WS closes first
+	// (no portable way to interrupt a blocking os.Stdin.Read). Acceptable
+	// for a short-lived CLI process.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -391,6 +408,13 @@ func runAttachLoop(conn *client.AttachConn) error {
 		}
 	}()
 
+	// Context cancellation closes the conn, which surfaces as a Read error
+	// and exits the main loop below.
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
 	buf := make([]byte, 16384)
 	for {
 		n, err := conn.Read(buf)
@@ -401,6 +425,11 @@ func runAttachLoop(conn *client.AttachConn) error {
 			return nil
 		}
 		if err != nil {
+			// On context-cancellation we closed the conn; treat that as a
+			// clean exit, not a failure.
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 	}
