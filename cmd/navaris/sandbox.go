@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -25,6 +27,7 @@ func init() {
 	sandboxCmd.AddCommand(sandboxDestroyCmd)
 	sandboxCmd.AddCommand(sandboxExecCmd)
 	sandboxCmd.AddCommand(sandboxWaitStateCmd)
+	sandboxCmd.AddCommand(sandboxAttachCmd)
 
 	sandboxCreateCmd.Flags().String("name", "", "Sandbox name")
 	sandboxCreateCmd.Flags().String("image", "", "Image ID (required)")
@@ -46,6 +49,10 @@ func init() {
 	sandboxWaitStateCmd.Flags().Duration("timeout", 60*time.Second, "Maximum time to wait")
 	sandboxWaitStateCmd.Flags().Duration("interval", 500*time.Millisecond, "Polling interval")
 	_ = sandboxWaitStateCmd.MarkFlagRequired("state")
+
+	sandboxAttachCmd.Flags().String("session", "", "Existing session ID to attach to (auto-creates one when empty)")
+	sandboxAttachCmd.Flags().String("shell", "bash", "Shell for auto-created session")
+	sandboxAttachCmd.Flags().String("backing", "tmux", "Backing for auto-created session: direct or tmux")
 }
 
 var sandboxCreateCmd = &cobra.Command{
@@ -308,4 +315,93 @@ func parseEnvFlags(items []string) (map[string]string, error) {
 		out[key] = kv[i+1:]
 	}
 	return out, nil
+}
+
+var sandboxAttachCmd = &cobra.Command{
+	Use:   "attach <sandbox-id>",
+	Short: "Attach a terminal to a sandbox session",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sandboxID := args[0]
+		sessionID, _ := cmd.Flags().GetString("session")
+		shell, _ := cmd.Flags().GetString("shell")
+		backing, _ := cmd.Flags().GetString("backing")
+
+		c := newClient(cmd)
+
+		if sessionID == "" {
+			s, err := c.CreateSession(cmd.Context(), sandboxID, client.CreateSessionRequest{
+				Shell:   shell,
+				Backing: backing,
+			})
+			if err != nil {
+				return fmt.Errorf("create session: %w", err)
+			}
+			sessionID = s.SessionID
+		}
+
+		conn, err := c.AttachSandbox(cmd.Context(), sandboxID, sessionID)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		return runAttachLoop(conn)
+	},
+}
+
+// runAttachLoop wires os.Stdin/os.Stdout to the attach connection. SIGWINCH
+// triggers a Resize frame. Returns when stdin closes, the WS closes, or the
+// context is cancelled.
+func runAttachLoop(conn *client.AttachConn) error {
+	stdin := int(os.Stdin.Fd())
+	oldState, err := termSetRaw(stdin)
+	if err != nil {
+		return fmt.Errorf("set raw mode: %w", err)
+	}
+	defer termRestore(stdin, oldState)
+
+	if cols, rows, err := termSize(stdin); err == nil {
+		_ = conn.Resize(cols, rows)
+	}
+
+	winch := make(chan os.Signal, 1)
+	signalNotify(winch, sigwinch())
+	defer signalStop(winch)
+	go func() {
+		for range winch {
+			if cols, rows, err := termSize(stdin); err == nil {
+				_ = conn.Resize(cols, rows)
+			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				if _, werr := conn.Write(buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	buf := make([]byte, 16384)
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			_, _ = os.Stdout.Write(buf[:n])
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
