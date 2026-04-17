@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/navaris/navaris/pkg/client"
 	"github.com/spf13/cobra"
@@ -169,8 +171,27 @@ var sandboxExecCmd = &cobra.Command{
 		}
 		command := args[1:]
 
+		envItems, _ := cmd.Flags().GetStringArray("env")
+		envs, err := parseEnvFlags(envItems)
+		if err != nil {
+			return err
+		}
+		workDir, _ := cmd.Flags().GetString("workdir")
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+
+		ctx := cmd.Context()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+
 		c := newClient(cmd)
-		resp, err := c.Exec(cmd.Context(), sandboxID, client.ExecRequest{Command: command})
+		resp, err := c.Exec(ctx, sandboxID, client.ExecRequest{
+			Command: command,
+			Env:     envs,
+			WorkDir: workDir,
+		})
 		if err != nil {
 			return err
 		}
@@ -189,6 +210,28 @@ var sandboxExecCmd = &cobra.Command{
 	},
 }
 
+// parseEnvFlags converts ["KEY=value", ...] into a map. The first '=' is the
+// separator so values can contain additional '=' characters. Returns an error
+// for entries without '=' or with empty keys.
+func parseEnvFlags(items []string) (map[string]string, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(items))
+	for _, kv := range items {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			return nil, fmt.Errorf("--env %q: missing '=' separator", kv)
+		}
+		key := kv[:i]
+		if key == "" {
+			return nil, fmt.Errorf("--env %q: empty key", kv)
+		}
+		out[key] = kv[i+1:]
+	}
+	return out, nil
+}
+
 func init() {
 	sandboxCreateCmd.Flags().String("name", "", "Sandbox name")
 	sandboxCreateCmd.Flags().String("image", "", "Image ID (required)")
@@ -201,4 +244,8 @@ func init() {
 	addWaitFlags(sandboxStartCmd)
 	addWaitFlags(sandboxStopCmd)
 	addWaitFlags(sandboxDestroyCmd)
+
+	sandboxExecCmd.Flags().StringArray("env", nil, "Environment variable KEY=VAL (repeatable)")
+	sandboxExecCmd.Flags().String("workdir", "", "Working directory inside the sandbox")
+	sandboxExecCmd.Flags().Duration("timeout", 0, "Timeout for the command (e.g. 30s, 5m); 0 = no timeout")
 }
