@@ -2,10 +2,16 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/navaris/navaris/pkg/client"
+)
+
+var (
+	errOperationFailed    = errors.New("operation failed")
+	errOperationCancelled = errors.New("operation cancelled")
 )
 
 // progressResponse is the shape returned when a per-tool timeout elapses but
@@ -32,30 +38,38 @@ func waitForOpAndFetch(
 	timeout time.Duration,
 	fetch func() (any, error),
 ) (any, error) {
+	if op == nil {
+		return nil, errors.New("waitForOpAndFetch: nil operation")
+	}
 	if op.State == client.OpSucceeded {
 		return fetch()
 	}
 	if op.State == client.OpFailed {
-		return nil, fmt.Errorf("operation %s failed: %s", op.OperationID, op.ErrorText)
+		return nil, fmt.Errorf("%w: %s: %s", errOperationFailed, op.OperationID, op.ErrorText)
 	}
 	if op.State == client.OpCancelled {
-		return nil, fmt.Errorf("operation %s was cancelled", op.OperationID)
+		return nil, fmt.Errorf("%w: %s", errOperationCancelled, op.OperationID)
 	}
 
 	final, err := c.WaitForOperation(ctx, op.OperationID, &client.WaitOptions{Timeout: timeout})
 	if err != nil {
-		// Treat timeout as in-progress, not an error.
-		return progressResponse{
-			OperationID: op.OperationID,
-			Status:      "running",
-			Note:        "still in progress, poll operation_get",
-		}, nil
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return progressResponse{
+				OperationID: op.OperationID,
+				Status:      "running",
+				Note:        "still in progress, poll operation_get",
+			}, nil
+		}
+		return nil, fmt.Errorf("wait for operation %s: %w", op.OperationID, err)
+	}
+	if final == nil {
+		return nil, fmt.Errorf("wait for operation %s: client returned nil operation", op.OperationID)
 	}
 	if final.State == client.OpFailed {
-		return nil, fmt.Errorf("operation %s failed: %s", final.OperationID, final.ErrorText)
+		return nil, fmt.Errorf("%w: %s: %s", errOperationFailed, final.OperationID, final.ErrorText)
 	}
 	if final.State == client.OpCancelled {
-		return nil, fmt.Errorf("operation %s was cancelled", final.OperationID)
+		return nil, fmt.Errorf("%w: %s", errOperationCancelled, final.OperationID)
 	}
 	return fetch()
 }
@@ -63,11 +77,14 @@ func waitForOpAndFetch(
 // resolveTimeout converts an agent-supplied timeout_seconds (0 = use default)
 // into a time.Duration, capped at maxTimeout.
 func resolveTimeout(seconds int, defaultDur, maxDur time.Duration) time.Duration {
+	if defaultDur > maxDur {
+		defaultDur = maxDur
+	}
 	if seconds <= 0 {
 		return defaultDur
 	}
 	d := time.Duration(seconds) * time.Second
-	if d > maxDur {
+	if d <= 0 || d > maxDur {
 		return maxDur
 	}
 	return d
