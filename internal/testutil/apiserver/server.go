@@ -1,4 +1,8 @@
-package main_test
+// Package apiserver spins up an in-memory navaris API server for tests.
+// It pairs a SQLite in-memory store, the mock provider, a real worker
+// dispatcher, and the actual HTTP handlers — letting tests exercise the
+// full HTTP path without a real provider backend.
+package apiserver
 
 import (
 	"fmt"
@@ -15,12 +19,15 @@ import (
 	"github.com/navaris/navaris/internal/worker"
 )
 
-var testDBCounter atomic.Int64
+var dbCounter atomic.Int64
 
-func startCLITestServer(t *testing.T) (string, *worker.Dispatcher) {
+// New starts an in-memory navaris API server and returns its base URL plus
+// the worker dispatcher (handy for callers that want to call WaitIdle).
+// All resources are torn down via t.Cleanup.
+func New(t *testing.T) (baseURL string, disp *worker.Dispatcher) {
 	t.Helper()
 
-	dsn := fmt.Sprintf("file:clitest%d?mode=memory&cache=shared", testDBCounter.Add(1))
+	dsn := fmt.Sprintf("file:navtest%d?mode=memory&cache=shared", dbCounter.Add(1))
 	store, err := sqlite.Open(dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +36,7 @@ func startCLITestServer(t *testing.T) (string, *worker.Dispatcher) {
 
 	mock := provider.NewMock()
 	bus := eventbus.New(64)
-	disp := worker.NewDispatcher(store.OperationStore(), bus, 4)
+	disp = worker.NewDispatcher(store.OperationStore(), bus, 4)
 	disp.Start()
 	t.Cleanup(func() { disp.Stop() })
 
@@ -70,7 +77,7 @@ func startCLITestServer(t *testing.T) (string, *worker.Dispatcher) {
 	}
 
 	httpSrv := &http.Server{Handler: srv.Handler()}
-	go httpSrv.Serve(ln)
+	go httpSrv.Serve(ln) //nolint:errcheck
 	t.Cleanup(func() { httpSrv.Close() })
 
 	return fmt.Sprintf("http://%s", ln.Addr().String()), disp
