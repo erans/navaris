@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 	"github.com/spf13/cobra"
@@ -23,6 +24,7 @@ func init() {
 	sandboxCmd.AddCommand(sandboxStopCmd)
 	sandboxCmd.AddCommand(sandboxDestroyCmd)
 	sandboxCmd.AddCommand(sandboxExecCmd)
+	sandboxCmd.AddCommand(sandboxWaitStateCmd)
 }
 
 var sandboxCreateCmd = &cobra.Command{
@@ -210,6 +212,57 @@ var sandboxExecCmd = &cobra.Command{
 	},
 }
 
+// PollSandboxState polls c.GetSandbox until the sandbox reaches the target
+// state or the context expires. interval is the delay between polls.
+func PollSandboxState(ctx context.Context, c *client.Client, sandboxID, state string, interval time.Duration) (*client.Sandbox, error) {
+	for {
+		sbx, err := c.GetSandbox(ctx, sandboxID)
+		if err != nil {
+			return nil, err
+		}
+		if sbx.State == state {
+			return sbx, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for sandbox %s to reach state %q: %w", sandboxID, state, ctx.Err())
+		case <-time.After(interval):
+		}
+	}
+}
+
+var sandboxWaitStateCmd = &cobra.Command{
+	Use:   "wait-state <sandbox-id>",
+	Short: "Block until a sandbox reaches a target state",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		state, _ := cmd.Flags().GetString("state")
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		interval, _ := cmd.Flags().GetDuration("interval")
+
+		if state == "" {
+			return fmt.Errorf("--state is required")
+		}
+
+		ctx := cmd.Context()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+
+		c := newClient(cmd)
+		sbx, err := PollSandboxState(ctx, c, args[0], state, interval)
+		if err != nil {
+			return err
+		}
+		printResult(sbx, []string{"SANDBOX_ID", "STATE"}, func() [][]string {
+			return [][]string{{sbx.SandboxID, sbx.State}}
+		})
+		return nil
+	},
+}
+
 // parseEnvFlags converts ["KEY=value", ...] into a map. The first '=' is the
 // separator so values can contain additional '=' characters. Returns an error
 // for entries without '=' or with empty keys.
@@ -248,4 +301,9 @@ func init() {
 	sandboxExecCmd.Flags().StringArray("env", nil, "Environment variable KEY=VAL (repeatable)")
 	sandboxExecCmd.Flags().String("workdir", "", "Working directory inside the sandbox")
 	sandboxExecCmd.Flags().Duration("timeout", 0, "Timeout for the command (e.g. 30s, 5m); 0 = no timeout")
+
+	sandboxWaitStateCmd.Flags().String("state", "", "Target sandbox state (required) e.g. running, stopped, destroyed")
+	sandboxWaitStateCmd.Flags().Duration("timeout", 60*time.Second, "Maximum time to wait")
+	sandboxWaitStateCmd.Flags().Duration("interval", 500*time.Millisecond, "Polling interval")
+	_ = sandboxWaitStateCmd.MarkFlagRequired("state")
 }
