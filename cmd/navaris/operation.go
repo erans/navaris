@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/navaris/navaris/pkg/client"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,8 @@ func init() {
 	operationCmd.AddCommand(operationListCmd)
 	operationCmd.AddCommand(operationGetCmd)
 	operationCmd.AddCommand(operationCancelCmd)
+	operationCmd.AddCommand(operationWaitCmd)
+	operationWaitCmd.Flags().Duration("timeout", client.DefaultWaitTimeout, "Maximum time to wait for terminal state")
 }
 
 var operationListCmd = &cobra.Command{
@@ -82,6 +85,34 @@ var operationCancelCmd = &cobra.Command{
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Operation %s cancelled\n", args[0])
+		return nil
+	},
+}
+
+var operationWaitCmd = &cobra.Command{
+	Use:   "wait <operation-id>",
+	Short: "Wait for an operation to reach a terminal state",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		c := newClient(cmd)
+		op, err := c.WaitForOperation(cmd.Context(), args[0], &client.WaitOptions{Timeout: timeout})
+		if err != nil {
+			return err
+		}
+		switch op.State {
+		case client.OpFailed:
+			return fmt.Errorf("operation %s failed: %s", op.OperationID, op.ErrorText)
+		case client.OpCancelled:
+			return fmt.Errorf("operation %s was cancelled", op.OperationID)
+		}
+		fin := "-"
+		if op.FinishedAt != nil {
+			fin = op.FinishedAt.Format(time.RFC3339)
+		}
+		printResult(op, []string{"OPERATION_ID", "TYPE", "STATE", "RESOURCE", "FINISHED_AT"}, func() [][]string {
+			return [][]string{{op.OperationID, op.Type, string(op.State), op.ResourceID, fin}}
+		})
 		return nil
 	},
 }
