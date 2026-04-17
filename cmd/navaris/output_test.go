@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/navaris/navaris/pkg/client"
 )
 
 // captureStdout temporarily redirects os.Stdout, runs fn, returns captured output.
@@ -25,8 +27,14 @@ func captureStdout(t *testing.T, fn func()) string {
 		done <- buf.String()
 	}()
 
+	defer func() {
+		if p := recover(); p != nil {
+			_ = w.Close()
+			panic(p) // re-raise so the test still fails
+		}
+	}()
 	fn()
-	w.Close()
+	_ = w.Close()
 	return <-done
 }
 
@@ -64,5 +72,29 @@ func TestIsQuiet_TrueWhenFlagSet(t *testing.T) {
 
 	if !isQuiet() {
 		t.Error("expected isQuiet() == true after --quiet=true")
+	}
+}
+
+func TestResourceID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"sandbox", &client.Sandbox{SandboxID: "sbx-1"}, "sbx-1"},
+		{"session", &client.Session{SessionID: "ses-1"}, "ses-1"},
+		{"snapshot", &client.Snapshot{SnapshotID: "snap-1"}, "snap-1"},
+		{"image", &client.BaseImage{ImageID: "img-1"}, "img-1"},
+		{"project", &client.Project{ProjectID: "prj-1"}, "prj-1"},
+		{"operation", &client.Operation{OperationID: "op-1"}, "op-1"},
+		{"unknown_string", "hello", ""},
+		{"nil", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resourceID(tc.in); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

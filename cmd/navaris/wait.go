@@ -71,6 +71,14 @@ func handleOperation(
 		return nil
 	}
 
+	if isQuiet() && !isJSONOutput() {
+		id := final.ResourceID
+		if id == "" {
+			id = final.OperationID
+		}
+		printQuietIDs([]string{id})
+		return nil
+	}
 	printResult(final, []string{"OPERATION", "TYPE", "STATE", "RESOURCE"}, func() [][]string {
 		fin := "-"
 		if final.FinishedAt != nil {
