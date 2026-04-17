@@ -25,6 +25,27 @@ func init() {
 	sandboxCmd.AddCommand(sandboxDestroyCmd)
 	sandboxCmd.AddCommand(sandboxExecCmd)
 	sandboxCmd.AddCommand(sandboxWaitStateCmd)
+
+	sandboxCreateCmd.Flags().String("name", "", "Sandbox name")
+	sandboxCreateCmd.Flags().String("image", "", "Image ID (required)")
+	_ = sandboxCreateCmd.MarkFlagRequired("image")
+	sandboxCreateCmd.Flags().Int("cpu", 0, "CPU limit")
+	sandboxCreateCmd.Flags().Int("memory", 0, "Memory limit in MB")
+	addWaitFlags(sandboxCreateCmd)
+
+	sandboxStopCmd.Flags().Bool("force", false, "Force stop the sandbox")
+	addWaitFlags(sandboxStartCmd)
+	addWaitFlags(sandboxStopCmd)
+	addWaitFlags(sandboxDestroyCmd)
+
+	sandboxExecCmd.Flags().StringArray("env", nil, "Environment variable KEY=VAL (repeatable)")
+	sandboxExecCmd.Flags().String("workdir", "", "Working directory inside the sandbox")
+	sandboxExecCmd.Flags().Duration("timeout", 0, "Timeout for the command (e.g. 30s, 5m); 0 = no timeout")
+
+	sandboxWaitStateCmd.Flags().String("state", "", "Target sandbox state (required) e.g. running, stopped, destroyed")
+	sandboxWaitStateCmd.Flags().Duration("timeout", 60*time.Second, "Maximum time to wait")
+	sandboxWaitStateCmd.Flags().Duration("interval", 500*time.Millisecond, "Polling interval")
+	_ = sandboxWaitStateCmd.MarkFlagRequired("state")
 }
 
 var sandboxCreateCmd = &cobra.Command{
@@ -213,8 +234,12 @@ var sandboxExecCmd = &cobra.Command{
 }
 
 // PollSandboxState polls c.GetSandbox until the sandbox reaches the target
-// state or the context expires. interval is the delay between polls.
+// state or the context expires; any GetSandbox error (including transient 404s)
+// aborts immediately — retry policy is the caller's responsibility.
 func PollSandboxState(ctx context.Context, c *client.Client, sandboxID, state string, interval time.Duration) (*client.Sandbox, error) {
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
 	for {
 		sbx, err := c.GetSandbox(ctx, sandboxID)
 		if err != nil {
@@ -233,16 +258,12 @@ func PollSandboxState(ctx context.Context, c *client.Client, sandboxID, state st
 
 var sandboxWaitStateCmd = &cobra.Command{
 	Use:   "wait-state <sandbox-id>",
-	Short: "Block until a sandbox reaches a target state",
+	Short: "Poll until a sandbox reaches a target state or the timeout expires",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		state, _ := cmd.Flags().GetString("state")
 		timeout, _ := cmd.Flags().GetDuration("timeout")
 		interval, _ := cmd.Flags().GetDuration("interval")
-
-		if state == "" {
-			return fmt.Errorf("--state is required")
-		}
 
 		ctx := cmd.Context()
 		if timeout > 0 {
@@ -255,6 +276,10 @@ var sandboxWaitStateCmd = &cobra.Command{
 		sbx, err := PollSandboxState(ctx, c, args[0], state, interval)
 		if err != nil {
 			return err
+		}
+		if isQuiet() {
+			printQuietIDs([]string{sbx.SandboxID})
+			return nil
 		}
 		printResult(sbx, []string{"SANDBOX_ID", "STATE"}, func() [][]string {
 			return [][]string{{sbx.SandboxID, sbx.State}}
@@ -283,27 +308,4 @@ func parseEnvFlags(items []string) (map[string]string, error) {
 		out[key] = kv[i+1:]
 	}
 	return out, nil
-}
-
-func init() {
-	sandboxCreateCmd.Flags().String("name", "", "Sandbox name")
-	sandboxCreateCmd.Flags().String("image", "", "Image ID (required)")
-	_ = sandboxCreateCmd.MarkFlagRequired("image")
-	sandboxCreateCmd.Flags().Int("cpu", 0, "CPU limit")
-	sandboxCreateCmd.Flags().Int("memory", 0, "Memory limit in MB")
-	addWaitFlags(sandboxCreateCmd)
-
-	sandboxStopCmd.Flags().Bool("force", false, "Force stop the sandbox")
-	addWaitFlags(sandboxStartCmd)
-	addWaitFlags(sandboxStopCmd)
-	addWaitFlags(sandboxDestroyCmd)
-
-	sandboxExecCmd.Flags().StringArray("env", nil, "Environment variable KEY=VAL (repeatable)")
-	sandboxExecCmd.Flags().String("workdir", "", "Working directory inside the sandbox")
-	sandboxExecCmd.Flags().Duration("timeout", 0, "Timeout for the command (e.g. 30s, 5m); 0 = no timeout")
-
-	sandboxWaitStateCmd.Flags().String("state", "", "Target sandbox state (required) e.g. running, stopped, destroyed")
-	sandboxWaitStateCmd.Flags().Duration("timeout", 60*time.Second, "Maximum time to wait")
-	sandboxWaitStateCmd.Flags().Duration("interval", 500*time.Millisecond, "Polling interval")
-	_ = sandboxWaitStateCmd.MarkFlagRequired("state")
 }

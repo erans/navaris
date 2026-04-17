@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -62,7 +63,11 @@ func TestWaitState_TimesOutWhenStateNeverReached(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if _, err := PollSandboxState(ctx, c, op.ResourceID, "no-such-state", 100*time.Millisecond); err == nil {
-		t.Error("expected timeout error")
+	_, err = PollSandboxState(ctx, c, op.ResourceID, "no-such-state", 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected error wrapping context.DeadlineExceeded, got: %v", err)
 	}
 }
