@@ -15,7 +15,7 @@ import (
 // thin wrapper over WaitForOperation, so the integration is already covered
 // by client_test; this test pins the intended exit behavior.
 func TestOperationWait_PollsUntilTerminal(t *testing.T) {
-	apiURL, disp := apiserver.New(t)
+	apiURL, disp, _ := apiserver.New(t)
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
 
 	// Create a project + sandbox to get a real operation we can wait on.

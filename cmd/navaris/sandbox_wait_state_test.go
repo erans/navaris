@@ -11,7 +11,7 @@ import (
 )
 
 func TestWaitState_ReachesRunning(t *testing.T) {
-	apiURL, _ := apiserver.New(t)
+	apiURL, _, _ := apiserver.New(t)
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
 
 	proj, err := c.CreateProject(context.Background(), client.CreateProjectRequest{Name: "ws-test"})
@@ -42,7 +42,7 @@ func TestWaitState_ReachesRunning(t *testing.T) {
 }
 
 func TestWaitState_TimesOutWhenStateNeverReached(t *testing.T) {
-	apiURL, _ := apiserver.New(t)
+	apiURL, _, _ := apiserver.New(t)
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
 
 	proj, err := c.CreateProject(context.Background(), client.CreateProjectRequest{Name: "ws-test2"})

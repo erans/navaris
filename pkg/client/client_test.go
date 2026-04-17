@@ -11,7 +11,7 @@ import (
 )
 
 func TestSDKIntegration(t *testing.T) {
-	baseURL, disp := apiserver.New(t)
+	baseURL, disp, _ := apiserver.New(t)
 
 	c := client.NewClient(
 		client.WithURL(baseURL),

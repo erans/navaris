@@ -21,10 +21,11 @@ import (
 
 var dbCounter atomic.Int64
 
-// New starts an in-memory navaris API server and returns its base URL plus
-// the worker dispatcher (handy for callers that want to call WaitIdle).
+// New starts an in-memory navaris API server and returns its base URL, the
+// worker dispatcher (handy for callers that want to call WaitIdle), and the
+// mock provider so callers can override individual provider functions.
 // All resources are torn down via t.Cleanup.
-func New(t *testing.T) (baseURL string, disp *worker.Dispatcher) {
+func New(t *testing.T) (string, *worker.Dispatcher, *provider.MockProvider) {
 	t.Helper()
 
 	dsn := fmt.Sprintf("file:navtest%d?mode=memory&cache=shared", dbCounter.Add(1))
@@ -36,7 +37,7 @@ func New(t *testing.T) (baseURL string, disp *worker.Dispatcher) {
 
 	mock := provider.NewMock()
 	bus := eventbus.New(64)
-	disp = worker.NewDispatcher(store.OperationStore(), bus, 4)
+	disp := worker.NewDispatcher(store.OperationStore(), bus, 4)
 	disp.Start()
 	t.Cleanup(func() { disp.Stop() })
 
@@ -80,5 +81,5 @@ func New(t *testing.T) (baseURL string, disp *worker.Dispatcher) {
 	go httpSrv.Serve(ln) //nolint:errcheck
 	t.Cleanup(func() { httpSrv.Close() })
 
-	return fmt.Sprintf("http://%s", ln.Addr().String()), disp
+	return fmt.Sprintf("http://%s", ln.Addr().String()), disp, mock
 }
