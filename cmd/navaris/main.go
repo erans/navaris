@@ -20,6 +20,7 @@ func init() {
 	rootCmd.PersistentFlags().String("token", "", "Authentication token (env: NAVARIS_TOKEN)")
 	rootCmd.PersistentFlags().String("project", "", "Default project ID (env: NAVARIS_PROJECT)")
 	rootCmd.PersistentFlags().StringP("output", "o", "text", "Output format: json or text")
+	rootCmd.PersistentFlags().BoolP("quiet", "q", false, "Quiet output: with --output json, suppress non-data; with text, print only IDs")
 
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(sandboxCmd)
