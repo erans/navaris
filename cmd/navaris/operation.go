@@ -14,10 +14,11 @@ var operationCmd = &cobra.Command{
 }
 
 func init() {
-	operationCmd.AddCommand(operationListCmd)
-	operationCmd.AddCommand(operationGetCmd)
-	operationCmd.AddCommand(operationCancelCmd)
-	operationCmd.AddCommand(operationWaitCmd)
+	operationCmd.AddCommand(operationListCmd, operationGetCmd, operationCancelCmd, operationWaitCmd)
+
+	operationListCmd.Flags().String("sandbox", "", "Filter by sandbox ID")
+	operationListCmd.Flags().String("state", "", "Filter by state (pending, running, succeeded, failed, cancelled)")
+
 	operationWaitCmd.Flags().Duration("timeout", client.DefaultWaitTimeout, "Maximum time to wait for terminal state")
 }
 
@@ -106,6 +107,14 @@ var operationWaitCmd = &cobra.Command{
 		case client.OpCancelled:
 			return fmt.Errorf("operation %s was cancelled", op.OperationID)
 		}
+		if isQuiet() && !isJSONOutput() {
+			id := op.ResourceID
+			if id == "" {
+				id = op.OperationID
+			}
+			printQuietIDs([]string{id})
+			return nil
+		}
 		fin := "-"
 		if op.FinishedAt != nil {
 			fin = op.FinishedAt.Format(time.RFC3339)
@@ -115,9 +124,4 @@ var operationWaitCmd = &cobra.Command{
 		})
 		return nil
 	},
-}
-
-func init() {
-	operationListCmd.Flags().String("sandbox", "", "Filter by sandbox ID")
-	operationListCmd.Flags().String("state", "", "Filter by state (pending, running, succeeded, failed, cancelled)")
 }
