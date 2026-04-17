@@ -26,6 +26,15 @@ func TestNewServer_ScaffoldHasNoToolsYet(t *testing.T) {
 	}
 }
 
+func TestNewServer_PanicsWithoutClient(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when Options.Client is nil")
+		}
+	}()
+	_ = internalmcp.NewServer(internalmcp.Options{})
+}
+
 func TestNewServer_ReadOnlyParityInScaffold(t *testing.T) {
 	c := client.NewClient(client.WithURL("http://localhost:0"))
 	full := internalmcp.NewServer(internalmcp.Options{Client: c, ReadOnly: false})
@@ -43,7 +52,7 @@ func listToolNames(t *testing.T, s *mcpsdk.Server) []string {
 	t.Helper()
 	mc := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "x"}, nil)
 	srvT, clientT := mcpsdk.NewInMemoryTransports()
-	go func() { _ = s.Run(context.Background(), srvT) }()
+	go func() { _ = s.Run(t.Context(), srvT) }()
 	sess, err := mc.Connect(context.Background(), clientT, nil)
 	if err != nil {
 		t.Fatal(err)
