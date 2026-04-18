@@ -26,7 +26,6 @@ func register(s *mcpsdk.Server, opts Options) {
 
 // Stubs — each milestone fills these in as resources are added.
 func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options)   {}
-func registerSessionReadTools(s *mcpsdk.Server, opts Options)       {}
 func registerSessionMutatingTools(s *mcpsdk.Server, opts Options)   {}
 func registerSnapshotReadTools(s *mcpsdk.Server, opts Options)      {}
 func registerSnapshotMutatingTools(s *mcpsdk.Server, opts Options)  {}
