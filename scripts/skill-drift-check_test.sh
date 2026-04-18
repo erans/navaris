@@ -33,10 +33,16 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"; rm -f "$PWD/navaris-drift-test"' EXIT
 mkdir -p "$tmp/bad-skill"
 cp scripts/testdata/bad-skill/SKILL.md "$tmp/bad-skill/SKILL.md"
-if "$SCRIPT" "$tmp" >/dev/null 2>&1; then
+rc=0
+err=$("$SCRIPT" "$tmp" 2>&1 >/dev/null) || rc=$?
+if [ "${rc:-0}" -eq 0 ]; then
     echo "FAIL: drift check passed on the golden bad fixture (expected failure)"
     exit 1
 fi
-echo "OK: golden bad fixture fails drift check"
+if ! echo "$err" | grep -qF "frobnicate"; then
+    echo "FAIL: drift check failed for unexpected reason: $err"
+    exit 1
+fi
+echo "OK: golden bad fixture fails drift check (with the right error)"
 
 echo "PASS: drift detector tests"

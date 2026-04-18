@@ -6,6 +6,13 @@
 #
 # Env:
 #   NAVARIS   path to the navaris binary (default: ./navaris, built on the fly)
+#
+# Catches: removed/renamed top-level groups and removed/renamed subcommands.
+# Does NOT catch: flag-level drift (renamed/removed flags), changed flag types,
+# changed default values, or changes to flag short forms.
+# Limitation: the subverb regex ([a-z]{2,}...) still matches short prose words
+# (e.g. "is", "to") appearing after a group name; avoid embedding navaris group
+# names in prose sentences inside SKILL.md files.
 
 set -euo pipefail
 
@@ -15,11 +22,23 @@ if [ ! -d "$SKILLS_DIR" ]; then
     exit 2
 fi
 
+# Declare cleanup variables up front so the cleanup function can reference them
+# safely regardless of which code path runs.
+tmp=""
+auto_built_navaris=""
+
+cleanup() {
+    if [ -n "${tmp:-}" ]; then rm -f "$tmp"; fi
+    if [ -n "${auto_built_navaris:-}" ]; then rm -f "$auto_built_navaris"; fi
+}
+trap cleanup EXIT
+
 NAVARIS="${NAVARIS:-./navaris}"
 if [ ! -x "$NAVARIS" ]; then
     echo "building navaris CLI for drift check..." >&2
-    go build -o ./navaris ./cmd/navaris
-    NAVARIS="./navaris"
+    auto_built_navaris=$(mktemp -t navaris-drift-XXXXXX)
+    go build -o "$auto_built_navaris" ./cmd/navaris
+    NAVARIS="$auto_built_navaris"
 fi
 
 groups=(project sandbox snapshot session image operation port)
@@ -38,12 +57,21 @@ done
 # 2. Every `navaris <group> <subverb>` invocation mentioned in any SKILL.md
 #    must accept --help on the current CLI.
 tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
 
 # Regex anchored on the known groups — avoids false positives from prose like
 # "navaris uses..." or "navaris supports...".
-pat="navaris +(project|sandbox|snapshot|session|image|operation|port) +[a-z][a-z-]*"
+# Subverb must be ≥2 chars (and each hyphen-separated part ≥2 chars) to
+# reduce false matches on short prose words like "is", "a", "x".
+pat="navaris +(project|sandbox|snapshot|session|image|operation|port) +[a-z]{2,}([-][a-z]{2,})*"
+
+set +e
 grep -rhoE "$pat" "$SKILLS_DIR" | sort -u > "$tmp"
+rc=$?
+set -e
+if [ "$rc" -gt 1 ]; then
+    echo "drift: grep failed with exit $rc" >&2
+    exit "$rc"
+fi
 
 while read -r line; do
     [ -z "$line" ] && continue
