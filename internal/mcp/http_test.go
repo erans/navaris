@@ -92,7 +92,7 @@ func TestHTTPHandler_AcceptsBearerToken(t *testing.T) {
 // and a mutating tool (sandbox_create) to confirm the complete round-trip works.
 func TestHTTPHandler_MountedEndToEnd_ReadAndMutate(t *testing.T) {
 	const token = "test-token"
-	baseURL, _, _ := apiserver.New(t, apiserver.WithMCP(false))
+	baseURL, disp, _ := apiserver.New(t, apiserver.WithMCP(false))
 	mcpURL := baseURL + "/v1/mcp"
 
 	mc := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-mounted"}, nil)
@@ -195,6 +195,31 @@ func TestHTTPHandler_MountedEndToEnd_ReadAndMutate(t *testing.T) {
 	if opID == "" {
 		t.Errorf("expected OperationID in sandbox_create result, got %v", createObj)
 	}
+
+	// Wait for the dispatcher to drain so the async worker has fully committed
+	// the new sandbox to the store before we read it back.
+	disp.WaitIdle()
+
+	// sandbox_list on the same project must now return exactly one entry —
+	// proving the mutation side-effect is visible via the read tool.
+	listRes2, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name:      "sandbox_list",
+		Arguments: map[string]any{"project_id": pid},
+	})
+	if err != nil {
+		t.Fatalf("sandbox_list (post-create) call: %v", err)
+	}
+	if listRes2.IsError {
+		t.Fatalf("sandbox_list (post-create) tool error: %v", listRes2.Content)
+	}
+	listVal2 := decodeJSONResult(t, listRes2)
+	listArr2, ok := listVal2.([]any)
+	if !ok {
+		t.Fatalf("expected array from sandbox_list (post-create), got %T", listVal2)
+	}
+	if len(listArr2) == 0 {
+		t.Error("expected non-empty sandbox list after sandbox_create, got empty list")
+	}
 }
 
 // TestHTTPHandler_MountedEndToEnd_RejectsMissingBearer confirms that the
@@ -204,37 +229,38 @@ func TestHTTPHandler_MountedEndToEnd_RejectsMissingBearer(t *testing.T) {
 	baseURL, _, _ := apiserver.New(t, apiserver.WithMCP(false))
 	mcpURL := baseURL + "/v1/mcp"
 
-	// No Authorization header — must get 401.
-	req, err := http.NewRequest(http.MethodPost, mcpURL, bytes.NewBufferString("{}"))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do request (no auth): %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("no-auth: expected 401, got %d", resp.StatusCode)
+	cases := []struct {
+		name      string
+		setHeader func(*http.Request)
+	}{
+		{name: "no bearer", setHeader: func(*http.Request) {}},
+		{name: "wrong token", setHeader: func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer wrong-token")
+		}},
 	}
 
-	// Wrong token — must also get 401.
-	req2, err := http.NewRequest(http.MethodPost, mcpURL, bytes.NewBufferString("{}"))
-	if err != nil {
-		t.Fatalf("new request (wrong token): %v", err)
-	}
-	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("Authorization", "Bearer wrong-token")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, mcpURL, bytes.NewBufferString("{}"))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			tc.setHeader(req)
 
-	resp2, err := http.DefaultClient.Do(req2)
-	if err != nil {
-		t.Fatalf("do request (wrong token): %v", err)
-	}
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Errorf("wrong-token: expected 401, got %d", resp2.StatusCode)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("expected 401, got %d", resp.StatusCode)
+			}
+			if resp.Header.Get("WWW-Authenticate") == "" {
+				t.Error("expected WWW-Authenticate header on 401 response")
+			}
+		})
 	}
 }
 

@@ -66,6 +66,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			// 1. Bearer wins.
 			if bearer := extractBearerToken(r); bearer != "" {
 				if token == "" || bearer != token {
+					w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 					respondError(w, domain.ErrUnauthorized)
 					return
 				}
@@ -77,6 +78,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			if signer != nil {
 				if c, err := r.Cookie(webui.CookieName); err == nil && c.Value != "" {
 					if _, _, err := signer.Verify(c.Value); err != nil {
+						w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 						respondError(w, domain.ErrUnauthorized)
 						return
 					}
@@ -93,6 +95,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			if token != "" && isWebSocketRoute(r.URL.Path) {
 				if q := r.URL.Query().Get("token"); q != "" {
 					if q != token {
+						w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 						respondError(w, domain.ErrUnauthorized)
 						return
 					}
@@ -102,6 +105,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			}
 
 			// 3. Nothing → 401.
+			w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 			respondError(w, domain.ErrUnauthorized)
 		})
 	}
@@ -181,6 +185,14 @@ func (sc *statusCapture) Flush() {
 	if f, ok := sc.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Unwrap exposes the underlying ResponseWriter so http.NewResponseController
+// can reach helpers (SetWriteDeadline, EnableFullDuplex, etc.) that this
+// wrapper does not explicitly forward. Without Unwrap, the controller
+// silently no-ops those calls — see Go 1.20 ResponseController docs.
+func (sc *statusCapture) Unwrap() http.ResponseWriter {
+	return sc.ResponseWriter
 }
 
 // Hijack implements http.Hijacker so that WebSocket upgrades work when the
