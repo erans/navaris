@@ -181,7 +181,7 @@ Users run, in Claude Code:
 
 ```
 /plugin marketplace add erans/navaris
-/plugin install navaris-cli@erans/navaris
+/plugin install navaris-cli@navaris
 ```
 
 The `.claude-plugin/marketplace.json` in the repo root registers the marketplace; `.claude-plugin/plugin.json` declares the plugin and lists the 5 skills. Claude Code auto-loads the router whenever any of the 5 skills matches a user's request.
