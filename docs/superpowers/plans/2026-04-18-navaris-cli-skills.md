@@ -1071,18 +1071,18 @@ In Claude Code:
 
 ```
 /plugin marketplace add erans/navaris
-/plugin install navaris-cli@erans/navaris
+/plugin install navaris-cli@navaris
 ```
 
-The first command registers the marketplace entry; the second installs the plugin. Skills load automatically on navaris-related prompts.
+The first command registers the marketplace entry (takes the GitHub slug). The second installs the plugin (the `@navaris` suffix is the marketplace `name` field from `marketplace.json`, NOT the GitHub slug). Skills load automatically on navaris-related prompts.
 
 ## Uninstall
 
 ```
-/plugin uninstall navaris-cli
+/plugin uninstall navaris-cli@navaris
 ```
 
-Remove the marketplace entry with `/plugin marketplace remove erans/navaris` if you're done with it entirely.
+Remove the marketplace entry with `/plugin marketplace remove navaris` if you're done with it entirely (again, the marketplace `name`, not the GitHub slug).
 
 ## MCP vs skill pack
 
@@ -1132,7 +1132,7 @@ Navaris ships a Claude Code skill pack (`navaris-cli`) so you can ask Claude Cod
 
 ```
 /plugin marketplace add erans/navaris
-/plugin install navaris-cli@erans/navaris
+/plugin install navaris-cli@navaris
 ```
 
 See [docs/claude-skills.md](docs/claude-skills.md) for the full skill list, install/uninstall, and MCP-vs-skill tradeoffs.
