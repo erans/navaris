@@ -438,7 +438,7 @@ func TestSandboxExec_RunsCommand(t *testing.T) {
 }
 
 // TestNewServer_ReadOnly_HidesMutatingTools verifies the read-only mode hides
-// the sandbox lifecycle mutating tools added in M8.1.
+// the sandbox lifecycle and exec mutating tools.
 func TestNewServer_ReadOnly_HidesMutatingTools(t *testing.T) {
 	roSess, _ := startMCPTestServer(t, true)
 	tools, err := roSess.ListTools(t.Context(), nil)
@@ -449,7 +449,7 @@ func TestNewServer_ReadOnly_HidesMutatingTools(t *testing.T) {
 	for _, tl := range tools.Tools {
 		roSet[tl.Name] = struct{}{}
 	}
-	for _, name := range []string{"sandbox_create", "sandbox_start", "sandbox_stop", "sandbox_destroy"} {
+	for _, name := range []string{"sandbox_create", "sandbox_start", "sandbox_stop", "sandbox_destroy", "sandbox_exec"} {
 		if _, ok := roSet[name]; ok {
 			t.Errorf("mutating tool %q should be hidden in ReadOnly mode", name)
 		}
