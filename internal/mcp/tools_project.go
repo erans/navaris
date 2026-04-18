@@ -11,10 +11,10 @@ import (
 type projectListInput struct{}
 
 type projectGetInput struct {
-	ProjectID string `json:"project_id" jsonschema:"the project's ID"`
+	ProjectID string `json:"project_id" jsonschema:"ID of the project to fetch"`
 }
 
-func registerProjectToolsImpl(s *mcpsdk.Server, opts Options) {
+func registerProjectTools(s *mcpsdk.Server, opts Options) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "project_list",
 		Description: "List all projects in this navaris control plane.",

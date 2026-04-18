@@ -1,7 +1,6 @@
 package mcp_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -25,7 +24,7 @@ func startMCPTestServer(t *testing.T, readOnly bool) (*mcpsdk.ClientSession, str
 	srvT, clientT := mcpsdk.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), srvT) }()
 
-	sess, err := mc.Connect(context.Background(), clientT, nil)
+	sess, err := mc.Connect(t.Context(), clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +50,7 @@ func decodeJSONResult(t *testing.T, res *mcpsdk.CallToolResult) any {
 
 func TestProjectList_Empty(t *testing.T) {
 	sess, _ := startMCPTestServer(t, false)
-	res, err := sess.CallTool(context.Background(), &mcpsdk.CallToolParams{
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
 		Name:      "project_list",
 		Arguments: map[string]any{},
 	})
@@ -75,11 +74,11 @@ func TestProjectList_AfterCreate(t *testing.T) {
 	sess, apiURL := startMCPTestServer(t, false)
 
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
-	if _, err := c.CreateProject(context.Background(), client.CreateProjectRequest{Name: "p1"}); err != nil {
+	if _, err := c.CreateProject(t.Context(), client.CreateProjectRequest{Name: "p1"}); err != nil {
 		t.Fatal(err)
 	}
 
-	res, err := sess.CallTool(context.Background(), &mcpsdk.CallToolParams{
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
 		Name: "project_list",
 	})
 	if err != nil {
@@ -92,5 +91,37 @@ func TestProjectList_AfterCreate(t *testing.T) {
 	}
 	if len(arr) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(arr))
+	}
+}
+
+func TestProjectGet_Found(t *testing.T) {
+	sess, apiURL := startMCPTestServer(t, false)
+
+	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
+	created, err := c.CreateProject(t.Context(), client.CreateProjectRequest{Name: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name:      "project_get",
+		Arguments: map[string]any{"project_id": created.ProjectID},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+	got := decodeJSONResult(t, res)
+	obj, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("expected object result, got %T", got)
+	}
+	if gotID, _ := obj["ProjectID"].(string); gotID != created.ProjectID {
+		t.Errorf("ProjectID: got %q, want %q", gotID, created.ProjectID)
+	}
+	if gotName, _ := obj["Name"].(string); gotName != created.Name {
+		t.Errorf("Name: got %q, want %q", gotName, created.Name)
 	}
 }

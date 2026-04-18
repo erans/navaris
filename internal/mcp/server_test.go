@@ -1,7 +1,6 @@
 package mcp_test
 
 import (
-	"context"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -67,12 +66,12 @@ func listToolNames(t *testing.T, s *mcpsdk.Server) []string {
 	mc := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "x"}, nil)
 	srvT, clientT := mcpsdk.NewInMemoryTransports()
 	go func() { _ = s.Run(t.Context(), srvT) }()
-	sess, err := mc.Connect(context.Background(), clientT, nil)
+	sess, err := mc.Connect(t.Context(), clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	tools, err := sess.ListTools(context.Background(), nil)
+	tools, err := sess.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
