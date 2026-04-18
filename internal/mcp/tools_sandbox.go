@@ -9,6 +9,20 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
+const (
+	// sandboxCreateDefaultTimeout bounds how long sandbox_create waits for the
+	// create+start operation to reach a terminal state before returning a
+	// progress payload. Five minutes covers cold-start + image pull on slow backends.
+	sandboxCreateDefaultTimeout = 5 * time.Minute
+	// sandboxStartDefaultTimeout bounds sandbox_start waits. Two minutes is enough
+	// for a warm start; cold-cache cases will fall through to a progress payload.
+	sandboxStartDefaultTimeout = 2 * time.Minute
+	// sandboxStopDefaultTimeout / sandboxDestroyDefaultTimeout bound stop/destroy
+	// waits. Stop and destroy are fast on every backend; one minute is generous.
+	sandboxStopDefaultTimeout    = time.Minute
+	sandboxDestroyDefaultTimeout = time.Minute
+)
+
 type sandboxListInput struct {
 	ProjectID string `json:"project_id" jsonschema:"ID of the project to list sandboxes from"`
 	State     string `json:"state,omitempty" jsonschema:"optional state filter (running, stopped, ...)"`
@@ -57,11 +71,22 @@ type sandboxCreateInput struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max seconds to wait (default per-tool); ignored when wait=false"`
 }
 
+// sandboxIDWaitInput is the input for sandbox_start and sandbox_destroy.
+// Force is intentionally absent: those operations do not support forced
+// termination, and advertising the field would mislead LLM agents.
 type sandboxIDWaitInput struct {
 	SandboxID      string `json:"sandbox_id" jsonschema:"ID of the sandbox"`
 	Wait           *bool  `json:"wait,omitempty" jsonschema:"wait for the operation to reach terminal state (default true)"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max seconds to wait (default per-tool); ignored when wait=false"`
-	Force          bool   `json:"force,omitempty" jsonschema:"force-stop (only meaningful for sandbox_stop)"`
+}
+
+// sandboxStopInput is the input for sandbox_stop. It adds Force on top of the
+// common wait fields because force-stop is only meaningful for that operation.
+type sandboxStopInput struct {
+	SandboxID      string `json:"sandbox_id" jsonschema:"ID of the sandbox"`
+	Wait           *bool  `json:"wait,omitempty" jsonschema:"wait for the operation to reach terminal state (default true)"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max seconds to wait (default per-tool); ignored when wait=false"`
+	Force          bool   `json:"force,omitempty" jsonschema:"force-stop the sandbox immediately"`
 }
 
 func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
@@ -83,10 +108,11 @@ func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
 		if in.Wait != nil && !*in.Wait {
 			return nil, op, nil
 		}
-		timeout := resolveTimeout(in.TimeoutSeconds, 300*time.Second, opts.maxTimeout())
-		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+		timeout := resolveTimeout(in.TimeoutSeconds, sandboxCreateDefaultTimeout, opts.maxTimeout())
+		res, err := waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
 			return opts.Client.GetSandbox(ctx, op.ResourceID)
-		}))
+		})
+		return nil, res, err
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -100,16 +126,17 @@ func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
 		if in.Wait != nil && !*in.Wait {
 			return nil, op, nil
 		}
-		timeout := resolveTimeout(in.TimeoutSeconds, 120*time.Second, opts.maxTimeout())
-		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+		timeout := resolveTimeout(in.TimeoutSeconds, sandboxStartDefaultTimeout, opts.maxTimeout())
+		res, err := waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
 			return opts.Client.GetSandbox(ctx, in.SandboxID)
-		}))
+		})
+		return nil, res, err
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "sandbox_stop",
 		Description: "Stop a running sandbox. Set force=true for an immediate halt.",
-	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxIDWaitInput) (*mcpsdk.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxStopInput) (*mcpsdk.CallToolResult, any, error) {
 		op, err := opts.Client.StopSandbox(ctx, in.SandboxID, client.StopSandboxRequest{Force: in.Force})
 		if err != nil {
 			return nil, nil, err
@@ -117,10 +144,11 @@ func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
 		if in.Wait != nil && !*in.Wait {
 			return nil, op, nil
 		}
-		timeout := resolveTimeout(in.TimeoutSeconds, 60*time.Second, opts.maxTimeout())
-		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+		timeout := resolveTimeout(in.TimeoutSeconds, sandboxStopDefaultTimeout, opts.maxTimeout())
+		res, err := waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
 			return opts.Client.GetSandbox(ctx, in.SandboxID)
-		}))
+		})
+		return nil, res, err
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -134,19 +162,10 @@ func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
 		if in.Wait != nil && !*in.Wait {
 			return nil, op, nil
 		}
-		timeout := resolveTimeout(in.TimeoutSeconds, 60*time.Second, opts.maxTimeout())
-		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+		timeout := resolveTimeout(in.TimeoutSeconds, sandboxDestroyDefaultTimeout, opts.maxTimeout())
+		res, err := waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
 			return map[string]bool{"ok": true}, nil
-		}))
+		})
+		return nil, res, err
 	})
-}
-
-// mustResource adapts the (any, error) return of waitForOpAndFetch into the
-// three-value (*mcpsdk.CallToolResult, any, error) that AddTool's handler
-// signature requires. It always returns nil for the CallToolResult slot — the
-// resource is sent as the second return value, which the SDK serialises to
-// JSON for the client. Without it the caller would need
-// `r, err := waitForOpAndFetch(...); return nil, r, err` at every call site.
-func mustResource(res any, err error) (*mcpsdk.CallToolResult, any, error) {
-	return nil, res, err
 }

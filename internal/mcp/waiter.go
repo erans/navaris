@@ -31,6 +31,10 @@ type progressResponse struct {
 //   - If op is cancelled, returns an error.
 //   - If timeout elapses while op is still running, returns a non-error
 //     progress payload so the agent can poll operation_get.
+//
+// Callers should return the (any, error) pair directly to the MCP SDK — a
+// returned progressResponse value is the intended response when the timeout
+// elapses and should not be special-cased.
 func waitForOpAndFetch(
 	ctx context.Context,
 	c *client.Client,
