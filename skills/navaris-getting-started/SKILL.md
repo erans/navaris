@@ -37,15 +37,13 @@ navaris project list --quiet --output json
 
 Exit 0 = CLI installed, daemon reachable, auth accepted. Non-zero = see errors below.
 
+`sandbox create` is asynchronous — it returns immediately with an operation; pass `--wait` to block until provisioning completes and receive the sandbox row instead.
+
 ## Workflows
 
 ### 1. First-time setup from scratch (daemon + CLI on localhost)
 
-1. Start the daemon in another terminal (see `README.md` for daemon flags):
-   ```bash
-   ./navarisd --incus-socket /var/lib/incus/unix.socket --auth-token "$(openssl rand -hex 32)"
-   ```
-   Capture the token that was printed or generated.
+1. Start `navarisd` (see `README.md` for daemon flags and the all-in-one Docker option) and capture the auth token it was started with.
 2. Export the env vars in the CLI terminal:
    ```bash
    export NAVARIS_API_URL=http://localhost:8080
@@ -71,14 +69,16 @@ Exit 0 = CLI installed, daemon reachable, auth accepted. Non-zero = see errors b
 
 1. Create a project and capture its ID:
    ```bash
-   PROJECT_ID=$(navaris project create --name playground --quiet)
+   PROJECT_ID=$(navaris project create --name playground --output json | jq -r '.ProjectID')
    export NAVARIS_PROJECT="$PROJECT_ID"
    ```
-2. Create a sandbox (Incus by default; image reference with `/` routes to Incus):
+2. Create a sandbox (Incus by default; image reference with `/` routes to Incus).
+   `--wait` blocks until the create operation finishes so the JSON we capture is
+   the sandbox row, not the still-pending operation:
    ```bash
-   SANDBOX_ID=$(navaris sandbox create --name hello --image alpine/3.21 --quiet)
+   SANDBOX_ID=$(navaris sandbox create --name hello --image alpine/3.21 --wait --output json | jq -r '.SandboxID')
    ```
-3. Wait for it to be running:
+3. Belt-and-suspenders: wait until the sandbox is actually running:
    ```bash
    navaris sandbox wait-state "$SANDBOX_ID" --state running --timeout 60s
    ```
@@ -88,15 +88,14 @@ Exit 0 = CLI installed, daemon reachable, auth accepted. Non-zero = see errors b
    ```
 5. Destroy it:
    ```bash
-   navaris sandbox destroy "$SANDBOX_ID" --quiet
+   navaris sandbox destroy "$SANDBOX_ID" --wait
    ```
 
 ## Common errors
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `401 Unauthorized` | `NAVARIS_TOKEN` missing or wrong | Re-export `NAVARIS_TOKEN` with the value the daemon was started with |
+| `HTTP 401` | `NAVARIS_TOKEN` missing or wrong | Re-export `NAVARIS_TOKEN` with the value the daemon was started with |
 | `connection refused` | Daemon not running on the configured host/port | Start `navarisd` or point `NAVARIS_API_URL` at the right host |
-| `dial tcp: no such host` | DNS miss or typo in `NAVARIS_API_URL` | Fix the URL or add to `/etc/hosts` |
+| `dial tcp: no such host` | DNS miss or typo in `NAVARIS_API_URL` | Fix the URL |
 | `--project flag or NAVARIS_PROJECT env var is required` | `sandbox create` invoked without a project | Either pass `--project <id>` or `export NAVARIS_PROJECT=<id>` |
-| `no images found` | No base images registered | `navaris image list` — if empty, promote an existing snapshot or register one; for Incus, use a slash-style image ref like `alpine/3.21` to pull from the Incus image server |
