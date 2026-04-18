@@ -109,10 +109,8 @@ func TestOperationGet_Terminal(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected State string, got %T", obj["State"])
 	}
+	// State should round-trip the terminal value (succeeded|failed|cancelled).
 	if client.OperationState(state) != doneOp.State {
 		t.Errorf("expected State=%q, got %q", doneOp.State, state)
-	}
-	if got, want := client.OperationState(state), doneOp.State; got != client.OpSucceeded && got != client.OpFailed && got != client.OpCancelled {
-		t.Errorf("expected terminal state (succeeded|failed|cancelled), got %q (want %q)", got, want)
 	}
 }

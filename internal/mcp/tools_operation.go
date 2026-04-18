@@ -13,7 +13,7 @@ type operationGetInput struct {
 func registerOperationReadTools(s *mcpsdk.Server, opts Options) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "operation_get",
-		Description: "Get the current state of an asynchronous operation. Use this to poll a sandbox lifecycle operation that returned wait=false or one that exceeded a timeout.",
+		Description: "Get the current state of an asynchronous operation by its ID. Operations are returned by sandbox and snapshot lifecycle tools; use this to check whether they have reached a terminal state (succeeded, failed, or cancelled).",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in operationGetInput) (*mcpsdk.CallToolResult, any, error) {
 		op, err := opts.Client.GetOperation(ctx, in.OperationID)
 		if err != nil {
