@@ -7,6 +7,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	internalmcp "github.com/navaris/navaris/internal/mcp"
+	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/testutil/apiserver"
 	"github.com/navaris/navaris/pkg/client"
 )
@@ -16,7 +17,16 @@ import (
 // API URL so tests can also call the navaris client directly.
 func startMCPTestServer(t *testing.T, readOnly bool) (*mcpsdk.ClientSession, string) {
 	t.Helper()
-	apiURL, _, _ := apiserver.New(t)
+	sess, apiURL, _ := startMCPTestServerWithMock(t, readOnly)
+	return sess, apiURL
+}
+
+// startMCPTestServerWithMock is the same as startMCPTestServer but also
+// returns the underlying mock provider so tests can override individual
+// provider functions to simulate failures.
+func startMCPTestServerWithMock(t *testing.T, readOnly bool) (*mcpsdk.ClientSession, string, *provider.MockProvider) {
+	t.Helper()
+	apiURL, _, mock := apiserver.New(t)
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
 	srv := internalmcp.NewServer(internalmcp.Options{Client: c, ReadOnly: readOnly})
 
@@ -29,7 +39,7 @@ func startMCPTestServer(t *testing.T, readOnly bool) (*mcpsdk.ClientSession, str
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	return sess, apiURL
+	return sess, apiURL, mock
 }
 
 func decodeJSONResult(t *testing.T, res *mcpsdk.CallToolResult) any {

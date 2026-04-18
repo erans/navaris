@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -42,4 +43,110 @@ func registerSandboxReadTools(s *mcpsdk.Server, opts Options) {
 		}
 		return nil, sbx, nil
 	})
+}
+
+// --- mutating tools ---
+
+type sandboxCreateInput struct {
+	ProjectID      string `json:"project_id" jsonschema:"ID of the project to create the sandbox in"`
+	ImageID        string `json:"image_id" jsonschema:"ID of the base image to launch from"`
+	Name           string `json:"name,omitempty" jsonschema:"optional human-readable name"`
+	CPULimit       *int   `json:"cpu,omitempty" jsonschema:"optional vCPU limit"`
+	MemoryLimitMB  *int   `json:"memory_mb,omitempty" jsonschema:"optional memory limit in MB"`
+	Wait           *bool  `json:"wait,omitempty" jsonschema:"wait for the operation to reach terminal state (default true)"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max seconds to wait (default per-tool); ignored when wait=false"`
+}
+
+type sandboxIDWaitInput struct {
+	SandboxID      string `json:"sandbox_id" jsonschema:"ID of the sandbox"`
+	Wait           *bool  `json:"wait,omitempty" jsonschema:"wait for the operation to reach terminal state (default true)"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max seconds to wait (default per-tool); ignored when wait=false"`
+	Force          bool   `json:"force,omitempty" jsonschema:"force-stop (only meaningful for sandbox_stop)"`
+}
+
+func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "sandbox_create",
+		Description: "Create a new sandbox from a base image. By default waits until the sandbox reaches the running state and returns the final sandbox object.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxCreateInput) (*mcpsdk.CallToolResult, any, error) {
+		req := client.CreateSandboxRequest{
+			ProjectID:     in.ProjectID,
+			Name:          in.Name,
+			ImageID:       in.ImageID,
+			CPULimit:      in.CPULimit,
+			MemoryLimitMB: in.MemoryLimitMB,
+		}
+		op, err := opts.Client.CreateSandbox(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
+		if in.Wait != nil && !*in.Wait {
+			return nil, op, nil
+		}
+		timeout := resolveTimeout(in.TimeoutSeconds, 300*time.Second, opts.maxTimeout())
+		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+			return opts.Client.GetSandbox(ctx, op.ResourceID)
+		}))
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "sandbox_start",
+		Description: "Start a stopped sandbox. By default waits until it reaches running state.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxIDWaitInput) (*mcpsdk.CallToolResult, any, error) {
+		op, err := opts.Client.StartSandbox(ctx, in.SandboxID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if in.Wait != nil && !*in.Wait {
+			return nil, op, nil
+		}
+		timeout := resolveTimeout(in.TimeoutSeconds, 120*time.Second, opts.maxTimeout())
+		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+			return opts.Client.GetSandbox(ctx, in.SandboxID)
+		}))
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "sandbox_stop",
+		Description: "Stop a running sandbox. Set force=true for an immediate halt.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxIDWaitInput) (*mcpsdk.CallToolResult, any, error) {
+		op, err := opts.Client.StopSandbox(ctx, in.SandboxID, client.StopSandboxRequest{Force: in.Force})
+		if err != nil {
+			return nil, nil, err
+		}
+		if in.Wait != nil && !*in.Wait {
+			return nil, op, nil
+		}
+		timeout := resolveTimeout(in.TimeoutSeconds, 60*time.Second, opts.maxTimeout())
+		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+			return opts.Client.GetSandbox(ctx, in.SandboxID)
+		}))
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "sandbox_destroy",
+		Description: "Destroy a sandbox permanently. This cannot be undone.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxIDWaitInput) (*mcpsdk.CallToolResult, any, error) {
+		op, err := opts.Client.DestroySandbox(ctx, in.SandboxID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if in.Wait != nil && !*in.Wait {
+			return nil, op, nil
+		}
+		timeout := resolveTimeout(in.TimeoutSeconds, 60*time.Second, opts.maxTimeout())
+		return mustResource(waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
+			return map[string]bool{"ok": true}, nil
+		}))
+	})
+}
+
+// mustResource adapts the (any, error) return of waitForOpAndFetch into the
+// three-value (*mcpsdk.CallToolResult, any, error) that AddTool's handler
+// signature requires. It always returns nil for the CallToolResult slot — the
+// resource is sent as the second return value, which the SDK serialises to
+// JSON for the client. Without it the caller would need
+// `r, err := waitForOpAndFetch(...); return nil, r, err` at every call site.
+func mustResource(res any, err error) (*mcpsdk.CallToolResult, any, error) {
+	return nil, res, err
 }
