@@ -235,6 +235,17 @@ Two transports are supported:
 
 See [docs/mcp.md](docs/mcp.md) for the full tool catalog, env-var reference, and per-tool argument schemas.
 
+## Claude Code integration
+
+Navaris ships a Claude Code skill pack (`navaris-cli`) so you can ask Claude Code in plain English to drive the CLI for you — "spin up an alpine sandbox and run my tests", "snapshot this sandbox before I upgrade it". Install with:
+
+```
+/plugin marketplace add erans/navaris
+/plugin install navaris-cli@erans/navaris
+```
+
+See [docs/claude-skills.md](docs/claude-skills.md) for the full skill list, install/uninstall, and MCP-vs-skill tradeoffs.
+
 ## CLI usage
 
 Configure the CLI via flags or environment variables:
