@@ -17,16 +17,24 @@ on:
       - 'scripts/skill-drift-check_test.sh'
       - '.github/workflows/skill-drift.yml'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-drift-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   drift-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: 'go.mod'
 
       - name: Build navaris CLI
         run: go build -o ./navaris ./cmd/navaris
