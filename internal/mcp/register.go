@@ -28,5 +28,4 @@ func register(s *mcpsdk.Server, opts Options) {
 func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options)   {}
 func registerSessionMutatingTools(s *mcpsdk.Server, opts Options)   {}
 func registerSnapshotMutatingTools(s *mcpsdk.Server, opts Options)  {}
-func registerOperationReadTools(s *mcpsdk.Server, opts Options)     {}
 func registerOperationMutatingTools(s *mcpsdk.Server, opts Options) {}
