@@ -669,17 +669,17 @@ Covers snapshots, images, and the async operation surface that underpins every l
 | `navaris snapshot restore <snapshot-id>` | `--wait`, `--timeout` |
 | `navaris snapshot delete <snapshot-id>` | `--wait`, `--timeout` |
 
-`stopped` consistency requires the sandbox to be stopped; it's the safest and most universally supported. `live` captures a running sandbox (memory + disk) and only works on backends that support it.
+`stopped` consistency requires the sandbox to be in the **stopped** state — the service enforces this and returns an error if the sandbox is running. `live` captures a running sandbox (memory + disk) and is only supported by backends that implement it (Firecracker supports live; Incus supports stateful snapshots).
 
 ### Images
 
 | Command | Flags |
 |---|---|
-| `navaris image promote --snapshot <snapshot-id> --name <n> --version <v>` | Promote a snapshot into a reusable image |
+| `navaris image promote --snapshot <snapshot-id> --name <n> --version <v>` | `--wait`, `--timeout`; promotes a snapshot into a reusable image |
 | `navaris image register --name <n> --version <v> --backend <type> --backend-ref <ref>` | Register a pre-existing external image (rootfs/kernel) |
-| `navaris image list [--name <partial>] [--architecture <arch>]` | List images |
+| `navaris image list [--name <partial>]` | List images; filter by name |
 | `navaris image get <image-id>` | — |
-| `navaris image delete <image-id>` | — |
+| `navaris image delete <image-id>` | `--wait`, `--timeout` |
 
 ### Operations
 
@@ -751,13 +751,15 @@ fi
 
 ## Common errors
 
+Cobra's `SilenceErrors: true` setting plus a bare `os.Exit(1)` in `cmd/navaris/main.go` means client errors are not currently printed to stderr. Check `$?` to confirm the command failed, and read the daemon logs for the underlying cause. The symptom strings below are what the client *would* render if the suppression were lifted.
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| `live snapshot not supported` | Backend doesn't support live capture (or sandbox is mid-state) | Stop the sandbox and pass `--consistency stopped`, or use a backend that supports live |
-| `image delete` fails with "image in use" | Sandboxes still derive from this image | `navaris sandbox list --output json \| jq '.[] \| select(.SourceImageID=="<id>")'` to find users; destroy/migrate them first |
+| `sandbox must be stopped for stopped-consistency snapshot` | `snapshot create` called while the sandbox is running with the default `--consistency stopped` | Stop the sandbox first (`navaris sandbox stop <id> --wait`), then snapshot; or pass `--consistency live` if your backend supports it |
+| `operation <id> failed: ...` after `image delete` | Backend rejected the delete (e.g. backend reference missing or I/O error) | `navaris operation get <id>` to read the wrapped error text; inspect backend logs for the root cause |
 | `operation stuck in pending` | Worker backlog or dependency waiting | `navaris operation get <id>` to inspect; `navaris operation list --state running` to see what's busy |
 | `snapshot restore` times out | Restore is longer than `--timeout` | Pass `--wait=false` and poll with `operation wait` at a longer timeout |
-| Promoted image has wrong architecture | `image register` / `promote` default architecture didn't match the source | Inspect with `navaris image get <id>` and re-register with the correct `--architecture` if supported on your navaris version |
+| `image register` succeeds but sandbox create fails to find it | `--backend` value doesn't match the backend navarisd is configured to use, or `--backend-ref` path is not reachable by the daemon | Verify the backend type (`incus` or `firecracker`) and that the path exists on the host running navarisd |
 ````
 
 - [ ] **Step 2: Verify frontmatter parses**
