@@ -114,6 +114,8 @@ func registerSnapshotMutatingTools(s *mcpsdk.Server, opts Options) {
 			return nil, op, nil
 		}
 		timeout := resolveTimeout(in.TimeoutSeconds, snapshotRestoreDefaultTimeout, opts.maxTimeout())
+		// op.ResourceID on a restore op is the snapshot ID; the sandbox we
+		// want to return is the one that was rolled back, addressed by op.SandboxID.
 		res, err := waitForOpAndFetch(ctx, opts.Client, op, timeout, func() (any, error) {
 			return opts.Client.GetSandbox(ctx, op.SandboxID)
 		})
