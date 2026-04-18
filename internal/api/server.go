@@ -24,8 +24,10 @@ type ServerConfig struct {
 	AuthToken    string
 	Logger       *slog.Logger
 	UISessionKey []byte
-	UIHandlers   *webui.Handlers // new — nil means UI disabled
-	UIAssets     fs.FS           // new — nil means UI disabled
+	UIHandlers   *webui.Handlers // nil means UI disabled
+	UIAssets     fs.FS           // nil means UI disabled
+	MCPHandler   http.Handler    // optional; when non-nil, mounted at MCPPath inside the auth-protected /v1/ sub-mux
+	MCPPath      string          // defaults to "/v1/mcp" when MCPHandler is set
 }
 
 type Server struct {
@@ -90,6 +92,17 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/sandboxes/{id}/exec", s.execInSandbox)
 	api.HandleFunc("GET /v1/events", s.streamEvents)
 	api.HandleFunc("GET /v1/sandboxes/{id}/attach", s.attachSandbox)
+
+	// Mount the embedded MCP handler when enabled. The handler is registered
+	// on the bare path (no method prefix) so the SDK can serve both the
+	// initialising POST and subsequent SSE GETs on the same path.
+	if s.cfg.MCPHandler != nil {
+		mcpPath := s.cfg.MCPPath
+		if mcpPath == "" {
+			mcpPath = "/v1/mcp"
+		}
+		api.Handle(mcpPath, s.cfg.MCPHandler)
+	}
 
 	// Wrap the /v1 sub-mux with logging + auth.
 	var apiHandler http.Handler = api

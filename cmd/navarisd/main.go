@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/navaris/navaris/internal/api"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/eventbus"
+	internalmcp "github.com/navaris/navaris/internal/mcp"
 	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/service"
 	"github.com/navaris/navaris/internal/store/sqlite"
@@ -46,6 +48,10 @@ type config struct {
 	uiPassword     string
 	uiSessionKey   string
 	uiSessionTTL   time.Duration
+	mcpEnabled     bool
+	mcpReadOnly    bool
+	mcpPath        string
+	mcpMaxTimeout  time.Duration
 }
 
 func main() {
@@ -79,6 +85,10 @@ func parseFlags() config {
 	flag.StringVar(&cfg.uiPassword, "ui-password", "", "web UI password (empty disables the UI)")
 	flag.StringVar(&cfg.uiSessionKey, "ui-session-key", "", "HMAC key for UI session cookies (empty = ephemeral per-process)")
 	flag.DurationVar(&cfg.uiSessionTTL, "ui-session-ttl", 24*time.Hour, "lifetime of UI session cookies")
+	flag.BoolVar(&cfg.mcpEnabled, "mcp-enabled", false, "enable the embedded /v1/mcp endpoint")
+	flag.BoolVar(&cfg.mcpReadOnly, "mcp-read-only", false, "hide all mutating tools from the MCP server")
+	flag.StringVar(&cfg.mcpPath, "mcp-path", "/v1/mcp", "path to mount the MCP endpoint at")
+	flag.DurationVar(&cfg.mcpMaxTimeout, "mcp-max-timeout", 10*time.Minute, "cap on per-tool timeout_seconds")
 	flag.Parse()
 	return cfg
 }
@@ -233,6 +243,20 @@ func run(cfg config) error {
 	}
 
 	// API server
+	var mcpHandler http.Handler
+	if cfg.mcpEnabled {
+		// normalizeListen turns ":port" into "127.0.0.1:port" for outbound calls;
+		// the loopback form is required because the MCP handler calls navarisd as a client.
+		localURL := "http://" + normalizeListen(cfg.listen)
+		mcpHandler = internalmcp.NewHTTPHandler(internalmcp.HTTPOptions{
+			LocalAPIURL: localURL,
+			AuthToken:   cfg.authToken,
+			ReadOnly:    cfg.mcpReadOnly,
+			MaxTimeout:  cfg.mcpMaxTimeout,
+		})
+		logger.Info("MCP endpoint enabled", "path", cfg.mcpPath)
+	}
+
 	srv := api.NewServer(api.ServerConfig{
 		Projects:     projSvc,
 		Sandboxes:    sbxSvc,
@@ -248,6 +272,8 @@ func run(cfg config) error {
 		UISessionKey: sessionKey,
 		UIHandlers:   uiHandlers,
 		UIAssets:     webui.Assets,
+		MCPHandler:   mcpHandler,
+		MCPPath:      cfg.mcpPath,
 	})
 
 	// Start dispatcher and GC
@@ -335,4 +361,14 @@ func setupLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+}
+
+// normalizeListen converts a bare-port listen address (e.g. ":8080") to the
+// loopback form ("127.0.0.1:8080") so the MCP handler can make outbound HTTP
+// calls to navarisd itself. Addresses with an explicit host are returned as-is.
+func normalizeListen(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
 }
