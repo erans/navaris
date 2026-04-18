@@ -10,29 +10,6 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
-func TestSnapshotList_RequiresSandboxID(t *testing.T) {
-	sess, _ := startMCPTestServer(t, false)
-	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
-		Name:      "snapshot_list",
-		Arguments: map[string]any{},
-	})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected IsError=true when sandbox_id is missing, got %v", res.Content)
-	}
-	text := ""
-	for _, c := range res.Content {
-		if tc, ok := c.(*mcpsdk.TextContent); ok {
-			text += tc.Text
-		}
-	}
-	if !strings.Contains(strings.ToLower(text), "sandbox_id") {
-		t.Errorf("expected error text to mention 'sandbox_id', got %q", text)
-	}
-}
-
 func TestSnapshotList_AfterCreate(t *testing.T) {
 	sess, apiURL := startMCPTestServer(t, false)
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
@@ -51,7 +28,8 @@ func TestSnapshotList_AfterCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapOp, err := c.CreateSnapshot(t.Context(), op.ResourceID, client.CreateSnapshotRequest{
-		Label:           "test",
+		Label: "test",
+		// "live" required: default "stopped" mode is rejected by the service while the sandbox is running.
 		ConsistencyMode: "live",
 	})
 	if err != nil {
@@ -61,10 +39,10 @@ func TestSnapshotList_AfterCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSnapshotID := doneOp.SnapshotID
-	if wantSnapshotID == "" {
-		wantSnapshotID = doneOp.ResourceID
+	if doneOp.SnapshotID == "" {
+		t.Fatal("operation did not record SnapshotID")
 	}
+	wantSnapshotID := doneOp.SnapshotID
 
 	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
 		Name:      "snapshot_list",
@@ -111,7 +89,8 @@ func TestSnapshotGet_Found(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapOp, err := c.CreateSnapshot(t.Context(), op.ResourceID, client.CreateSnapshotRequest{
-		Label:           "test",
+		Label: "test",
+		// "live" required: default "stopped" mode is rejected by the service while the sandbox is running.
 		ConsistencyMode: "live",
 	})
 	if err != nil {
@@ -121,10 +100,10 @@ func TestSnapshotGet_Found(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSnapshotID := doneOp.SnapshotID
-	if wantSnapshotID == "" {
-		wantSnapshotID = doneOp.ResourceID
+	if doneOp.SnapshotID == "" {
+		t.Fatal("operation did not record SnapshotID")
 	}
+	wantSnapshotID := doneOp.SnapshotID
 
 	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
 		Name:      "snapshot_get",

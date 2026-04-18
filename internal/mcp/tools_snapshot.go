@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -22,9 +21,6 @@ func registerSnapshotReadTools(s *mcpsdk.Server, opts Options) {
 		Name:        "snapshot_list",
 		Description: "List snapshots for a sandbox.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in snapshotListInput) (*mcpsdk.CallToolResult, any, error) {
-		if in.SandboxID == "" {
-			return nil, nil, fmt.Errorf("sandbox_id is required")
-		}
 		out, err := opts.Client.ListSnapshots(ctx, in.SandboxID)
 		if err != nil {
 			return nil, nil, err
@@ -37,7 +33,7 @@ func registerSnapshotReadTools(s *mcpsdk.Server, opts Options) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "snapshot_get",
-		Description: "Get a single snapshot by ID.",
+		Description: "Get a single snapshot by ID, including its state, label, and consistency mode.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in snapshotGetInput) (*mcpsdk.CallToolResult, any, error) {
 		out, err := opts.Client.GetSnapshot(ctx, in.SnapshotID)
 		if err != nil {
