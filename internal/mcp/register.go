@@ -23,6 +23,3 @@ func register(s *mcpsdk.Server, opts Options) {
 	registerSnapshotMutatingTools(s, opts)
 	registerOperationMutatingTools(s, opts)
 }
-
-// Stubs — each milestone fills these in as resources are added.
-func registerOperationMutatingTools(s *mcpsdk.Server, opts Options) {}

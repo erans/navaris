@@ -10,6 +10,29 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
+func TestOperationCancel_NonexistentReturnsError(t *testing.T) {
+	sess, _ := startMCPTestServer(t, false)
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name:      "operation_cancel",
+		Arguments: map[string]any{"operation_id": "nope"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError=true cancelling unknown op")
+	}
+	text := ""
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcpsdk.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	if !strings.Contains(strings.ToLower(text), "not found") {
+		t.Errorf("expected error text to mention 'not found', got %q", text)
+	}
+}
+
 func TestOperationGet_Found(t *testing.T) {
 	sess, apiURL := startMCPTestServer(t, false)
 	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
