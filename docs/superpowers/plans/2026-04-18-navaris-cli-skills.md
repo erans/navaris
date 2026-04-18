@@ -600,20 +600,23 @@ Skipping `wait-state` after `create` can produce errors because create returns a
 | You need… | Use |
 |---|---|
 | Stateless, short command (seconds) | `sandbox exec` |
-| Long-running process you want to monitor | `sandbox exec --timeout <long-duration>` |
+| One-shot command needing a longer wait | `sandbox exec --timeout <long-duration>` |
+| Long-running process you want to monitor | `session create --backing tmux` + `sandbox attach` |
 | Multiple related commands with shared env/cwd | `session create --backing tmux` + `sandbox attach` |
 | Interactive shell | `sandbox attach` (auto-creates a tmux-backed session) |
 | Need to reconnect after a client drop | `session create --backing tmux` (not `direct`) |
 
 ## Common errors
 
+Cobra's `SilenceErrors: true` plus a bare `os.Exit(1)` in `cmd/navaris/main.go` means client errors are not currently printed to stderr; run with `--output json` to see error output via the API response, or check the daemon logs — the symptom strings below are what the client *would* render if the suppression were lifted.
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| `api error 404: session: not found` | Session was destroyed, or the sandbox was restarted and `direct`-backed sessions were dropped | Recreate with `session create`; use `--backing tmux` to survive client disconnects |
+| `api error 404: session: not found` | Session was destroyed, the sandbox was restarted (which exits all sessions regardless of backing), or the client disconnected from a `direct`-backed session | Recreate with `session create`; use `--backing tmux` to survive client disconnects (but not sandbox restarts) |
 | Attach WebSocket drops mid-session | Daemon restart or network blip | Re-run `navaris sandbox attach`; tmux-backed sessions preserve state |
 | `context deadline exceeded` on exec | `--timeout` elapsed; the process may still be running server-side | Check with `navaris sandbox exec <id> -- ps aux` or wait and retry; do not assume the command was cancelled |
 | `api error 422: sandbox must be running to create session` | `session create` called before the sandbox reached running state | Insert `navaris sandbox wait-state <id> --state running` before `session create` |
-| `dial attach: unexpected HTTP status code 401` | `NAVARIS_TOKEN` missing or wrong for the attach WebSocket handshake | Re-check `NAVARIS_TOKEN`; run `navaris project list` to verify auth works |
+| `dial attach: failed to WebSocket dial: expected handshake response status code 101 but got 401` | `NAVARIS_TOKEN` missing or wrong for the attach WebSocket handshake | Re-check `NAVARIS_TOKEN`; run `navaris project list` to verify auth works |
 ````
 
 - [ ] **Step 2: Verify frontmatter parses**
