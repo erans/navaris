@@ -32,6 +32,8 @@ Covers projects, sandbox lifecycle, port forwarding, and backend selection.
 
 Use `-q` / `--quiet` on create/start/stop/destroy to print only the resulting ID (good for scripting).
 
+`sandbox create` and `sandbox list` both require `--project` or `NAVARIS_PROJECT`.
+
 ### Ports
 
 | Command | Purpose |
@@ -103,14 +105,13 @@ navaris sandbox list --project "$NAVARIS_PROJECT" --output json \
   | xargs -n1 -I{} navaris sandbox destroy {} --quiet
 ```
 
-`--quiet` silences the table on each destroy so only the IDs print. (Note: `sandbox list --quiet` does not compact the table — use `--output json | jq` for IDs.)
+Each line is the destroy operation ID, not the sandbox ID. Add `--wait` to each invocation if you need the loop to block until every sandbox is actually gone (slower but safer).
 
 ## Common errors
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `image not found` | Image ref typo or image not registered on this backend | `navaris image list --name <partial>`; for Incus, use the `vendor/version` form (e.g. `alpine/3.21`) |
-| `KVM not available` | Firecracker backend is enabled but `/dev/kvm` is missing or non-readable | Either pick an Incus image (slash-style) or enable KVM on the host; verify daemon startup logs |
-| `backend not enabled` | Trying to create a Firecracker sandbox on a daemon started with Incus only (or vice versa) | Restart navarisd with the right backend flags (see `README.md`) |
-| `destroy` hangs or times out | Sandbox is still running | Stop first: `navaris sandbox stop <id>`, then destroy; add `--force` on stop if needed |
-| `--project flag or NAVARIS_PROJECT env var is required` | `sandbox create` invoked without a project | Set `NAVARIS_PROJECT` in the environment, or pass `--project <id>` |
+| `operation ... failed: firecracker copy rootfs ...: open ...: no such file or directory` (Firecracker) or `operation ... failed: incus create instance: ...` (Incus) | Image ref typo, image not registered for that backend, or image present in a different store | `navaris image list --name <partial>` to find the right ref; for Incus use slash-style (`alpine/3.21`), for Firecracker use flat-style (`alpine-3.21`); register a missing image with `navaris image register` |
+| `api error 500: internal server error` after `sandbox create` | Daemon doesn't have the requested backend enabled — common causes: Firecracker requested but `/dev/kvm` unavailable; Incus requested but daemon started without the Incus socket; rootfs/image directory not mounted | Check daemon startup logs (`provider "<name>" not available`); restart `navarisd` with the right backend flags (see `README.md`); pick an image that routes to a supported backend |
+| `operation <id> failed: ...` after destroy | Backend rejected the destroy (e.g. provider error, transient I/O) | `navaris operation get <op-id>` to read the wrapped error text; retry or escalate based on the underlying message |
+| `--project flag or NAVARIS_PROJECT env var is required` | `sandbox create` or `sandbox list` invoked without a project | Set `NAVARIS_PROJECT` in the environment, or pass `--project <id>` |
