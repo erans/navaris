@@ -28,6 +28,10 @@ func handleOperation(
 ) error {
 	wait, _ := cmd.Flags().GetBool("wait")
 	if !wait {
+		if isQuiet() && !isJSONOutput() {
+			printQuietIDs([]string{op.OperationID})
+			return nil
+		}
 		printResult(op, []string{"OPERATION", "TYPE", "STATE", "RESOURCE"}, func() [][]string {
 			return [][]string{{op.OperationID, op.Type, string(op.State), op.ResourceID}}
 		})
@@ -57,10 +61,24 @@ func handleOperation(
 			printJSON(final)
 			return nil
 		}
+		if isQuiet() && !isJSONOutput() {
+			if id := resourceID(res); id != "" {
+				printQuietIDs([]string{id})
+				return nil
+			}
+		}
 		printJSON(res)
 		return nil
 	}
 
+	if isQuiet() && !isJSONOutput() {
+		id := final.ResourceID
+		if id == "" {
+			id = final.OperationID
+		}
+		printQuietIDs([]string{id})
+		return nil
+	}
 	printResult(final, []string{"OPERATION", "TYPE", "STATE", "RESOURCE"}, func() [][]string {
 		fin := "-"
 		if final.FinishedAt != nil {
@@ -69,4 +87,24 @@ func handleOperation(
 		return [][]string{{final.OperationID, final.Type, string(final.State), fin}}
 	})
 	return nil
+}
+
+// resourceID extracts the primary ID field from common resource types using
+// type assertions. Returns empty string for unknown types.
+func resourceID(v any) string {
+	switch r := v.(type) {
+	case *client.Sandbox:
+		return r.SandboxID
+	case *client.Session:
+		return r.SessionID
+	case *client.Snapshot:
+		return r.SnapshotID
+	case *client.BaseImage:
+		return r.ImageID
+	case *client.Project:
+		return r.ProjectID
+	case *client.Operation:
+		return r.OperationID
+	}
+	return ""
 }

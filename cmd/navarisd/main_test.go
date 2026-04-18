@@ -8,11 +8,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/navaris/navaris/internal/api"
 	"github.com/navaris/navaris/internal/eventbus"
+	internalmcp "github.com/navaris/navaris/internal/mcp"
 	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/service"
 	"github.com/navaris/navaris/internal/store/sqlite"
@@ -149,5 +153,156 @@ func TestParseFlagsUIExplicit(t *testing.T) {
 	}
 	if cfg.uiSessionTTL != 8*time.Hour {
 		t.Errorf("uiSessionTTL = %v, want 8h", cfg.uiSessionTTL)
+	}
+}
+
+func TestNormalizeListen(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "bare port", in: ":8080", want: "127.0.0.1:8080"},
+		{name: "wildcard ipv4", in: "0.0.0.0:8080", want: "127.0.0.1:8080"},
+		{name: "wildcard ipv6", in: "[::]:8080", want: "127.0.0.1:8080"},
+		{name: "loopback ipv4", in: "127.0.0.1:8080", want: "127.0.0.1:8080"},
+		{name: "localhost", in: "localhost:8080", want: "localhost:8080"},
+		{name: "explicit host", in: "some.host:9000", want: "some.host:9000"},
+		{name: "loopback ipv6", in: "[::1]:8080", want: "[::1]:8080"},
+		{name: "explicit ipv6", in: "[2001:db8::1]:8080", want: "[2001:db8::1]:8080"},
+		{name: "invalid addr passthrough", in: "not-a-valid-addr", want: "not-a-valid-addr"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeListen(tc.in)
+			if got != tc.want {
+				t.Errorf("normalizeListen(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// bearerTransport is an http.RoundTripper that injects a Bearer token.
+type bearerTransport struct{ token string }
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// TestWildcardListenMCPEndToEnd confirms the wildcard→loopback path:
+//  1. A listener is bound on 0.0.0.0:0 (wildcard, ephemeral port).
+//  2. normalizeListen derives the 127.0.0.1:<port> URL used as LocalAPIURL.
+//  3. The MCP HTTP handler is served on the wildcard listener.
+//  4. An MCP SDK client connects via the wildcard-derived loopback address and
+//     calls tools/list, confirming at least one tool is reachable end-to-end.
+func TestWildcardListenMCPEndToEnd(t *testing.T) {
+	// -- backing navaris API on 127.0.0.1:0 --
+	store, err := sqlite.Open(fmt.Sprintf("file:wildcard_test_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	bus := eventbus.New(64)
+	disp := worker.NewDispatcher(store.OperationStore(), bus, 4)
+	disp.Start()
+	t.Cleanup(func() { disp.Stop() })
+
+	mock := provider.NewMock()
+	projSvc := service.NewProjectService(store.ProjectStore())
+	sbxSvc := service.NewSandboxService(
+		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(),
+		store.PortBindingStore(), store.SessionStore(), mock, bus, disp, "mock",
+	)
+	snapSvc := service.NewSnapshotService(
+		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),
+		mock, bus, disp,
+	)
+	imgSvc := service.NewImageService(
+		store.ImageStore(), store.SnapshotStore(), store.OperationStore(),
+		mock, bus, disp,
+	)
+	sessSvc := service.NewSessionService(store.SessionStore(), store.SandboxStore(), mock, bus)
+	opsSvc := service.NewOperationService(store.OperationStore(), disp)
+
+	const token = "wildcard-test-token"
+
+	apiLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiURL := "http://" + apiLn.Addr().String()
+
+	apiSrv := &http.Server{Handler: api.NewServer(api.ServerConfig{
+		Projects:   projSvc,
+		Sandboxes:  sbxSvc,
+		Snapshots:  snapSvc,
+		Images:     imgSvc,
+		Sessions:   sessSvc,
+		Operations: opsSvc,
+		Provider:   mock,
+		Events:     bus,
+		Ports:      store.PortBindingStore(),
+		AuthToken:  token,
+	}).Handler()}
+	go apiSrv.Serve(apiLn) //nolint:errcheck
+	t.Cleanup(func() { apiSrv.Close() })
+
+	// -- wildcard MCP listener: 0.0.0.0:0 --
+	// This is the key part of the test: the listener is wildcard, not loopback.
+	// "tcp4" pins the binding to the IPv4 wildcard; without it, dual-stack
+	// hosts silently bind to "[::]:port" (the IPv6 wildcard) instead — which
+	// would still pass the test but would exercise the "::" normalization
+	// branch rather than the "0.0.0.0" branch the test name promises.
+	mcpLn, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Derive the loopback URL the same way main.go does.
+	listenAddr := mcpLn.Addr().String() // "0.0.0.0:<port>"
+	// Guard the test's own coverage: if the OS quietly bound something other
+	// than the wildcard host (e.g. dual-stack fallback to ::), the rest of the
+	// test still passes but no longer exercises the wildcard→loopback path.
+	if !strings.HasPrefix(listenAddr, "0.0.0.0:") {
+		t.Fatalf("expected wildcard bind address to start with %q, got %q", "0.0.0.0:", listenAddr)
+	}
+	loopbackURL := "http://" + normalizeListen(listenAddr)
+
+	mcpHandler := internalmcp.NewHTTPHandler(internalmcp.HTTPOptions{
+		LocalAPIURL: apiURL,
+		AuthToken:   token,
+		ReadOnly:    false,
+		MaxTimeout:  5 * time.Minute,
+	})
+
+	mcpSrv := &http.Server{Handler: mcpHandler}
+	go mcpSrv.Serve(mcpLn) //nolint:errcheck
+	t.Cleanup(func() { mcpSrv.Close() })
+
+	// Connect via the loopback URL derived from the wildcard listener address.
+	mc := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "wildcard-test"}, nil)
+	transport := &mcpsdk.StreamableClientTransport{
+		Endpoint: loopbackURL,
+		HTTPClient: &http.Client{
+			Transport: bearerTransport{token: token},
+			Timeout:   10 * time.Second,
+		},
+	}
+
+	sess, err := mc.Connect(t.Context(), transport, nil)
+	if err != nil {
+		t.Fatalf("connect via wildcard→loopback URL %q: %v", loopbackURL, err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	tools, err := sess.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools.Tools) == 0 {
+		t.Fatal("expected at least one tool from wildcard-bound MCP server, got none")
 	}
 }

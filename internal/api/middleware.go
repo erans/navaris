@@ -66,6 +66,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			// 1. Bearer wins.
 			if bearer := extractBearerToken(r); bearer != "" {
 				if token == "" || bearer != token {
+					w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 					respondError(w, domain.ErrUnauthorized)
 					return
 				}
@@ -77,6 +78,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			if signer != nil {
 				if c, err := r.Cookie(webui.CookieName); err == nil && c.Value != "" {
 					if _, _, err := signer.Verify(c.Value); err != nil {
+						w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 						respondError(w, domain.ErrUnauthorized)
 						return
 					}
@@ -93,6 +95,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			if token != "" && isWebSocketRoute(r.URL.Path) {
 				if q := r.URL.Query().Get("token"); q != "" {
 					if q != token {
+						w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 						respondError(w, domain.ErrUnauthorized)
 						return
 					}
@@ -102,6 +105,7 @@ func authMiddleware(token string, sessionKey []byte) func(http.Handler) http.Han
 			}
 
 			// 3. Nothing → 401.
+			w.Header().Set("WWW-Authenticate", `Bearer realm="navaris"`)
 			respondError(w, domain.ErrUnauthorized)
 		})
 	}
@@ -169,6 +173,26 @@ type statusCapture struct {
 func (sc *statusCapture) WriteHeader(code int) {
 	sc.code = code
 	sc.ResponseWriter.WriteHeader(code)
+}
+
+// Flush implements http.Flusher so that SSE and other streaming responses
+// can push buffered data to the client before the handler returns. Without
+// this, the MCP StreamableHTTPHandler's standalone SSE stream deadlocks:
+// the server calls Flush() after WriteHeader to unblock the client's Do()
+// call, but if Flush is not forwarded the response stays buffered until the
+// handler exits, which never happens.
+func (sc *statusCapture) Flush() {
+	if f, ok := sc.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the underlying ResponseWriter so http.NewResponseController
+// can reach helpers (SetWriteDeadline, EnableFullDuplex, etc.) that this
+// wrapper does not explicitly forward. Without Unwrap, the controller
+// silently no-ops those calls — see Go 1.20 ResponseController docs.
+func (sc *statusCapture) Unwrap() http.ResponseWriter {
+	return sc.ResponseWriter
 }
 
 // Hijack implements http.Hijacker so that WebSocket upgrades work when the

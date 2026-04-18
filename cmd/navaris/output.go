@@ -80,3 +80,20 @@ func printResult(data any, headers []string, rowsFn func() [][]string) {
 	}
 	printTable(headers, rowsFn())
 }
+
+// isQuiet reports whether --quiet/-q was set.
+func isQuiet() bool {
+	q, _ := rootCmd.PersistentFlags().GetBool("quiet")
+	return q
+}
+
+// printQuietIDs prints one ID per line to stdout. Used in text mode when
+// --quiet is set so the output is friendly for `xargs` and other piped tools.
+func printQuietIDs(ids []string) {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		fmt.Println(id)
+	}
+}
