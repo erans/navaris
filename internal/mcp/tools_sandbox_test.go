@@ -438,7 +438,8 @@ func TestSandboxExec_RunsCommand(t *testing.T) {
 }
 
 // TestNewServer_ReadOnly_HidesMutatingTools verifies the read-only mode hides
-// the sandbox lifecycle and exec mutating tools.
+// every mutating tool registered across the package. Add new mutators to the
+// hidden-name slice below as they land.
 func TestNewServer_ReadOnly_HidesMutatingTools(t *testing.T) {
 	roSess, _ := startMCPTestServer(t, true)
 	tools, err := roSess.ListTools(t.Context(), nil)

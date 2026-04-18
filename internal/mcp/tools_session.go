@@ -31,14 +31,14 @@ func registerSessionMutatingTools(s *mcpsdk.Server, opts Options) {
 		Name:        "session_create",
 		Description: "Create a new interactive session attached to a running sandbox. Use backing=tmux to keep the shell alive across disconnects.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sessionCreateInput) (*mcpsdk.CallToolResult, any, error) {
-		s, err := opts.Client.CreateSession(ctx, in.SandboxID, client.CreateSessionRequest{
+		out, err := opts.Client.CreateSession(ctx, in.SandboxID, client.CreateSessionRequest{
 			Shell:   in.Shell,
 			Backing: in.Backing,
 		})
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, s, nil
+		return nil, out, nil
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
