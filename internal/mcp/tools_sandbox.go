@@ -21,6 +21,10 @@ const (
 	// waits. Stop and destroy are fast on every backend; one minute is generous.
 	sandboxStopDefaultTimeout    = time.Minute
 	sandboxDestroyDefaultTimeout = time.Minute
+	// sandboxExecDefaultTimeout is the default wall-clock budget for a one-shot
+	// exec. Two minutes covers make build-class long commands; callers that need
+	// tighter limits pass timeout_seconds explicitly.
+	sandboxExecDefaultTimeout = 2 * time.Minute
 )
 
 type sandboxListInput struct {
@@ -87,6 +91,20 @@ type sandboxStopInput struct {
 	Wait           *bool  `json:"wait,omitempty" jsonschema:"wait for the operation to reach terminal state (default true)"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"max seconds to wait (default per-tool); ignored when wait=false"`
 	Force          bool   `json:"force,omitempty" jsonschema:"force-stop the sandbox immediately"`
+}
+
+type sandboxExecInput struct {
+	SandboxID      string            `json:"sandbox_id" jsonschema:"the running sandbox to exec in"`
+	Command        []string          `json:"command" jsonschema:"argv to execute (no shell wrapping)"`
+	Env            map[string]string `json:"env,omitempty" jsonschema:"environment variables for the command"`
+	WorkDir        string            `json:"work_dir,omitempty" jsonschema:"working directory inside the sandbox"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty" jsonschema:"max seconds (default 120)"`
+}
+
+type sandboxExecOutput struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
 }
 
 func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
@@ -167,5 +185,23 @@ func registerSandboxMutatingTools(s *mcpsdk.Server, opts Options) {
 			return map[string]bool{"ok": true}, nil
 		})
 		return nil, res, err
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "sandbox_exec",
+		Description: "Execute a command synchronously inside a running sandbox. Returns stdout, stderr, and exit_code. Use for one-shot commands (build, test, inspect files). The sandbox must be in state 'running'. For stateful work across multiple commands (preserving cwd or env), create a tmux session via session_create.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sandboxExecInput) (*mcpsdk.CallToolResult, *sandboxExecOutput, error) {
+		timeout := resolveTimeout(in.TimeoutSeconds, sandboxExecDefaultTimeout, opts.maxTimeout())
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		resp, err := opts.Client.Exec(ctx, in.SandboxID, client.ExecRequest{
+			Command: in.Command,
+			Env:     in.Env,
+			WorkDir: in.WorkDir,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, &sandboxExecOutput{ExitCode: resp.ExitCode, Stdout: resp.Stdout, Stderr: resp.Stderr}, nil
 	})
 }

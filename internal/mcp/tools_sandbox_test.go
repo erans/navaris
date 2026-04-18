@@ -398,6 +398,45 @@ func TestSandboxStop_WaitTrue(t *testing.T) {
 	}
 }
 
+func TestSandboxExec_RunsCommand(t *testing.T) {
+	sess, apiURL := startMCPTestServer(t, false)
+	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
+	proj, err := c.CreateProject(t.Context(), client.CreateProjectRequest{Name: "exec-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.CreateSandbox(t.Context(), client.CreateSandboxRequest{
+		ProjectID: proj.ProjectID, Name: "exec-target", ImageID: "mock-image",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.WaitForOperation(t.Context(), op.OperationID, &client.WaitOptions{Timeout: 10 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name: "sandbox_exec",
+		Arguments: map[string]any{
+			"sandbox_id": op.ResourceID,
+			"command":    []string{"echo", "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %v", res.Content)
+	}
+	got, ok := decodeJSONResult(t, res).(map[string]any)
+	if !ok {
+		t.Fatalf("expected object result, got %T", decodeJSONResult(t, res))
+	}
+	if _, ok := got["exit_code"]; !ok {
+		t.Errorf("missing exit_code in %v", got)
+	}
+}
+
 // TestNewServer_ReadOnly_HidesMutatingTools verifies the read-only mode hides
 // the sandbox lifecycle mutating tools added in M8.1.
 func TestNewServer_ReadOnly_HidesMutatingTools(t *testing.T) {
