@@ -95,7 +95,7 @@ Exit 0 = CLI installed, daemon reachable, auth accepted. Non-zero = see errors b
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `HTTP 401` | `NAVARIS_TOKEN` missing or wrong | Re-export `NAVARIS_TOKEN` with the value the daemon was started with |
+| `api error 401` (or `HTTP 401`) | `NAVARIS_TOKEN` missing or wrong | Re-export `NAVARIS_TOKEN` with the value the daemon was started with |
 | `connection refused` | Daemon not running on the configured host/port | Start `navarisd` or point `NAVARIS_API_URL` at the right host |
 | `dial tcp: no such host` | DNS miss or typo in `NAVARIS_API_URL` | Fix the URL |
 | `--project flag or NAVARIS_PROJECT env var is required` | `sandbox create` invoked without a project | Either pass `--project <id>` or `export NAVARIS_PROJECT=<id>` |
