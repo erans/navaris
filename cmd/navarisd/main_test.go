@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,13 +252,23 @@ func TestWildcardListenMCPEndToEnd(t *testing.T) {
 
 	// -- wildcard MCP listener: 0.0.0.0:0 --
 	// This is the key part of the test: the listener is wildcard, not loopback.
-	mcpLn, err := net.Listen("tcp", "0.0.0.0:0")
+	// "tcp4" pins the binding to the IPv4 wildcard; without it, dual-stack
+	// hosts silently bind to "[::]:port" (the IPv6 wildcard) instead — which
+	// would still pass the test but would exercise the "::" normalization
+	// branch rather than the "0.0.0.0" branch the test name promises.
+	mcpLn, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Derive the loopback URL the same way main.go does.
 	listenAddr := mcpLn.Addr().String() // "0.0.0.0:<port>"
+	// Guard the test's own coverage: if the OS quietly bound something other
+	// than the wildcard host (e.g. dual-stack fallback to ::), the rest of the
+	// test still passes but no longer exercises the wildcard→loopback path.
+	if !strings.HasPrefix(listenAddr, "0.0.0.0:") {
+		t.Fatalf("expected wildcard bind address to start with %q, got %q", "0.0.0.0:", listenAddr)
+	}
 	loopbackURL := "http://" + normalizeListen(listenAddr)
 
 	mcpHandler := internalmcp.NewHTTPHandler(internalmcp.HTTPOptions{
