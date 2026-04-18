@@ -110,6 +110,9 @@ go build -tags firecracker,incus -o navarisd ./cmd/navarisd
 # CLI (no build tags needed)
 go build -o navaris ./cmd/navaris
 
+# MCP stdio binary (for AI agents — see docs/mcp.md)
+go build -o navaris-mcp ./cmd/navaris-mcp
+
 # Guest agent (for Firecracker VMs)
 GOOS=linux GOARCH=amd64 go build -o navaris-agent ./cmd/navaris-agent
 ```
@@ -169,6 +172,10 @@ Backend selection for new sandboxes follows this priority:
 | `--otlp-endpoint` | *(empty)* | OTLP collector endpoint (empty = telemetry disabled) |
 | `--otlp-protocol` | `grpc` | OTLP transport: `grpc` or `http` |
 | `--service-name` | `navarisd` | Service name in telemetry data |
+| `--mcp-enabled` | `false` | Mount the embedded MCP endpoint (see [docs/mcp.md](docs/mcp.md)) |
+| `--mcp-read-only` | `false` | Hide mutating MCP tools when `--mcp-enabled` is set |
+| `--mcp-path` | `/v1/mcp` | Path to mount the MCP endpoint at |
+| `--mcp-max-timeout` | `10m` | Cap on per-tool `timeout_seconds` for MCP calls |
 
 ## Web UI
 
@@ -205,6 +212,28 @@ make web-deps web-build build-ui
 ```
 
 The SPA sources live in `web/`. See `web/MANUAL_TERMINAL_SMOKE.md` for a manual smoke-test procedure.
+
+## MCP server
+
+Navaris exposes its API as a [Model Context Protocol](https://modelcontextprotocol.io/) server so AI agents (Claude Desktop, Claude Code, and other MCP clients) can manage sandboxes as tools. 22 tools cover the full lifecycle: projects, sandboxes, sessions, snapshots, images, and operations.
+
+Two transports are supported:
+
+- **Stdio binary** (`navaris-mcp`) — connects to a remote `navarisd` over HTTP. Configure with `NAVARIS_API_URL` and `NAVARIS_TOKEN`. Best for local agent setups (e.g. Claude Desktop config).
+- **Embedded HTTP endpoint** — mount inside `navarisd` itself with `--mcp-enabled`. Bearer-only auth via `--auth-token`. Best for remote agents or self-hosted control planes.
+
+```bash
+# Embedded mode — same listener as the REST API
+./navarisd --auth-token mysecret --mcp-enabled
+# /v1/mcp now accepts MCP requests with Authorization: Bearer mysecret
+
+# Read-only mode hides every mutating tool
+./navarisd --auth-token mysecret --mcp-enabled --mcp-read-only
+```
+
+> **Security:** Running `--mcp-enabled` without `--auth-token` exposes mutating tools to unauthenticated requests; the daemon logs a warning at startup when this combination is detected.
+
+See [docs/mcp.md](docs/mcp.md) for the full tool catalog, env-var reference, and per-tool argument schemas.
 
 ## CLI usage
 
@@ -247,13 +276,15 @@ navaris sandbox destroy <sandbox-id>
 |---------|-------------|
 | `project create/list/get/update/delete` | Manage projects |
 | `sandbox create/list/get/start/stop/destroy/exec` | Manage sandboxes |
+| `sandbox wait-state <id> --state running` | Block until a sandbox reaches a target state |
+| `sandbox attach <id>` | Attach a TTY to a sandbox session over WebSocket |
 | `snapshot create/list/get/restore/delete` | Manage snapshots |
 | `image list/get/promote/register/delete` | Manage base images |
 | `session create/list/get/destroy` | Manage interactive sessions |
-| `operation list/get/cancel` | Track async operations |
+| `operation list/get/wait/cancel` | Track async operations (`wait` blocks until terminal) |
 | `port create/list/delete` | Manage port bindings |
 
-Use `navaris <command> --help` for detailed usage of each command.
+Use `navaris <command> --help` for detailed usage of each command. Pass `--quiet` (`-q`) on operation commands to print only the resulting ID, useful for shell pipelines.
 
 ## API
 
@@ -299,6 +330,8 @@ All endpoints are under `/v1/`. Authentication is via `Authorization: Bearer <to
 | `GET` | `/v1/operations` | List operations |
 | `POST` | `/v1/operations/{id}/cancel` | Cancel operation |
 | `GET` | `/v1/events` | Event stream (WebSocket) |
+| `GET` | `/v1/sandboxes/{id}/attach` | Attach to a session over WebSocket |
+| `POST/GET` | `/v1/mcp` | MCP server endpoint (mounted when `--mcp-enabled`; see [docs/mcp.md](docs/mcp.md)) |
 
 ## Development
 
