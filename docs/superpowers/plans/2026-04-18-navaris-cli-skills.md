@@ -593,7 +593,7 @@ navaris sandbox wait-state "$SANDBOX_ID" --state running --timeout 60s
 navaris sandbox exec "$SANDBOX_ID" -- apk add --no-cache curl
 ```
 
-Skipping `wait-state` after `create` can produce `sandbox not running` because create returns as soon as the operation is queued (unless `--wait` was passed).
+Skipping `wait-state` after `create` can produce errors because create returns as soon as the operation is queued (unless `--wait` was passed).
 
 ### 4. Exec vs session — pick the right tool
 
@@ -609,11 +609,11 @@ Skipping `wait-state` after `create` can produce `sandbox not running` because c
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `session not found` | Session was destroyed, or the sandbox was restarted and `direct`-backed sessions were dropped | Recreate with `session create`; use `--backing tmux` to survive client disconnects |
+| `api error 404: session: not found` | Session was destroyed, or the sandbox was restarted and `direct`-backed sessions were dropped | Recreate with `session create`; use `--backing tmux` to survive client disconnects |
 | Attach WebSocket drops mid-session | Daemon restart or network blip | Re-run `navaris sandbox attach`; tmux-backed sessions preserve state |
 | `context deadline exceeded` on exec | `--timeout` elapsed; the process may still be running server-side | Check with `navaris sandbox exec <id> -- ps aux` or wait and retry; do not assume the command was cancelled |
-| `sandbox not running` | Exec before the sandbox reached running | Insert `navaris sandbox wait-state <id> --state running` before exec |
-| Attach hangs at connect | Daemon does not have auth or the token is wrong | Re-check `NAVARIS_TOKEN`; run the router's health check |
+| `api error 422: sandbox must be running to create session` | `session create` called before the sandbox reached running state | Insert `navaris sandbox wait-state <id> --state running` before `session create` |
+| `dial attach: unexpected HTTP status code 401` | `NAVARIS_TOKEN` missing or wrong for the attach WebSocket handshake | Re-check `NAVARIS_TOKEN`; run `navaris project list` to verify auth works |
 ````
 
 - [ ] **Step 2: Verify frontmatter parses**
