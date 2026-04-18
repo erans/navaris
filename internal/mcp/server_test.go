@@ -10,10 +10,10 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
-// TestNewServer_ScaffoldHasNoToolsYet documents the M6.1 scaffold state:
-// tool registration is stubbed. M7 fills in the read tools and this test's
-// assertion must be inverted to "len > 0" then.
-func TestNewServer_ScaffoldHasNoToolsYet(t *testing.T) {
+// TestNewServer_RegistersTools confirms tool registration wires through.
+// Originally TestNewServer_ScaffoldHasNoToolsYet (M6.1 scaffold), inverted
+// in M7.1 once project tools landed.
+func TestNewServer_RegistersTools(t *testing.T) {
 	c := client.NewClient(client.WithURL("http://localhost:0"))
 	s := internalmcp.NewServer(internalmcp.Options{Client: c})
 	if s == nil {
@@ -21,8 +21,8 @@ func TestNewServer_ScaffoldHasNoToolsYet(t *testing.T) {
 	}
 
 	names := listToolNames(t, s)
-	if len(names) != 0 {
-		t.Fatalf("scaffold expected 0 tools; got %d (%v) — update this test in M7", len(names), names)
+	if len(names) == 0 {
+		t.Fatal("expected at least one registered tool")
 	}
 }
 
@@ -35,16 +35,30 @@ func TestNewServer_PanicsWithoutClient(t *testing.T) {
 	_ = internalmcp.NewServer(internalmcp.Options{})
 }
 
-func TestNewServer_ReadOnlyParityInScaffold(t *testing.T) {
+// TestNewServer_ReadOnlyExposesNoMutators asserts that the read-only tool
+// set is a strict subset of the full tool set. In M7 milestones (read tools
+// only) the two sets are equal; once mutating tools land in M8 the read-only
+// set will be strictly smaller.
+func TestNewServer_ReadOnlyExposesNoMutators(t *testing.T) {
 	c := client.NewClient(client.WithURL("http://localhost:0"))
 	full := internalmcp.NewServer(internalmcp.Options{Client: c, ReadOnly: false})
 	ro := internalmcp.NewServer(internalmcp.Options{Client: c, ReadOnly: true})
 
-	if got := len(listToolNames(t, full)); got != 0 {
-		t.Errorf("scaffold full server: expected 0 tools, got %d", got)
+	fullNames := listToolNames(t, full)
+	roNames := listToolNames(t, ro)
+
+	if len(roNames) > len(fullNames) {
+		t.Fatalf("read-only set (%d) larger than full set (%d)", len(roNames), len(fullNames))
 	}
-	if got := len(listToolNames(t, ro)); got != 0 {
-		t.Errorf("scaffold read-only server: expected 0 tools, got %d", got)
+
+	fullSet := make(map[string]struct{}, len(fullNames))
+	for _, n := range fullNames {
+		fullSet[n] = struct{}{}
+	}
+	for _, n := range roNames {
+		if _, ok := fullSet[n]; !ok {
+			t.Errorf("read-only tool %q is not in the full tool set", n)
+		}
 	}
 }
 
