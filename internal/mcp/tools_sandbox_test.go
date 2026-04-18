@@ -450,7 +450,7 @@ func TestNewServer_ReadOnly_HidesMutatingTools(t *testing.T) {
 	for _, tl := range tools.Tools {
 		roSet[tl.Name] = struct{}{}
 	}
-	for _, name := range []string{"sandbox_create", "sandbox_start", "sandbox_stop", "sandbox_destroy", "sandbox_exec", "session_create", "session_destroy"} {
+	for _, name := range []string{"sandbox_create", "sandbox_start", "sandbox_stop", "sandbox_destroy", "sandbox_exec", "session_create", "session_destroy", "snapshot_create", "snapshot_restore", "snapshot_delete"} {
 		if _, ok := roSet[name]; ok {
 			t.Errorf("mutating tool %q should be hidden in ReadOnly mode", name)
 		}
