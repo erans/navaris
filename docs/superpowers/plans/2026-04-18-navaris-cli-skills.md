@@ -608,7 +608,7 @@ Skipping `wait-state` after `create` can produce errors because create returns a
 
 ## Common errors
 
-Cobra's `SilenceErrors: true` plus a bare `os.Exit(1)` in `cmd/navaris/main.go` means client errors are not currently printed to stderr; run with `--output json` to see error output via the API response, or check the daemon logs — the symptom strings below are what the client *would* render if the suppression were lifted.
+Cobra's `SilenceErrors: true` setting plus a bare `os.Exit(1)` in `cmd/navaris/main.go` means client errors are not currently printed to stderr. Check `$?` to confirm the command failed, and read the daemon logs for the underlying cause. The symptom strings below are what the client *would* render if the suppression were lifted.
 
 | Symptom | Cause | Fix |
 |---|---|---|
