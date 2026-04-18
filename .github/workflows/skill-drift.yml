@@ -1,0 +1,50 @@
+name: Skill Drift Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - 'cmd/navaris/**'
+      - 'scripts/skill-drift-check.sh'
+      - 'scripts/skill-drift-check_test.sh'
+      - '.github/workflows/skill-drift.yml'
+  pull_request:
+    paths:
+      - 'skills/**'
+      - 'cmd/navaris/**'
+      - 'scripts/skill-drift-check.sh'
+      - 'scripts/skill-drift-check_test.sh'
+      - '.github/workflows/skill-drift.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-drift-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build navaris CLI
+        run: go build -o ./navaris ./cmd/navaris
+
+      - name: Run drift detector tests
+        env:
+          NAVARIS: ${{ github.workspace }}/navaris
+        run: ./scripts/skill-drift-check_test.sh
+
+      - name: Run drift detector against skills/
+        env:
+          NAVARIS: ${{ github.workspace }}/navaris
+        run: ./scripts/skill-drift-check.sh skills
