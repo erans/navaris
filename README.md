@@ -71,6 +71,7 @@ You can run both backends in a single Navaris instance — containers for speed,
 - **Real-time events**: WebSocket event stream for sandbox lifecycle changes
 - **Observability**: OpenTelemetry metrics and distributed tracing (OTLP export)
 - **Projects**: organize sandboxes into logical groups
+- **MCP server**: expose sandboxes as Model Context Protocol tools for AI agents — see [docs/mcp.md](docs/mcp.md)
 
 ## Architecture
 
