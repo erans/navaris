@@ -123,3 +123,89 @@ func TestSessionGet_NotFound(t *testing.T) {
 		t.Errorf("expected error text to mention 'not found', got %q", text)
 	}
 }
+
+func TestSessionCreate_AndDestroy(t *testing.T) {
+	sess, apiURL := startMCPTestServer(t, false)
+	c := client.NewClient(client.WithURL(apiURL), client.WithToken("test-token"))
+
+	proj, err := c.CreateProject(t.Context(), client.CreateProjectRequest{Name: "scrt-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := c.CreateSandbox(t.Context(), client.CreateSandboxRequest{
+		ProjectID: proj.ProjectID, Name: "scrt-target", ImageID: "mock-image",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.WaitForOperation(t.Context(), op.OperationID, &client.WaitOptions{Timeout: 10 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+
+	// session_create — assert returned shell/backing match what we sent.
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name: "session_create",
+		Arguments: map[string]any{
+			"sandbox_id": op.ResourceID,
+			"shell":      "bash",
+			"backing":    "direct",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("create tool error: %v", res.Content)
+	}
+	got, ok := decodeJSONResult(t, res).(map[string]any)
+	if !ok {
+		t.Fatalf("expected object, got %T", decodeJSONResult(t, res))
+	}
+	sessionID, _ := got["SessionID"].(string)
+	if sessionID == "" {
+		t.Fatal("expected non-empty SessionID")
+	}
+	if shell, _ := got["Shell"].(string); shell != "bash" {
+		t.Errorf("Shell: got %q, want %q", shell, "bash")
+	}
+	if backing, _ := got["Backing"].(string); backing != "direct" {
+		t.Errorf("Backing: got %q, want %q", backing, "direct")
+	}
+
+	// session_destroy — assert success payload shape.
+	resD, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name:      "session_destroy",
+		Arguments: map[string]any{"session_id": sessionID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resD.IsError {
+		t.Fatalf("destroy tool error: %v", resD.Content)
+	}
+	gotD, ok := decodeJSONResult(t, resD).(map[string]any)
+	if !ok {
+		t.Fatalf("expected object, got %T", decodeJSONResult(t, resD))
+	}
+	if okFlag, _ := gotD["ok"].(bool); !okFlag {
+		t.Errorf("destroy result: got %v, want {ok:true}", gotD)
+	}
+}
+
+func TestSessionCreate_PropagatesError(t *testing.T) {
+	// Call session_create with a sandbox_id that does not exist. The service
+	// layer will reject it with a not-found error before the tool can succeed.
+	// This validates that session_create surfaces errors to the MCP client.
+	sess, _ := startMCPTestServer(t, false)
+
+	res, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name: "session_create",
+		Arguments: map[string]any{
+			"sandbox_id": "sbx-nonexistent",
+			"shell":      "bash",
+		},
+	})
+	if err == nil && (res == nil || !res.IsError) {
+		t.Fatal("expected an error response from session_create with non-existent sandbox_id")
+	}
+}

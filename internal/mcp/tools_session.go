@@ -16,6 +16,42 @@ type sessionGetInput struct {
 	SessionID string `json:"session_id" jsonschema:"ID of the session to fetch"`
 }
 
+type sessionCreateInput struct {
+	SandboxID string `json:"sandbox_id" jsonschema:"the sandbox to attach to"`
+	Shell     string `json:"shell,omitempty" jsonschema:"shell to launch (default bash)"`
+	Backing   string `json:"backing,omitempty" jsonschema:"session backing: direct or tmux (tmux survives disconnects)"`
+}
+
+type sessionDestroyInput struct {
+	SessionID string `json:"session_id" jsonschema:"the session's ID"`
+}
+
+func registerSessionMutatingTools(s *mcpsdk.Server, opts Options) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "session_create",
+		Description: "Create a new interactive session attached to a running sandbox. Use backing=tmux to keep the shell alive across disconnects.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sessionCreateInput) (*mcpsdk.CallToolResult, any, error) {
+		s, err := opts.Client.CreateSession(ctx, in.SandboxID, client.CreateSessionRequest{
+			Shell:   in.Shell,
+			Backing: in.Backing,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, s, nil
+	})
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "session_destroy",
+		Description: "Destroy a session and any backing tmux state. The shell process exits.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in sessionDestroyInput) (*mcpsdk.CallToolResult, any, error) {
+		if err := opts.Client.DestroySession(ctx, in.SessionID); err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]bool{"ok": true}, nil
+	})
+}
+
 func registerSessionReadTools(s *mcpsdk.Server, opts Options) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "session_list",
