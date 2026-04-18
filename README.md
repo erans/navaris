@@ -241,7 +241,7 @@ Navaris ships a Claude Code skill pack (`navaris-cli`) so you can ask Claude Cod
 
 ```
 /plugin marketplace add erans/navaris
-/plugin install navaris-cli@erans/navaris
+/plugin install navaris-cli@navaris
 ```
 
 See [docs/claude-skills.md](docs/claude-skills.md) for the full skill list, install/uninstall, and MCP-vs-skill tradeoffs.
