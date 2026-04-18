@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -245,6 +244,9 @@ func run(cfg config) error {
 	// API server
 	var mcpHandler http.Handler
 	if cfg.mcpEnabled {
+		if cfg.authToken == "" {
+			logger.Warn("MCP is enabled but --auth-token is empty; the /v1/mcp endpoint will accept unauthenticated requests including mutating tools — set --auth-token in any non-isolated environment")
+		}
 		// normalizeListen turns ":port" into "127.0.0.1:port" for outbound calls;
 		// the loopback form is required because the MCP handler calls navarisd as a client.
 		localURL := "http://" + normalizeListen(cfg.listen)
@@ -363,12 +365,17 @@ func setupLogger(level string) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
 }
 
-// normalizeListen converts a bare-port listen address (e.g. ":8080") to the
-// loopback form ("127.0.0.1:8080") so the MCP handler can make outbound HTTP
-// calls to navarisd itself. Addresses with an explicit host are returned as-is.
+// normalizeListen converts a listen address to a loopback form suitable for
+// the MCP handler's outbound calls back into navarisd. Wildcard hosts ("",
+// "0.0.0.0", "::") become 127.0.0.1; explicit hosts are preserved. Invalid
+// addresses pass through so net.Listen reports the canonical error.
 func normalizeListen(addr string) string {
-	if strings.HasPrefix(addr, ":") {
-		return "127.0.0.1" + addr
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
 	}
-	return addr
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }

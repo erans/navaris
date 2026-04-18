@@ -151,3 +151,30 @@ func TestParseFlagsUIExplicit(t *testing.T) {
 		t.Errorf("uiSessionTTL = %v, want 8h", cfg.uiSessionTTL)
 	}
 }
+
+func TestNormalizeListen(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "bare port", in: ":8080", want: "127.0.0.1:8080"},
+		{name: "wildcard ipv4", in: "0.0.0.0:8080", want: "127.0.0.1:8080"},
+		{name: "wildcard ipv6", in: "[::]:8080", want: "127.0.0.1:8080"},
+		{name: "loopback ipv4", in: "127.0.0.1:8080", want: "127.0.0.1:8080"},
+		{name: "localhost", in: "localhost:8080", want: "localhost:8080"},
+		{name: "explicit host", in: "some.host:9000", want: "some.host:9000"},
+		{name: "loopback ipv6", in: "[::1]:8080", want: "[::1]:8080"},
+		{name: "explicit ipv6", in: "[2001:db8::1]:8080", want: "[2001:db8::1]:8080"},
+		{name: "invalid addr passthrough", in: "not-a-valid-addr", want: "not-a-valid-addr"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeListen(tc.in)
+			if got != tc.want {
+				t.Errorf("normalizeListen(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
