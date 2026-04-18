@@ -1,6 +1,7 @@
 package mcp_test
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -82,5 +83,201 @@ func TestHTTPHandler_AcceptsBearerToken(t *testing.T) {
 	}
 	if len(tools.Tools) == 0 {
 		t.Fatal("expected at least one tool, got none")
+	}
+}
+
+// TestHTTPHandler_MountedEndToEnd_ReadAndMutate exercises the full mounted
+// path: navarisd's middleware chain → MCP handler at /v1/mcp → loopback back
+// into navarisd for tool execution. It calls both a read tool (sandbox_list)
+// and a mutating tool (sandbox_create) to confirm the complete round-trip works.
+func TestHTTPHandler_MountedEndToEnd_ReadAndMutate(t *testing.T) {
+	const token = "test-token"
+	baseURL, _, _ := apiserver.New(t, apiserver.WithMCP(false))
+	mcpURL := baseURL + "/v1/mcp"
+
+	mc := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-mounted"}, nil)
+	transport := &mcpsdk.StreamableClientTransport{
+		Endpoint: mcpURL,
+		HTTPClient: &http.Client{
+			Transport: bearerInjector{token: token},
+		},
+	}
+
+	sess, err := mc.Connect(t.Context(), transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	// ListTools: both sandbox_list and sandbox_create must be present.
+	tools, err := sess.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	toolNames := make(map[string]struct{}, len(tools.Tools))
+	for _, tl := range tools.Tools {
+		toolNames[tl.Name] = struct{}{}
+	}
+	for _, want := range []string{"sandbox_list", "sandbox_create"} {
+		if _, ok := toolNames[want]; !ok {
+			t.Errorf("expected tool %q in full-mode tool list, not found", want)
+		}
+	}
+
+	// Get the default project ID via project_list.
+	projRes, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name:      "project_list",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("project_list call: %v", err)
+	}
+	if projRes.IsError {
+		t.Fatalf("project_list tool error: %v", projRes.Content)
+	}
+	projects := decodeJSONResult(t, projRes)
+	arr, ok := projects.([]any)
+	if !ok || len(arr) == 0 {
+		t.Fatalf("expected at least one project from project_list, got %T: %v", projects, projects)
+	}
+	projObj, ok := arr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected project object, got %T", arr[0])
+	}
+	pid, _ := projObj["ProjectID"].(string)
+	if pid == "" {
+		t.Fatalf("expected non-empty ProjectID from project_list result: %v", projObj)
+	}
+
+	// sandbox_list with default project: should return an empty list.
+	listRes, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name:      "sandbox_list",
+		Arguments: map[string]any{"project_id": pid},
+	})
+	if err != nil {
+		t.Fatalf("sandbox_list call: %v", err)
+	}
+	if listRes.IsError {
+		t.Fatalf("sandbox_list tool error: %v", listRes.Content)
+	}
+	listVal := decodeJSONResult(t, listRes)
+	listArr, ok := listVal.([]any)
+	if !ok {
+		t.Fatalf("expected array from sandbox_list, got %T", listVal)
+	}
+	if len(listArr) != 0 {
+		t.Errorf("expected empty sandbox list before creation, got %d entries", len(listArr))
+	}
+
+	// sandbox_create with wait=false: should return an Operation payload.
+	createRes, err := sess.CallTool(t.Context(), &mcpsdk.CallToolParams{
+		Name: "sandbox_create",
+		Arguments: map[string]any{
+			"project_id": pid,
+			"image_id":   "mock-image",
+			"name":       "e2e-test-sandbox",
+			"wait":       false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("sandbox_create call: %v", err)
+	}
+	if createRes.IsError {
+		t.Fatalf("sandbox_create tool error: %v", createRes.Content)
+	}
+	createVal := decodeJSONResult(t, createRes)
+	createObj, ok := createVal.(map[string]any)
+	if !ok || len(createObj) == 0 {
+		t.Fatalf("expected non-empty object from sandbox_create, got %T: %v", createVal, createVal)
+	}
+	// wait=false returns an operation; verify OperationID is present.
+	opID, _ := createObj["OperationID"].(string)
+	if opID == "" {
+		t.Errorf("expected OperationID in sandbox_create result, got %v", createObj)
+	}
+}
+
+// TestHTTPHandler_MountedEndToEnd_RejectsMissingBearer confirms that the
+// mounted /v1/mcp endpoint enforces bearer auth when accessed via raw HTTP —
+// both with no Authorization header and with a wrong token.
+func TestHTTPHandler_MountedEndToEnd_RejectsMissingBearer(t *testing.T) {
+	baseURL, _, _ := apiserver.New(t, apiserver.WithMCP(false))
+	mcpURL := baseURL + "/v1/mcp"
+
+	// No Authorization header — must get 401.
+	req, err := http.NewRequest(http.MethodPost, mcpURL, bytes.NewBufferString("{}"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request (no auth): %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no-auth: expected 401, got %d", resp.StatusCode)
+	}
+
+	// Wrong token — must also get 401.
+	req2, err := http.NewRequest(http.MethodPost, mcpURL, bytes.NewBufferString("{}"))
+	if err != nil {
+		t.Fatalf("new request (wrong token): %v", err)
+	}
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer wrong-token")
+
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("do request (wrong token): %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong-token: expected 401, got %d", resp2.StatusCode)
+	}
+}
+
+// TestHTTPHandler_MountedEndToEnd_ReadOnlyHidesMutations confirms that when the
+// MCP handler is mounted in read-only mode, mutating tools are absent from the
+// tool list while read-only tools remain present.
+func TestHTTPHandler_MountedEndToEnd_ReadOnlyHidesMutations(t *testing.T) {
+	const token = "test-token"
+	baseURL, _, _ := apiserver.New(t, apiserver.WithMCP(true)) // read-only
+	mcpURL := baseURL + "/v1/mcp"
+
+	mc := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-mounted-ro"}, nil)
+	transport := &mcpsdk.StreamableClientTransport{
+		Endpoint: mcpURL,
+		HTTPClient: &http.Client{
+			Transport: bearerInjector{token: token},
+		},
+	}
+
+	sess, err := mc.Connect(t.Context(), transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	tools, err := sess.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	toolNames := make(map[string]struct{}, len(tools.Tools))
+	for _, tl := range tools.Tools {
+		toolNames[tl.Name] = struct{}{}
+	}
+
+	// Read tool must be present.
+	if _, ok := toolNames["sandbox_list"]; !ok {
+		t.Error("expected read-only tool sandbox_list to be present in read-only mode")
+	}
+
+	// Mutating tools must be absent.
+	for _, mutator := range []string{"sandbox_create", "snapshot_create", "operation_cancel"} {
+		if _, ok := toolNames[mutator]; ok {
+			t.Errorf("mutating tool %q should be hidden in read-only mode", mutator)
+		}
 	}
 }

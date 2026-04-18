@@ -171,6 +171,18 @@ func (sc *statusCapture) WriteHeader(code int) {
 	sc.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher so that SSE and other streaming responses
+// can push buffered data to the client before the handler returns. Without
+// this, the MCP StreamableHTTPHandler's standalone SSE stream deadlocks:
+// the server calls Flush() after WriteHeader to unblock the client's Do()
+// call, but if Flush is not forwarded the response stays buffered until the
+// handler exits, which never happens.
+func (sc *statusCapture) Flush() {
+	if f, ok := sc.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // Hijack implements http.Hijacker so that WebSocket upgrades work when the
 // underlying ResponseWriter supports hijacking (e.g. http.Server connections).
 func (sc *statusCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
