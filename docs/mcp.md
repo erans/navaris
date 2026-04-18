@@ -38,6 +38,8 @@ Both transports expose the same tool set and read the same read-only toggle to h
 
 Mutating tools default to `wait=true` so the call returns the final resource. Pass `wait=false` to get an `operation_id` you can poll later via `operation_get`. If `timeout_seconds` elapses while the underlying operation is still running, the tool returns a `{operation_id, status: "running", note: ...}` payload (not an error) so the agent can decide to wait more or move on.
 
+**`sandbox_exec` timeout semantics differ from other mutating tools.** `timeout_seconds` bounds the synchronous inbound MCP request via a `context.WithTimeout` — it does not gate an asynchronous operation. On expiry the caller receives a `context deadline exceeded` error, not a structured progress payload. Cancelling the inbound context may not kill the server-side process, so agents should treat the exec as potentially still-running when a timeout occurs and avoid retrying immediately without checking for side effects.
+
 ## Stdio (local agents)
 
 The `navaris-mcp` binary reads its config from environment variables. Most MCP clients let you set these in the server config.

@@ -26,6 +26,11 @@ type sessionDestroyInput struct {
 	SessionID string `json:"session_id" jsonschema:"the session's ID"`
 }
 
+// registerSessionMutatingTools registers session_create and session_destroy.
+// Both tools are intentionally synchronous (no wait/timeout_seconds fields) because
+// session create/destroy is fast in practice. If session creation ever becomes
+// long-running (e.g., spawning tmux inside a slow sandbox), promote these to the
+// wait/timeout pattern used by sandbox lifecycle tools (sandbox_create, etc.).
 func registerSessionMutatingTools(s *mcpsdk.Server, opts Options) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "session_create",
