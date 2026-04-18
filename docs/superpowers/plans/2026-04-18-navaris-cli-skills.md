@@ -419,10 +419,10 @@ SANDBOX_ID=$(navaris sandbox create \
   --name dev-$$ \
   --image alpine/3.21 \
   --cpu 2 --memory 1024 \
-  --quiet)
+  --wait --output json | jq -r '.SandboxID')
 navaris sandbox wait-state "$SANDBOX_ID" --state running --timeout 60s
 # ... use it ...
-navaris sandbox destroy "$SANDBOX_ID" --quiet
+navaris sandbox destroy "$SANDBOX_ID" --wait
 ```
 
 ### 2. Isolated untrusted workload on Firecracker (hardware isolation)
@@ -434,10 +434,10 @@ SANDBOX_ID=$(navaris sandbox create \
   --name scan-$$ \
   --image alpine-3.21 \
   --cpu 1 --memory 512 \
-  --quiet)
+  --wait --output json | jq -r '.SandboxID')
 navaris sandbox wait-state "$SANDBOX_ID" --state running --timeout 120s
 navaris sandbox exec "$SANDBOX_ID" -- ./scan.sh
-navaris sandbox destroy "$SANDBOX_ID" --quiet
+navaris sandbox destroy "$SANDBOX_ID" --wait
 ```
 
 Firecracker startup is a bit slower than Incus — allow ~2-3s plus image load time.
@@ -576,8 +576,7 @@ navaris sandbox exec "$SANDBOX_ID" \
 ### 2. Persistent tmux-backed session, attach, detach cleanly
 
 ```bash
-SESSION_ID=$(navaris session create --sandbox "$SANDBOX_ID" --backing tmux --quiet 2>/dev/null \
-  || navaris session create --sandbox "$SANDBOX_ID" --backing tmux --output json | jq -r '.SessionID')
+SESSION_ID=$(navaris session create --sandbox "$SANDBOX_ID" --backing tmux --output json | jq -r '.SessionID')
 navaris sandbox attach "$SANDBOX_ID" --session "$SESSION_ID"
 # work in the shell; detach via tmux prefix + d to keep the session alive
 # reattach later with the same command
@@ -588,7 +587,7 @@ If you want a throwaway attached shell, skip `session create` and just run `nava
 ### 3. Wait for running, then exec
 
 ```bash
-SANDBOX_ID=$(navaris sandbox create --name build-$$ --image alpine/3.21 --quiet)
+SANDBOX_ID=$(navaris sandbox create --name build-$$ --image alpine/3.21 --wait --output json | jq -r '.SandboxID')
 navaris sandbox wait-state "$SANDBOX_ID" --state running --timeout 60s
 navaris sandbox exec "$SANDBOX_ID" -- apk add --no-cache curl
 ```
@@ -700,10 +699,10 @@ navaris sandbox wait-state <sandbox-id> --state running [--timeout 60s] [--inter
 ### 1. Safety net: snapshot → upgrade → restore on failure
 
 ```bash
-SNAP_ID=$(navaris snapshot create --sandbox "$SANDBOX_ID" --label pre-upgrade --quiet)
+SNAP_ID=$(navaris snapshot create --sandbox "$SANDBOX_ID" --label pre-upgrade --wait --output json | jq -r '.SnapshotID')
 if ! navaris sandbox exec "$SANDBOX_ID" -- ./upgrade.sh; then
     echo "upgrade failed, restoring..." >&2
-    navaris snapshot restore "$SNAP_ID" --quiet
+    navaris snapshot restore "$SNAP_ID" --wait
 fi
 ```
 
@@ -711,12 +710,12 @@ fi
 
 ```bash
 # after verifying the sandbox is in a good state
-SNAP_ID=$(navaris snapshot create --sandbox "$SANDBOX_ID" --label base-candidate --quiet)
+SNAP_ID=$(navaris snapshot create --sandbox "$SANDBOX_ID" --label base-candidate --wait --output json | jq -r '.SnapshotID')
 IMAGE_ID=$(navaris image promote \
     --snapshot "$SNAP_ID" \
     --name my-service-base \
     --version 2026.04 \
-    --quiet)
+    --wait --output json | jq -r '.ImageID')
 # new sandboxes can now use --image my-service-base
 ```
 
@@ -727,8 +726,7 @@ navaris image register \
   --name debian-minimal \
   --version 12.5 \
   --backend firecracker \
-  --backend-ref /var/lib/firecracker/images/debian-12.5.rootfs \
-  --quiet
+  --backend-ref /var/lib/firecracker/images/debian-12.5.rootfs
 ```
 
 Use this when you build rootfs images yourself (outside navaris) and want them addressable by image reference.
@@ -739,8 +737,7 @@ Use this when you build rootfs images yourself (outside navaris) and want them a
 OP_ID=$(navaris sandbox create \
     --name long-boot \
     --image alpine-3.21 \
-    --wait=false \
-    --quiet)
+    --wait=false --output json | jq -r '.OperationID')
 # do other work...
 if ! navaris operation wait "$OP_ID" --timeout 5m; then
     echo "operation did not finish in 5m, cancelling" >&2
