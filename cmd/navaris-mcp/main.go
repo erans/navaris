@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,12 +16,19 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
+// version is set at build time via:
+//
+//	go build -ldflags "-X main.version=$(git describe --tags --always)"
+//
+// NAVARIS_MCP_VERSION may override at runtime (used by tests).
+var version = "dev"
+
 func main() {
 	configureLogging()
 
 	apiURL := os.Getenv("NAVARIS_API_URL")
 	if apiURL == "" {
-		fatal(fmt.Errorf("NAVARIS_API_URL is required"))
+		fatal(errors.New("NAVARIS_API_URL is required"))
 	}
 
 	token := os.Getenv("NAVARIS_TOKEN")
@@ -33,15 +43,31 @@ func main() {
 		Version:    versionString(),
 	})
 
-	if err := srv.Run(context.Background(), &mcpsdk.StdioTransport{}); err != nil {
+	// Honor SIGINT/SIGTERM so operators can Ctrl-C cleanly. The dominant
+	// termination path remains stdin EOF when the MCP client disconnects.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := srv.Run(ctx, &mcpsdk.StdioTransport{}); err != nil {
 		fatal(err)
 	}
 }
 
-// envBool returns true when the named env var is a valid true-ish value.
+// envBool returns true when the named env var parses as a true boolean
+// per strconv.ParseBool. Unset is treated as false; an invalid value is
+// treated as false but logged because READ_ONLY is a safety toggle and
+// silent fallback would mask typos.
 func envBool(name string) bool {
-	v, err := strconv.ParseBool(os.Getenv(name))
-	return err == nil && v
+	raw := os.Getenv(name)
+	if raw == "" {
+		return false
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		slog.Warn("invalid bool env var, defaulting to false", "name", name, "value", raw)
+		return false
+	}
+	return v
 }
 
 // envDuration parses a Go duration from the named env var, falling back to
@@ -60,24 +86,36 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 }
 
 // configureLogging sets up structured logging to stderr. Stdout is reserved
-// for the MCP protocol framing.
+// for the MCP protocol framing — any stray write there breaks the transport.
 func configureLogging() {
-	format := os.Getenv("NAVARIS_MCP_LOG_FORMAT")
+	opts := &slog.HandlerOptions{Level: parseLogLevel(os.Getenv("NAVARIS_MCP_LOG_LEVEL"))}
 	var h slog.Handler
-	if format == "json" {
-		h = slog.NewJSONHandler(os.Stderr, nil)
+	if os.Getenv("NAVARIS_MCP_LOG_FORMAT") == "json" {
+		h = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
-		h = slog.NewTextHandler(os.Stderr, nil)
+		h = slog.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(h))
 }
 
-// versionString returns the version from the environment or "dev".
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func versionString() string {
 	if v := os.Getenv("NAVARIS_MCP_VERSION"); v != "" {
 		return v
 	}
-	return "dev"
+	return version
 }
 
 func fatal(err error) {

@@ -84,7 +84,6 @@ func mustNotHaveTool(t *testing.T, tools []*mcpsdk.Tool, name string) {
 	for _, tool := range tools {
 		if tool.Name == name {
 			t.Errorf("tool %q should not be present in read-only tool list", name)
-			return
 		}
 	}
 }
