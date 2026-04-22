@@ -35,11 +35,16 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Set up nFPM
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Build release archives
         run: |
           chmod +x scripts/package-release.sh
-          scripts/package-release.sh --version "${GITHUB_REF_NAME}" --arch amd64 --output-dir dist
-          scripts/package-release.sh --version "${GITHUB_REF_NAME}" --arch arm64 --output-dir dist --skip-ui-build
+          scripts/package-release.sh --version "${GITHUB_REF_NAME}" --arch amd64 --output-dir dist --formats tar.gz,deb
+          scripts/package-release.sh --version "${GITHUB_REF_NAME}" --arch arm64 --output-dir dist --formats tar.gz,deb --skip-ui-build
 
       - name: Generate checksums
         run: |

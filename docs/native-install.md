@@ -143,7 +143,7 @@ The repo ships a tag-driven workflow at
 
 On version tags such as `v0.1.0`, GitHub Actions will:
 
-1. Build release tarballs for `linux-amd64` and `linux-arm64`.
+1. Build release tarballs and `.deb` packages for `linux-amd64` and `linux-arm64`.
 2. Include Navaris binaries and packaging files.
 3. Generate `SHA256SUMS`.
 4. Publish or update the matching GitHub Release.

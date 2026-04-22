@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
 arch=""
 version=""
 output_dir="dist"
 skip_ui_build=0
+formats="tar.gz"
 
 usage() {
     cat <<'EOF'
@@ -17,6 +20,7 @@ Options:
   --version VERSION   Release version or tag, for example v0.1.0
   --arch ARCH         Target arch: amd64 or arm64
   --output-dir DIR    Directory to write the archive into (default: dist)
+  --formats LIST      Comma-separated formats: tar.gz,deb (default: tar.gz)
   --skip-ui-build     Reuse the existing embedded UI build
   -h, --help          Show this help text
 EOF
@@ -40,6 +44,35 @@ need_node_major() {
     fi
 }
 
+has_format() {
+    local wanted="$1"
+    local fmt
+    OLD_IFS="$IFS"
+    IFS=','
+    for fmt in $formats; do
+        if [ "$fmt" = "$wanted" ]; then
+            IFS="$OLD_IFS"
+            return 0
+        fi
+    done
+    IFS="$OLD_IFS"
+    return 1
+}
+
+debian_version() {
+    local raw="$1"
+    raw="${raw#v}"
+    if printf '%s' "$raw" | grep -q -- '-'; then
+        local base suffix
+        base="${raw%%-*}"
+        suffix="${raw#*-}"
+        suffix="${suffix//-/.}"
+        printf '%s~%s\n' "$base" "$suffix"
+        return
+    fi
+    printf '%s\n' "$raw"
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --version)
@@ -52,6 +85,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --output-dir)
             output_dir="$2"
+            shift 2
+            ;;
+        --formats)
+            formats="$2"
             shift 2
             ;;
         --skip-ui-build)
@@ -90,21 +127,26 @@ need_cmd install
 need_cmd mktemp
 need_cmd rm
 need_cmd cp
+need_cmd grep
+
+if has_format deb; then
+    need_cmd nfpm
+fi
 
 if [ "$skip_ui_build" -ne 1 ]; then
     need_cmd npm
     need_cmd node
     need_node_major 20
     (
-        cd web
+        cd "${repo_root}/web"
         npm ci
         npm run build
     )
 
-    rm -rf internal/webui/dist
-    mkdir -p internal/webui/dist
-    cp -a web/dist/. internal/webui/dist/
-    touch internal/webui/dist/.gitkeep
+    rm -rf "${repo_root}/internal/webui/dist"
+    mkdir -p "${repo_root}/internal/webui/dist"
+    cp -a "${repo_root}/web/dist/." "${repo_root}/internal/webui/dist/"
+    touch "${repo_root}/internal/webui/dist/.gitkeep"
 fi
 
 tmpdir="$(mktemp -d)"
@@ -125,22 +167,88 @@ build_go() {
     GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$out" "$@"
 }
 
-build_go "${bin_dir}/navarisd" -tags withui,firecracker,incus ./cmd/navarisd
-build_go "${bin_dir}/navaris" ./cmd/navaris
-build_go "${bin_dir}/navaris-agent" ./cmd/navaris-agent
-build_go "${bin_dir}/navaris-mcp" -ldflags "-X main.version=${version}" ./cmd/navaris-mcp
+(
+    cd "$repo_root"
+    build_go "${bin_dir}/navarisd" -tags withui,firecracker,incus ./cmd/navarisd
+    build_go "${bin_dir}/navaris" ./cmd/navaris
+    build_go "${bin_dir}/navaris-agent" ./cmd/navaris-agent
+    build_go "${bin_dir}/navaris-mcp" -ldflags "-X main.version=${version}" ./cmd/navaris-mcp
+)
 
-install -m 0644 README.md LICENSE "${stage_dir}/"
-install -m 0644 docs/native-install.md "${stage_dir}/docs/native-install.md"
-install -m 0644 packaging/systemd/navarisd.service "${stage_dir}/packaging/systemd/navarisd.service"
-install -m 0644 packaging/systemd/navarisd.env.example "${stage_dir}/packaging/systemd/navarisd.env.example"
-install -m 0755 packaging/systemd/navarisd-launch.sh "${stage_dir}/packaging/systemd/navarisd-launch.sh"
-install -m 0755 scripts/install-firecracker-runtime.sh "${stage_dir}/scripts/install-firecracker-runtime.sh"
-install -m 0755 scripts/install-native.sh "${stage_dir}/scripts/install-native.sh"
+install -m 0644 "${repo_root}/README.md" "${repo_root}/LICENSE" "${stage_dir}/"
+install -m 0644 "${repo_root}/docs/native-install.md" "${stage_dir}/docs/native-install.md"
+install -m 0644 "${repo_root}/packaging/systemd/navarisd.service" "${stage_dir}/packaging/systemd/navarisd.service"
+install -m 0644 "${repo_root}/packaging/systemd/navarisd.env.example" "${stage_dir}/packaging/systemd/navarisd.env.example"
+install -m 0755 "${repo_root}/packaging/systemd/navarisd-launch.sh" "${stage_dir}/packaging/systemd/navarisd-launch.sh"
+install -m 0755 "${repo_root}/scripts/install-firecracker-runtime.sh" "${stage_dir}/scripts/install-firecracker-runtime.sh"
+install -m 0755 "${repo_root}/scripts/install-native.sh" "${stage_dir}/scripts/install-native.sh"
 
 mkdir -p "$output_dir"
 archive_path="${output_dir}/${release_root}.tar.gz"
 
-tar -C "$tmpdir" -czf "$archive_path" "$release_root"
+if has_format tar.gz; then
+    tar -C "$tmpdir" -czf "$archive_path" "$release_root"
+    echo "$archive_path"
+fi
 
-echo "$archive_path"
+if has_format deb; then
+    deb_version="$(debian_version "$version")"
+    deb_arch="$arch"
+    deb_target="${output_dir}/navaris_${deb_version}_${deb_arch}.deb"
+    nfpm_config="${tmpdir}/nfpm.yaml"
+
+    cat > "$nfpm_config" <<EOF
+name: navaris
+arch: ${deb_arch}
+platform: linux
+version: ${deb_version}
+section: admin
+priority: optional
+maintainer: Eran Sandler <eran@sandler.co.il>
+description: |
+  Navaris is a sandbox control plane for managing isolated execution
+  environments across multiple backends.
+homepage: https://github.com/erans/navaris
+license: Apache-2.0
+depends:
+  - systemd
+contents:
+  - src: ${bin_dir}/navarisd
+    dst: /usr/bin/navarisd
+  - src: ${bin_dir}/navaris
+    dst: /usr/bin/navaris
+  - src: ${bin_dir}/navaris-mcp
+    dst: /usr/bin/navaris-mcp
+  - src: ${bin_dir}/navaris-agent
+    dst: /usr/bin/navaris-agent
+  - src: ${repo_root}/packaging/systemd/navarisd.service
+    dst: /lib/systemd/system/navarisd.service
+  - src: ${repo_root}/packaging/systemd/navarisd-launch.sh
+    dst: /usr/lib/navaris/navarisd-launch.sh
+  - src: ${repo_root}/scripts/install-firecracker-runtime.sh
+    dst: /usr/lib/navaris/scripts/install-firecracker-runtime.sh
+  - src: ${repo_root}/packaging/deb/navarisd.env
+    dst: /etc/navaris/navarisd.env
+    type: config|noreplace
+  - src: ${repo_root}/docs/native-install.md
+    dst: /usr/share/doc/navaris/native-install.md
+  - src: ${repo_root}/LICENSE
+    dst: /usr/share/doc/navaris/LICENSE
+  - dst: /var/lib/navaris
+    type: dir
+  - dst: /var/lib/navaris/firecracker
+    type: dir
+  - dst: /var/lib/navaris/firecracker/images
+    type: dir
+  - dst: /var/lib/navaris/firecracker/snapshots
+    type: dir
+  - dst: /var/lib/navaris/firecracker/vm
+    type: dir
+scripts:
+  postinstall: ${repo_root}/packaging/deb/postinstall.sh
+  postremove: ${repo_root}/packaging/deb/postremove.sh
+EOF
+
+    nfpm package --packager deb --config "$nfpm_config" --target "$deb_target"
+    echo "$deb_target"
+fi
