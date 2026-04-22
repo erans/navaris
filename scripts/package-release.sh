@@ -73,6 +73,12 @@ debian_version() {
     printf '%s\n' "$raw"
 }
 
+release_filename_version() {
+    local raw="$1"
+    raw="${raw#v}"
+    printf '%s\n' "$raw"
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --version)
@@ -193,8 +199,9 @@ fi
 
 if has_format deb; then
     deb_version="$(debian_version "$version")"
+    file_version="$(release_filename_version "$version")"
     deb_arch="$arch"
-    deb_target="${output_dir}/navaris_${deb_version}_${deb_arch}.deb"
+    deb_target="${output_dir}/navaris_${file_version}_${deb_arch}.deb"
     nfpm_config="${tmpdir}/nfpm.yaml"
 
     cat > "$nfpm_config" <<EOF
