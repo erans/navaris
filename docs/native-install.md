@@ -1,0 +1,154 @@
+# Native Linux Install
+
+Navaris can be installed directly on a Linux host without Docker. The intended
+release format is a `.tar.gz` containing the Navaris binaries plus packaging
+artifacts for `systemd`.
+
+## Scope
+
+Initial native packaging targets:
+
+- Linux `amd64`
+- Linux `arm64`
+- `systemd`-managed hosts such as Debian
+
+The main Navaris release should include:
+
+- `navarisd`
+- `navaris`
+- `navaris-mcp`
+- `navaris-agent`
+- `scripts/install-native.sh`
+- `packaging/systemd/navarisd.service`
+- `packaging/systemd/navarisd-launch.sh`
+- `packaging/systemd/navarisd.env.example`
+
+The main release should **not** include:
+
+- Firecracker guest kernels
+- Firecracker rootfs images
+
+## Firecracker Runtime Strategy
+
+Navaris treats Firecracker itself as a host runtime dependency, not as a binary
+vendored into the main Navaris release tarball.
+
+The supported bootstrap path is:
+
+1. Install Navaris from the release tarball.
+2. If Firecracker support is desired, run
+   `scripts/install-firecracker-runtime.sh`.
+3. Provide guest assets separately: a kernel at `NAVARIS_KERNEL_PATH` and a
+   rootfs image directory at `NAVARIS_IMAGE_DIR`.
+
+This keeps the app release small and lets us pin Firecracker independently of
+guest kernels and images.
+
+## Install Firecracker And Jailer
+
+The installer downloads a pinned upstream Firecracker release for the host
+architecture, verifies the published SHA256 file, and installs:
+
+- `firecracker`
+- `jailer`
+
+Example:
+
+```bash
+sudo ./scripts/install-firecracker-runtime.sh \
+  --version v1.15.1 \
+  --bin-dir /usr/local/lib/navaris/firecracker/bin \
+  --link-dir /usr/local/bin
+```
+
+By default the script supports:
+
+- `amd64` -> upstream `x86_64`
+- `arm64` -> upstream `aarch64`
+
+## Guest Asset Layout
+
+Firecracker guest assets are operator-managed and intentionally separate from
+the runtime installer.
+
+Suggested layout:
+
+```text
+/var/lib/navaris/firecracker/
+  vmlinux
+  images/
+  snapshots/
+  vm/
+```
+
+Suggested environment file values:
+
+```bash
+NAVARIS_FIRECRACKER_BIN=/usr/local/lib/navaris/firecracker/bin/firecracker
+NAVARIS_JAILER_BIN=/usr/local/lib/navaris/firecracker/bin/jailer
+NAVARIS_KERNEL_PATH=/var/lib/navaris/firecracker/vmlinux
+NAVARIS_IMAGE_DIR=/var/lib/navaris/firecracker/images
+NAVARIS_CHROOT_BASE=/var/lib/navaris/firecracker/vm
+NAVARIS_SNAPSHOT_DIR=/var/lib/navaris/firecracker/snapshots
+NAVARIS_ENABLE_JAILER=true
+```
+
+If these are unset, `navarisd` should run without the Firecracker backend and
+continue serving whichever backends are configured, such as Incus.
+
+## Install From A Release Tarball
+
+After extracting the release archive, run:
+
+```bash
+sudo ./scripts/install-native.sh
+```
+
+That installer:
+
+- places the binaries under `/usr/local/bin`
+- places support files under `/usr/local/lib/navaris`
+- installs the `systemd` unit
+- creates `/etc/navaris/navarisd.env` if it does not already exist
+- creates `/var/lib/navaris` and the Firecracker directory skeleton
+
+Useful installer options:
+
+```bash
+sudo ./scripts/install-native.sh --enable --start
+sudo ./scripts/install-native.sh --prefix /opt/navaris --skip-systemd
+```
+
+## systemd
+
+The repo includes a `systemd` wrapper script so native installs can configure
+`navarisd` through `/etc/navaris/navarisd.env` without requiring the daemon
+itself to read env vars directly.
+
+If you prefer to install the files manually instead of using the installer:
+
+```bash
+sudo install -d /etc/navaris /usr/local/lib/navaris
+sudo install -m 0644 packaging/systemd/navarisd.service /etc/systemd/system/navarisd.service
+sudo install -m 0755 packaging/systemd/navarisd-launch.sh /usr/local/lib/navaris/navarisd-launch.sh
+sudo install -m 0644 packaging/systemd/navarisd.env.example /etc/navaris/navarisd.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now navarisd
+```
+
+## Release Automation
+
+The repo ships a tag-driven workflow at
+`.github/workflows/release.yml`.
+
+On version tags such as `v0.1.0`, GitHub Actions will:
+
+1. Build release tarballs for `linux-amd64` and `linux-arm64`.
+2. Include Navaris binaries and packaging files.
+3. Generate `SHA256SUMS`.
+4. Publish or update the matching GitHub Release.
+
+The archive assembly is handled by `scripts/package-release.sh`.
+
+Firecracker guest kernels and rootfs images remain outside those main release
+assets.

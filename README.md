@@ -95,6 +95,12 @@ For Firecracker, a lightweight guest agent (`navaris-agent`) runs inside each VM
 - For Incus backend: a running Incus daemon
 - For Firecracker backend: Firecracker binary, jailer, a Linux kernel, and `/dev/kvm` access
 
+For native Linux installs with `systemd`, release packaging notes live in
+[docs/native-install.md](docs/native-install.md).
+
+Release tarballs also include `scripts/install-native.sh` for direct host
+installation.
+
 ### Build the daemon and CLI
 
 ```bash
