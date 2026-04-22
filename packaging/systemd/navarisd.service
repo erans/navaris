@@ -1,0 +1,19 @@
+[Unit]
+Description=Navaris daemon
+Documentation=https://github.com/navaris/navaris
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/navaris/navarisd.env
+ExecStart=/usr/local/lib/navaris/navarisd-launch.sh
+WorkingDirectory=/var/lib/navaris
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
