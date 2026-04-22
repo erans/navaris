@@ -1,6 +1,6 @@
 [Unit]
 Description=Navaris daemon
-Documentation=https://github.com/navaris/navaris
+Documentation=https://github.com/erans/navaris
 After=network-online.target
 Wants=network-online.target
 

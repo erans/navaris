@@ -202,6 +202,7 @@ name: navaris
 arch: ${deb_arch}
 platform: linux
 version: ${deb_version}
+umask: 0o022
 section: admin
 priority: optional
 maintainer: Eran Sandler <eran@sandler.co.il>
@@ -215,37 +216,68 @@ depends:
 contents:
   - src: ${bin_dir}/navarisd
     dst: /usr/bin/navarisd
+    file_info:
+      mode: 0755
   - src: ${bin_dir}/navaris
     dst: /usr/bin/navaris
+    file_info:
+      mode: 0755
   - src: ${bin_dir}/navaris-mcp
     dst: /usr/bin/navaris-mcp
+    file_info:
+      mode: 0755
   - src: ${bin_dir}/navaris-agent
     dst: /usr/bin/navaris-agent
+    file_info:
+      mode: 0755
   - src: ${repo_root}/packaging/systemd/navarisd.service
     dst: /lib/systemd/system/navarisd.service
+    file_info:
+      mode: 0644
   - src: ${repo_root}/packaging/systemd/navarisd-launch.sh
     dst: /usr/lib/navaris/navarisd-launch.sh
+    file_info:
+      mode: 0755
   - src: ${repo_root}/scripts/install-firecracker-runtime.sh
     dst: /usr/lib/navaris/scripts/install-firecracker-runtime.sh
+    file_info:
+      mode: 0755
   - src: ${repo_root}/packaging/deb/navarisd.env
     dst: /etc/navaris/navarisd.env
     type: config|noreplace
+    file_info:
+      mode: 0644
   - src: ${repo_root}/docs/native-install.md
     dst: /usr/share/doc/navaris/native-install.md
+    file_info:
+      mode: 0644
   - src: ${repo_root}/LICENSE
     dst: /usr/share/doc/navaris/LICENSE
+    file_info:
+      mode: 0644
   - dst: /var/lib/navaris
     type: dir
+    file_info:
+      mode: 0755
   - dst: /var/lib/navaris/firecracker
     type: dir
+    file_info:
+      mode: 0755
   - dst: /var/lib/navaris/firecracker/images
     type: dir
+    file_info:
+      mode: 0755
   - dst: /var/lib/navaris/firecracker/snapshots
     type: dir
+    file_info:
+      mode: 0755
   - dst: /var/lib/navaris/firecracker/vm
     type: dir
+    file_info:
+      mode: 0755
 scripts:
   postinstall: ${repo_root}/packaging/deb/postinstall.sh
+  preremove: ${repo_root}/packaging/deb/preremove.sh
   postremove: ${repo_root}/packaging/deb/postremove.sh
 EOF
 
