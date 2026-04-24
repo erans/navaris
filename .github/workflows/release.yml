@@ -54,8 +54,15 @@ jobs:
       - name: Publish GitHub release
         run: |
           tag="${GITHUB_REF_NAME}"
+          prerelease_flag=""
+          if printf '%s' "$tag" | grep -Eq -- '-(alpha|beta|rc)([.-]|$)'; then
+            prerelease_flag="--prerelease"
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
+            if [ -n "$prerelease_flag" ]; then
+              gh release edit "$tag" --prerelease
+            fi
             gh release upload "$tag" dist/* --clobber
           else
-            gh release create "$tag" dist/* --generate-notes
+            gh release create "$tag" dist/* --generate-notes $prerelease_flag
           fi
