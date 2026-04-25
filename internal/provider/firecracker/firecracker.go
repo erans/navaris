@@ -16,6 +16,7 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
+	"github.com/navaris/navaris/internal/storage"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -32,6 +33,9 @@ type Config struct {
 	HostInterface  string
 	SnapshotDir    string
 	EnableJailer   bool
+	// Storage is required: it owns CoW cloning of rootfs files. Pass a
+	// Registry whose roots include ImageDir, ChrootBase, and SnapshotDir.
+	Storage *storage.Registry
 }
 
 func (c *Config) defaults() {
@@ -58,6 +62,7 @@ type Provider struct {
 	vmMu          sync.RWMutex
 	hostIface     string
 	cgroupVersion string
+	storage       *storage.Registry
 }
 
 // New creates a Firecracker provider and recovers any orphaned VMs.
@@ -81,6 +86,10 @@ func New(cfg Config) (*Provider, error) {
 
 	if cfg.EnableJailer && cfg.JailerBin == "" {
 		return nil, fmt.Errorf("firecracker: jailer-bin is required when jailer is enabled")
+	}
+
+	if cfg.Storage == nil {
+		return nil, fmt.Errorf("firecracker: Storage registry is required")
 	}
 
 	// Detect host interface.
@@ -108,6 +117,7 @@ func New(cfg Config) (*Provider, error) {
 		hostIface:     hostIface,
 		cgroupVersion: detectCgroupVersion(),
 	}
+	p.storage = cfg.Storage
 
 	// Recover orphaned VMs from disk.
 	if err := p.recover(); err != nil {

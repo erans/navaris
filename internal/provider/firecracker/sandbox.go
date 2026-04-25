@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,7 +48,7 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	// Copy rootfs image.
 	srcImage := filepath.Join(p.config.ImageDir, req.ImageRef+".ext4")
 	dstImage := filepath.Join(vmDir, "rootfs.ext4")
-	if err := copyFile(srcImage, dstImage); err != nil {
+	if _, err := p.storage.CloneFile(ctx, srcImage, dstImage); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker copy rootfs %s: %w", vmID, err)
 	}
@@ -505,7 +504,7 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	// Copy rootfs from snapshot.
 	src := filepath.Join(snapDir, "rootfs.ext4")
 	dst := filepath.Join(vmDir, "rootfs.ext4")
-	if err := copyFile(src, dst); err != nil {
+	if _, err := p.storage.CloneFile(ctx, src, dst); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker copy snapshot rootfs %s: %w", vmID, err)
 	}
@@ -580,21 +579,4 @@ func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
 	}
 	defer client.Close()
 	return client.Ping(5 * time.Second)
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
 }

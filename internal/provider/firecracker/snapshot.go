@@ -70,7 +70,7 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 
 	switch mode {
 	case domain.ConsistencyStopped:
-		if err := p.createStoppedSnapshot(vmDir, snapDir); err != nil {
+		if err := p.createStoppedSnapshot(ctx, vmDir, snapDir); err != nil {
 			os.RemoveAll(snapDir)
 			return domain.BackendRef{}, err
 		}
@@ -113,10 +113,10 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 	return domain.BackendRef{Backend: backendName, Ref: snapID}, nil
 }
 
-func (p *Provider) createStoppedSnapshot(vmDir, snapDir string) error {
+func (p *Provider) createStoppedSnapshot(ctx context.Context, vmDir, snapDir string) error {
 	src := filepath.Join(vmDir, "rootfs.ext4")
 	dst := filepath.Join(snapDir, "rootfs.ext4")
-	if err := copyFile(src, dst); err != nil {
+	if _, err := p.storage.CloneFile(ctx, src, dst); err != nil {
 		return fmt.Errorf("firecracker snapshot copy rootfs: %w", err)
 	}
 	return nil
@@ -169,7 +169,7 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	// Copy rootfs while VM is paused (disk consistent).
 	rootfsSrc := filepath.Join(vmDir, "rootfs.ext4")
 	rootfsDst := filepath.Join(snapDir, "rootfs.ext4")
-	if snapErr = copyFile(rootfsSrc, rootfsDst); snapErr != nil {
+	if _, snapErr = p.storage.CloneFile(ctx, rootfsSrc, rootfsDst); snapErr != nil {
 		return fmt.Errorf("firecracker snapshot copy rootfs: %w", snapErr)
 	}
 
@@ -183,7 +183,7 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
 		src := filepath.Join(snapshotFilesDir, name)
 		dst := filepath.Join(snapDir, name)
-		if snapErr = copyFile(src, dst); snapErr != nil {
+		if _, snapErr = p.storage.CloneFile(ctx, src, dst); snapErr != nil {
 			return fmt.Errorf("firecracker snapshot copy %s: %w", name, snapErr)
 		}
 	}
@@ -218,7 +218,7 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 	}
 
 	// Copy rootfs from snapshot to VM.
-	if err := copyFile(filepath.Join(snapDir, "rootfs.ext4"), filepath.Join(vmDir, "rootfs.ext4")); err != nil {
+	if _, err := p.storage.CloneFile(ctx, filepath.Join(snapDir, "rootfs.ext4"), filepath.Join(vmDir, "rootfs.ext4")); err != nil {
 		return fmt.Errorf("firecracker restore copy rootfs: %w", err)
 	}
 
@@ -232,7 +232,7 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 		}
 		os.MkdirAll(restoreDir, 0o755)
 		for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
-			if err := copyFile(filepath.Join(snapDir, name), filepath.Join(restoreDir, name)); err != nil {
+			if _, err := p.storage.CloneFile(ctx, filepath.Join(snapDir, name), filepath.Join(restoreDir, name)); err != nil {
 				return fmt.Errorf("firecracker restore copy %s: %w", name, err)
 			}
 		}
