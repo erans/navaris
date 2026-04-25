@@ -29,6 +29,16 @@ type Config struct {
 	// PortRangeMax is the upper bound of the host port range used for
 	// published sandbox ports. Default: 49999.
 	PortRangeMax int
+
+	// Pool is the Incus storage pool name to inspect at startup. Default:
+	// "default". Only used by the CoW capability check; sandbox creation
+	// continues to use whichever pool Incus has configured for the project.
+	Pool string
+
+	// StrictPoolCoW: when true, the daemon refuses to start if the
+	// configured Incus pool's driver is not CoW-capable. When false (default),
+	// such pools produce a warning log only.
+	StrictPoolCoW bool
 }
 
 func (c *Config) defaults() {
@@ -40,6 +50,9 @@ func (c *Config) defaults() {
 	}
 	if c.PortRangeMax == 0 {
 		c.PortRangeMax = 49999
+	}
+	if c.Pool == "" {
+		c.Pool = "default"
 	}
 }
 
@@ -64,6 +77,17 @@ func New(cfg Config) (*IncusProvider, error) {
 	client, err := incusclient.ConnectIncusUnix(cfg.Socket, nil)
 	if err != nil {
 		return nil, fmt.Errorf("incus connect %s: %w", cfg.Socket, err)
+	}
+
+	fetchDriver := func(ctx context.Context) (string, error) {
+		pool, _, err := client.GetStoragePool(cfg.Pool)
+		if err != nil {
+			return "", fmt.Errorf("incus get storage pool %q: %w", cfg.Pool, err)
+		}
+		return pool.Driver, nil
+	}
+	if err := CheckPool(context.Background(), fetchDriver, cfg.StrictPoolCoW); err != nil {
+		return nil, err
 	}
 
 	p := &IncusProvider{
