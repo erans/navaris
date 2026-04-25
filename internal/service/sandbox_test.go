@@ -220,3 +220,36 @@ func TestSandboxServiceCreateFromSnapshot(t *testing.T) {
 		t.Errorf("expected backend ref mock-from-snap, got %s", newSbx.BackendRef)
 	}
 }
+
+func TestCreate_RejectsOutOfBoundsMemory(t *testing.T) {
+	env := newServiceEnv(t)
+	mem := 8193
+	op, err := env.sandbox.Create(t.Context(), env.projectID, "too-big",
+		"alpine-3.21", service.CreateSandboxOpts{MemoryLimitMB: &mem})
+	if err == nil {
+		t.Fatalf("expected error, got op=%+v", op)
+	}
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
+	}
+	// Sandbox row must NOT have been created.
+	all, _ := env.store.SandboxStore().List(t.Context(), domain.SandboxFilter{})
+	for _, sb := range all {
+		if sb.Name == "too-big" {
+			t.Errorf("sandbox 'too-big' was created despite validation failure")
+		}
+	}
+}
+
+func TestCreateFromSnapshot_RejectsCPULimit(t *testing.T) {
+	env := newServiceEnv(t)
+	cpu := 2
+	op, err := env.sandbox.CreateFromSnapshot(t.Context(), env.projectID, "from-snap",
+		"snap-irrelevant", service.CreateSandboxOpts{CPULimit: &cpu})
+	if err == nil {
+		t.Fatalf("expected error, got op=%+v", op)
+	}
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
+	}
+}

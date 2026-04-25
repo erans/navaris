@@ -94,6 +94,9 @@ func (s *SandboxService) registerHandlers() {
 }
 
 func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	if err := validateLimits(opts, false); err != nil {
+		return nil, err
+	}
 	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSandbox")
 	defer span.End()
 
@@ -152,6 +155,9 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 }
 
 func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name, snapshotID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	if err := validateLimits(opts, true); err != nil {
+		return nil, err
+	}
 	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSandboxFromSnapshot")
 	defer span.End()
 
