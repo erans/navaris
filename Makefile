@@ -109,11 +109,26 @@ FC_COW_COMPOSE_FILE := docker-compose.integration-firecracker-cow.yml
 # Mounts a btrfs loop file at /srv/firecracker inside the navarisd container
 # and runs navarisd with --storage-mode=reflink (strict). If FICLONE doesn't
 # work on /srv/firecracker, navarisd refuses to start — so a healthy stack
-# is itself end-to-end proof that ReflinkBackend.CloneFile is exercised.
+# is itself proof that ReflinkBackend.CloneFile is exercised. After the
+# integration suite passes we additionally run check-reflink-sharing.sh
+# inside the navarisd container, which uses btrfs filesystem du --raw to
+# directly assert that the snapshot/sandbox rootfs files share extents
+# with their source images. That catches a kernel-level regression where
+# FICLONE silently full-copies (which the strict probe wouldn't detect).
 integration-test-firecracker-cow:
 	@docker compose -f $(FC_COW_COMPOSE_FILE) --profile test up \
 		--build --abort-on-container-exit --exit-code-from test-runner; \
 	rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+		echo "==> Verifying btrfs reflink extent sharing..."; \
+		docker compose -f $(FC_COW_COMPOSE_FILE) start navarisd >/dev/null 2>&1; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do \
+			docker compose -f $(FC_COW_COMPOSE_FILE) ps navarisd | grep -q running && break; \
+			sleep 1; \
+		done; \
+		docker compose -f $(FC_COW_COMPOSE_FILE) exec -T navarisd /usr/local/bin/check-reflink-sharing.sh \
+			|| { echo "==> reflink-sharing assertion FAILED"; rc=2; }; \
+	fi; \
 	docker compose -f $(FC_COW_COMPOSE_FILE) --profile test down -v; \
 	exit $$rc
 

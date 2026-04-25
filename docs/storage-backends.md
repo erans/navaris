@@ -93,3 +93,36 @@ startup:
 
 The pool inspected is the one named `default` by default; configure via
 `incus.Pool` if you use a different pool name.
+
+## How CoW is verified in CI
+
+Three layers run on every pull request:
+
+1. **`integration-incus-cow`** — brings up an Incus container preseeded
+   with a btrfs-driver pool, runs the integration suite against navarisd
+   with `--incus-strict-pool-cow=true`. Failure = the navaris pool
+   advisory regressed, or Incus's btrfs driver is broken on this host.
+
+2. **`integration-firecracker-cow`** — mounts a btrfs loop file at
+   `/srv/firecracker` inside the navarisd container and runs navarisd
+   with `--storage-mode=reflink`. Failure to start = `ioctl(FICLONE)`
+   was rejected on a storage root, so every clone in the suite that
+   followed must have used `ReflinkBackend`.
+
+3. **`check-reflink-sharing.sh`** runs after the integration suite
+   passes (in the firecracker-cow leg). It does
+   `cp --reflink=always` on a known image and inspects the result with
+   `btrfs filesystem du --raw`. The clone must report shared bytes
+   ≥ 80% of source size, otherwise the leg fails. This catches the
+   silent-full-copy regression where the kernel returns success from
+   `FICLONE` without actually deduplicating extents — something the
+   strict-mode startup probe alone cannot detect.
+
+Local reproduction is via the Makefile:
+
+- `make integration-test-incus-cow` — Incus btrfs leg.
+- `make integration-test-firecracker-cow` — Firecracker reflink leg
+  (requires `/dev/kvm`).
+- `make integration-env-firecracker-cow` / `integration-env-incus-cow`
+  bring up the stack without the test-runner so you can poke at it
+  manually.
