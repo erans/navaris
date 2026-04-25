@@ -142,3 +142,72 @@ func TestCopyBackend_NameAndCapabilities(t *testing.T) {
 		t.Errorf("CopyBackend caps must be all-false, got %+v", caps)
 	}
 }
+
+// Compile-time: ReflinkBackend must satisfy Backend.
+var _ Backend = (*ReflinkBackend)(nil)
+
+func TestReflinkBackend_NameAndCapabilities(t *testing.T) {
+	b := &ReflinkBackend{}
+	if b.Name() != "reflink" {
+		t.Errorf("Name = %q, want %q", b.Name(), "reflink")
+	}
+	caps := b.Capabilities()
+	if !caps.InstantClone || !caps.SharesBlocks || !caps.RequiresSameFS {
+		t.Errorf("ReflinkBackend caps want all-true, got %+v", caps)
+	}
+}
+
+// TestReflinkBackend_CloneFile_OnReflinkFS exercises the real ioctl on a
+// filesystem that supports it. Skip when no such directory is configured.
+// Set NAVARIS_REFLINK_TEST_DIR=/path on a btrfs/XFS-reflink mount to enable.
+func TestReflinkBackend_CloneFile_OnReflinkFS(t *testing.T) {
+	root := os.Getenv("NAVARIS_REFLINK_TEST_DIR")
+	if root == "" {
+		t.Skip("set NAVARIS_REFLINK_TEST_DIR to a CoW-capable mount to enable")
+	}
+	dir, err := os.MkdirTemp(root, "reflink-test-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	payload := bytes.Repeat([]byte("z"), 4<<20) // 4 MB
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	b := &ReflinkBackend{}
+	if err := b.CloneFile(context.Background(), src, dst); err != nil {
+		t.Fatalf("CloneFile: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("dst contents differ")
+	}
+}
+
+func TestReflinkBackend_CloneFile_OnTmpFS_FailsClean(t *testing.T) {
+	dir := t.TempDir() // tmpfs in CI; ioctl FICLONE returns EOPNOTSUPP/ENOTTY
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	b := &ReflinkBackend{}
+	err := b.CloneFile(context.Background(), src, dst)
+	if err == nil {
+		t.Fatalf("expected error on non-CoW FS")
+	}
+	if !errors.Is(err, ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported wrap, got %v", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Errorf("dst must not exist after failed clone")
+	}
+}
