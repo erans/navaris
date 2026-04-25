@@ -237,6 +237,14 @@ func (s *SandboxService) Fork(ctx context.Context, parentID string, count int) (
 		return nil, err
 	}
 
+	if parent.State != domain.SandboxRunning {
+		err := fmt.Errorf("fork: parent sandbox %q is %s, want running: %w",
+			parent.SandboxID, parent.State, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	childIDs := make([]string, 0, count)
 	for i := 0; i < count; i++ {

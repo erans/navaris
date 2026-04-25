@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -175,5 +176,31 @@ func TestFork_WorkerBindsChildrenToRefs(t *testing.T) {
 	}
 	if starting != 2 {
 		t.Errorf("starting children = %d, want 2", starting)
+	}
+}
+
+func TestFork_RejectsNonRunningParent(t *testing.T) {
+	env := newServiceEnv(t)
+	// Create a sandbox row directly in pending state, bypassing the dispatcher.
+	now := time.Now().UTC()
+	pendingParent := &domain.Sandbox{
+		SandboxID: uuid.NewString(),
+		ProjectID: env.projectID,
+		Name:      "pending-parent",
+		State:     domain.SandboxPending,
+		Backend:   "mock",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := env.store.SandboxStore().Create(context.Background(), pendingParent); err != nil {
+		t.Fatalf("create pending parent: %v", err)
+	}
+
+	_, err := env.sandbox.Fork(context.Background(), pendingParent.SandboxID, 1)
+	if err == nil {
+		t.Fatal("expected error when parent is not running")
+	}
+	if !errors.Is(err, domain.ErrInvalidState) {
+		t.Errorf("expected ErrInvalidState, got %v", err)
 	}
 }
