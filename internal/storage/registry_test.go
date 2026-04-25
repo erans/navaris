@@ -103,13 +103,14 @@ func TestRegistry_BuildFromMode_UnknownModeFails(t *testing.T) {
 }
 
 func TestRegistry_CloneFile_FallsBackOnErrUnsupported(t *testing.T) {
-	// Set ReflinkBackend as the registry's resolved backend for tmpfs;
-	// CloneFile must fall back to CopyBackend at op time.
+	// Register ReflinkBackend for the same directory the src/dst live in,
+	// so r.For(dst) resolves to ReflinkBackend. tmpfs makes ReflinkBackend
+	// return ErrUnsupported at op time; CloneFile must fall back to copy.
+	dir := t.TempDir()
 	r := NewRegistry()
 	r.SetFallback(CopyBackend{})
-	r.Set(t.TempDir(), ReflinkBackend{})
+	r.Set(dir, ReflinkBackend{})
 
-	dir := t.TempDir() // separate dir for the actual src/dst
 	src := filepath.Join(dir, "src")
 	dst := filepath.Join(dir, "dst")
 	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
@@ -147,4 +148,18 @@ func TestRegistry_CloneFile_NonUnsupportedErrorPropagates(t *testing.T) {
 		t.Errorf("non-unsupported error must not be wrapped as ErrUnsupported: %v", err)
 	}
 	_ = used
+}
+
+func TestRegistry_BuildFromMode_EmptyOverrideUsesGlobal(t *testing.T) {
+	root := t.TempDir()
+	overrides := map[string]Mode{root: ""} // empty override = "no override"
+	r, err := BuildRegistry(Config{Mode: ModeCopy}, []string{root}, overrides)
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	// Empty override should NOT shadow global Mode; resolved backend must
+	// be copy (from global), not the result of probing.
+	if got := r.For(filepath.Join(root, "x")); got.Name() != "copy" {
+		t.Errorf("empty override should let global mode win, got %q", got.Name())
+	}
 }

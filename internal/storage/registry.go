@@ -48,7 +48,10 @@ func (r *Registry) Set(prefix string, b Backend) {
 	if _, exists := r.byPrefix[prefix]; !exists {
 		r.prefixes = append(r.prefixes, prefix)
 		sort.Slice(r.prefixes, func(i, j int) bool {
-			return len(r.prefixes[i]) > len(r.prefixes[j])
+			if len(r.prefixes[i]) != len(r.prefixes[j]) {
+				return len(r.prefixes[i]) > len(r.prefixes[j])
+			}
+			return r.prefixes[i] < r.prefixes[j]
 		})
 	}
 	r.byPrefix[prefix] = b
