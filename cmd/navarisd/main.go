@@ -31,7 +31,8 @@ type config struct {
 	dbPath         string
 	logLevel       string
 	authToken      string
-	incusSocket    string
+	incusSocket        string
+	incusStrictPoolCoW bool
 	gcInterval     time.Duration
 	concurrency    int
 	firecrackerBin string
@@ -71,6 +72,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.authToken, "auth-token", "", "bearer token for API authentication (empty = no auth)")
 	flag.StringVar(&cfg.incusSocket, "incus-socket", "", "path to Incus socket (Firecracker > Incus > mock)")
+	flag.BoolVar(&cfg.incusStrictPoolCoW, "incus-strict-pool-cow", false, "fail startup if Incus storage pool driver is not CoW-capable (default: warn)")
 	flag.DurationVar(&cfg.gcInterval, "gc-interval", 5*time.Minute, "garbage collection sweep interval")
 	flag.IntVar(&cfg.concurrency, "concurrency", 8, "max concurrent operations")
 	flag.StringVar(&cfg.firecrackerBin, "firecracker-bin", "", "path to Firecracker binary")
@@ -221,7 +223,7 @@ func run(cfg config) error {
 	reg := provider.NewRegistry()
 
 	if cfg.incusSocket != "" {
-		p, err := newIncusProvider(cfg.incusSocket)
+		p, err := newIncusProvider(cfg)
 		if err != nil {
 			return fmt.Errorf("incus provider: %w", err)
 		}

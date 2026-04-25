@@ -7,8 +7,9 @@ import (
 	"github.com/navaris/navaris/internal/provider/incus"
 )
 
-func newIncusProvider(socket string) (domain.Provider, error) {
+func newIncusProvider(cfg config) (domain.Provider, error) {
 	return incus.New(incus.Config{
-		Socket: socket,
+		Socket:        cfg.incusSocket,
+		StrictPoolCoW: cfg.incusStrictPoolCoW,
 	})
 }
