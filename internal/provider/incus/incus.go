@@ -154,3 +154,10 @@ func (p *IncusProvider) allocatePort() (int, error) {
 	p.nextPort++
 	return port, nil
 }
+
+// ForkSandbox is not supported by the Incus provider — containers do not
+// have VM memory state to copy-on-write fork. Returns a wrapped
+// domain.ErrNotSupported.
+func (p *IncusProvider) ForkSandbox(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
+	return nil, fmt.Errorf("incus: %w (containers do not have VM memory to CoW)", domain.ErrNotSupported)
+}

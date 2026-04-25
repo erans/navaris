@@ -95,6 +95,11 @@ type Provider interface {
 	DeleteImage(ctx context.Context, imageRef BackendRef) error
 	GetImageInfo(ctx context.Context, imageRef BackendRef) (ImageInfo, error)
 
+	// ForkSandbox creates count children from a running parent. Implementations
+	// that don't support this (e.g. container-only providers) MUST return an
+	// error wrapping domain.ErrNotSupported and an empty slice.
+	ForkSandbox(ctx context.Context, parent BackendRef, count int) ([]BackendRef, error)
+
 	PublishPort(ctx context.Context, ref BackendRef, targetPort int, opts PublishPortOptions) (PublishedEndpoint, error)
 	UnpublishPort(ctx context.Context, ref BackendRef, publishedPort int) error
 

@@ -176,6 +176,54 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 	return domain.BackendRef{Backend: backendName, Ref: vmID}, nil
 }
 
+// ForkSandbox creates count children from a running (or stopped) parent VM.
+// Materializes a fork-point from the parent, then spawns children, each via
+// MAP_PRIVATE of the shared memory file. Errors during child spawn return
+// the partial slice of successfully-spawned children plus the error — the
+// caller (T15 SandboxService.Fork) is responsible for marking failed
+// children. The fork-point is GC'd by descendant lifecycle (T17), not here.
+func (p *Provider) ForkSandbox(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
+	if count < 1 {
+		return nil, fmt.Errorf("firecracker fork: count must be >= 1: %w", domain.ErrInvalidState)
+	}
+	if count > 64 {
+		return nil, fmt.Errorf("firecracker fork: count %d exceeds cap of 64", count)
+	}
+	if err := validateRef(parent.Ref); err != nil {
+		return nil, fmt.Errorf("firecracker fork: %w", err)
+	}
+
+	fpID, err := p.CreateForkPoint(ctx, parent.Ref)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mark spawn-pending up front so daemon-restart GC can size orphan
+	// scans correctly. Failed slots decrement on error (see below).
+	if err := updateFPInfo(p.fpInfoPath(fpID), func(i *fpInfo) {
+		i.SpawnPending = count
+	}); err != nil {
+		return nil, fmt.Errorf("firecracker fork: prime spawn pending: %w", err)
+	}
+
+	out := make([]domain.BackendRef, 0, count)
+	for i := 0; i < count; i++ {
+		ref, err := p.SpawnFromForkPoint(ctx, fpID, domain.CreateSandboxRequest{})
+		if err != nil {
+			// Decrement the unfilled spawn slot so GC accounting stays
+			// consistent. SpawnFromForkPoint only decrements on success.
+			_ = updateFPInfo(p.fpInfoPath(fpID), func(info *fpInfo) {
+				if info.SpawnPending > 0 {
+					info.SpawnPending--
+				}
+			})
+			return out, fmt.Errorf("firecracker fork child %d: %w", i, err)
+		}
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
 // ReleaseForkPointDescendant removes vmID from the fork-point's descendant
 // set. When the set is empty AND no spawns are pending, the fork-point's
 // on-disk directory is removed (its memory backing file is no longer needed

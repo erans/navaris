@@ -10,4 +10,5 @@ var (
 	ErrUnauthorized     = errors.New("unauthorized")
 	ErrForbidden        = errors.New("forbidden")
 	ErrBusy             = errors.New("database busy")
+	ErrNotSupported     = errors.New("operation not supported")
 )

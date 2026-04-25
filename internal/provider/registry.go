@@ -171,6 +171,15 @@ func (r *Registry) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	return p.CreateSandboxFromSnapshot(ctx, snapshotRef, req)
 }
 
+// ForkSandbox dispatches by parent.Backend.
+func (r *Registry) ForkSandbox(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
+	p, err := r.resolve(parent.Backend)
+	if err != nil {
+		return nil, err
+	}
+	return p.ForkSandbox(ctx, parent, count)
+}
+
 // PublishSnapshotAsImage dispatches by snapshotRef.Backend.
 func (r *Registry) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (domain.BackendRef, error) {
 	p, err := r.resolve(snapshotRef.Backend)
