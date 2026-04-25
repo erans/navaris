@@ -35,8 +35,10 @@ type config struct {
 	incusStrictPoolCoW bool
 	gcInterval     time.Duration
 	concurrency    int
-	firecrackerBin string
-	jailerBin      string
+	firecrackerBin             string
+	jailerBin                  string
+	firecrackerDefaultVcpu     int
+	firecrackerDefaultMemoryMB int
 	kernelPath     string
 	imageDir        string
 	chrootBase      string
@@ -83,6 +85,8 @@ func parseFlags() config {
 	flag.StringVar(&cfg.hostInterface, "host-interface", "", "network interface for masquerade (auto-detect if empty)")
 	flag.StringVar(&cfg.snapshotDir, "snapshot-dir", "/srv/firecracker/snapshots", "directory for Firecracker snapshots")
 	flag.BoolVar(&cfg.enableJailer, "enable-jailer", true, "use the Firecracker jailer (disable for Docker-in-Docker)")
+	flag.IntVar(&cfg.firecrackerDefaultVcpu, "firecracker-default-vcpu", 1, "default vCPU count for Firecracker sandboxes when CPULimit is unset")
+	flag.IntVar(&cfg.firecrackerDefaultMemoryMB, "firecracker-default-memory-mb", 256, "default memory (MB, treated as MiB inside Firecracker) when MemoryLimitMB is unset")
 	flag.StringVar(&cfg.storageMode, "storage-mode", "auto", "CoW backend selection: auto | copy | reflink (btrfs-subvol/zfs reserved, not wired in v1)")
 	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
 	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
