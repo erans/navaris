@@ -38,18 +38,32 @@ EOF
 )
             ;;
         btrfs)
-            # Loop-backed btrfs pool. Incus enforces that any source under
-            # /var/lib/incus must be exactly
-            # /var/lib/incus/storage-pools/<pool-name> (no .img suffix, no
-            # extra path component). Incus creates the loop file at that
-            # path and mkfs.btrfs's it on first init.
+            # We provision the btrfs filesystem ourselves and hand Incus a
+            # ready-mounted directory. The alternatives — letting Incus
+            # auto-create a loop file via the source/size config — fail in
+            # a Docker volume because Incus's btrfs driver checks that the
+            # *parent* of the source path is already btrfs and refuses with
+            # "Provided path does not reside on a btrfs filesystem". By
+            # pre-mounting the loop file at the source path we satisfy that
+            # check and the preseed becomes a plain "use this btrfs mount".
+            btrfs_img=/var/lib/incus/btrfs.img
+            btrfs_mount=/var/lib/incus/storage-pools/default
+            if [ "$(stat -f -c %T "$btrfs_mount" 2>/dev/null)" != "btrfs" ]; then
+                echo "Provisioning btrfs loop at $btrfs_mount (img=$btrfs_img, 5 GiB)..."
+                mkdir -p "$btrfs_mount"
+                if [ ! -f "$btrfs_img" ]; then
+                    truncate -s 5G "$btrfs_img"
+                    mkfs.btrfs -q "$btrfs_img"
+                fi
+                mount -o loop "$btrfs_img" "$btrfs_mount"
+                echo "  $btrfs_mount fstype=$(stat -f -c %T "$btrfs_mount")"
+            fi
             storage_pool_block=$(cat <<'EOF'
 storage_pools:
   - name: default
     driver: btrfs
     config:
       source: /var/lib/incus/storage-pools/default
-      size: 5GiB
 EOF
 )
             ;;
