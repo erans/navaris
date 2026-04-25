@@ -38,16 +38,21 @@ EOF
 )
             ;;
         btrfs)
-            # We provision the btrfs filesystem ourselves and hand Incus a
-            # ready-mounted directory. The alternatives — letting Incus
-            # auto-create a loop file via the source/size config — fail in
-            # a Docker volume because Incus's btrfs driver checks that the
-            # *parent* of the source path is already btrfs and refuses with
-            # "Provided path does not reside on a btrfs filesystem". By
-            # pre-mounting the loop file at the source path we satisfy that
-            # check and the preseed becomes a plain "use this btrfs mount".
-            btrfs_img=/var/lib/incus/btrfs.img
-            btrfs_mount=/var/lib/incus/storage-pools/default
+            # Mount our own btrfs loop OUTSIDE /var/lib/incus and point Incus
+            # at it. Earlier attempts hit two distinct gates in Incus's
+            # validator:
+            #   1. Source under /var/lib/incus must be exactly
+            #      /var/lib/incus/storage-pools/<pool> (no .img suffix).
+            #      OK if you pre-mount there — but then:
+            #   2. Incus refuses with "storage pool directory ... already
+            #      exists" because it wants to create that exact path
+            #      itself as its internal pool dir.
+            # Solving both: mount btrfs at /var/lib/navaris-incus-btrfs
+            # (sibling of /var/lib/incus, neither gate applies). Incus
+            # accepts the existing btrfs path as source and lays out its
+            # pool internals inside it.
+            btrfs_img=/var/lib/navaris-incus-btrfs.img
+            btrfs_mount=/var/lib/navaris-incus-btrfs
             if [ "$(stat -f -c %T "$btrfs_mount" 2>/dev/null)" != "btrfs" ]; then
                 echo "Provisioning btrfs loop at $btrfs_mount (img=$btrfs_img, 5 GiB)..."
                 mkdir -p "$btrfs_mount"
@@ -63,7 +68,7 @@ storage_pools:
   - name: default
     driver: btrfs
     config:
-      source: /var/lib/incus/storage-pools/default
+      source: /var/lib/navaris-incus-btrfs
 EOF
 )
             ;;
