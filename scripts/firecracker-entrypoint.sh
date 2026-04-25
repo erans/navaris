@@ -26,6 +26,18 @@ if [ "${NAVARIS_FC_BTRFS_LOOP:-0}" = "1" ]; then
     else
         echo "/srv/firecracker is already btrfs; skipping loop setup."
     fi
+
+    # Stage rootfs images onto the btrfs mount so the image-dir storage
+    # root also passes the strict-reflink probe. The Dockerfile bakes
+    # images into /opt/firecracker/images on the container's overlay
+    # filesystem, which has no FICLONE — so we copy them once into
+    # /srv/firecracker/images and point --image-dir there in the compose.
+    if [ -d /opt/firecracker/images ] && [ ! -d /srv/firecracker/images ]; then
+        echo "Staging rootfs images from /opt/firecracker/images to /srv/firecracker/images..."
+        mkdir -p /srv/firecracker/images
+        cp -a /opt/firecracker/images/. /srv/firecracker/images/
+        echo "  staged $(ls -1 /srv/firecracker/images | wc -l) image(s)"
+    fi
 fi
 
 # On cgroup v2, the jailer needs to write cgroup.subtree_control, which

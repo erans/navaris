@@ -19,7 +19,11 @@ services:
       - --firecracker-bin=/usr/local/bin/firecracker
       - --jailer-bin=/usr/local/bin/jailer
       - --kernel-path=/opt/firecracker/vmlinux
-      - --image-dir=/opt/firecracker/images
+      # The Dockerfile bakes rootfs images into /opt/firecracker/images,
+      # which is on the container's overlayfs (no FICLONE). The entrypoint
+      # restages them under /srv/firecracker/images (the btrfs mount) so
+      # the image-dir storage root also passes the strict-reflink probe.
+      - --image-dir=/srv/firecracker/images
       - --chroot-base=/srv/firecracker
       - --snapshot-dir=/srv/firecracker/snapshots
       - --enable-jailer=false
