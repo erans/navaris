@@ -143,6 +143,7 @@ COPY --from=build /navarisd /usr/local/bin/navarisd
 
 # Copy entrypoint script.
 COPY scripts/firecracker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY scripts/check-reflink-sharing.sh /usr/local/bin/check-reflink-sharing.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/check-reflink-sharing.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
