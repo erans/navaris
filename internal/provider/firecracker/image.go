@@ -63,7 +63,12 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 	if err != nil {
 		return domain.BackendRef{}, fmt.Errorf("firecracker publish image copy: %w", err)
 	}
-	slog.Debug("firecracker image clone", "image_ref", imgRef, "snap_id", snapID, "backend", b.Name())
+
+	backendName := ""
+	if b != nil {
+		backendName = b.Name()
+		slog.Debug("firecracker image clone", "image_ref", imgRef, "snap_id", snapID, "backend", backendName)
+	}
 
 	// Get file size.
 	fi, err := os.Stat(dst)
@@ -80,7 +85,7 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 		Architecture:   runtime.GOARCH,
 		Size:           fi.Size(),
 		SourceSnapshot: snapID,
-		StorageBackend: b.Name(),
+		StorageBackend: backendName,
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
