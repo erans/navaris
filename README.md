@@ -64,6 +64,8 @@ You can run both backends in a single Navaris instance — containers for speed,
 - **Full lifecycle management**: create, start, stop, destroy sandboxes
 - **Snapshots**: point-in-time captures (stopped and live consistency modes)
 - **Images**: promote snapshots into reusable base images
+- **Copy-on-write cloning**: rootfs clones via `ioctl(FICLONE)` on btrfs / XFS-reflink / bcachefs hosts — see [docs/storage-backends.md](docs/storage-backends.md)
+- **Memory CoW fork** (Firecracker): spawn N children from a running parent in well under a second per child via `mmap(MAP_PRIVATE)` of a shared snapshot — see [docs/sandbox-fork.md](docs/sandbox-fork.md)
 - **Interactive sessions**: persistent, reconnectable shell sessions (direct and tmux-backed)
 - **Command execution**: run commands inside sandboxes with PTY support
 - **Port forwarding**: publish sandbox ports to the host
@@ -173,6 +175,8 @@ Backend selection for new sandboxes follows this priority:
 | `--snapshot-dir` | `/srv/firecracker/snapshots` | Snapshot storage directory |
 | `--host-interface` | *(auto-detect)* | Network interface for masquerade |
 | `--enable-jailer` | `true` | Use the Firecracker jailer (disable for Docker) |
+| `--storage-mode` | `auto` | CoW backend selection: `auto` (probe) / `copy` / `reflink` — see [docs/storage-backends.md](docs/storage-backends.md) |
+| `--incus-strict-pool-cow` | `false` | Fail startup if the Incus storage pool driver is not CoW-capable (default: warn only) |
 | `--concurrency` | `8` | Max concurrent operations |
 | `--gc-interval` | `5m` | Operation garbage collection interval |
 | `--otlp-endpoint` | *(empty)* | OTLP collector endpoint (empty = telemetry disabled) |
