@@ -75,6 +75,17 @@ func (c *Client) DestroySandbox(ctx context.Context, id string) (*Operation, err
 	return &op, nil
 }
 
+// Fork creates count children from a running parent sandbox.
+// Returns the Operation tracking the fork.
+func (c *Client) Fork(ctx context.Context, parentID string, count int) (*Operation, error) {
+	var op Operation
+	body := map[string]any{"count": count}
+	if err := c.post(ctx, fmt.Sprintf("/v1/sandboxes/%s/fork", parentID), body, &op); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
 // CreateSandboxAndWait creates a sandbox and waits for the operation to complete.
 func (c *Client) CreateSandboxAndWait(ctx context.Context, req CreateSandboxRequest, opts *WaitOptions) (*Operation, error) {
 	op, err := c.CreateSandbox(ctx, req)
