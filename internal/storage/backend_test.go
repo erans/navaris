@@ -2,13 +2,14 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
 func TestErrUnsupported_Is(t *testing.T) {
-	wrapped := errors.New("zfs not configured: " + ErrUnsupported.Error())
+	wrapped := fmt.Errorf("ctx: %v", ErrUnsupported)
 	if errors.Is(wrapped, ErrUnsupported) {
-		t.Errorf("plain string-wrapping should not match ErrUnsupported")
+		t.Errorf("%%v wrapping must not establish an errors.Is chain")
 	}
 	wrapped2 := errors.Join(ErrUnsupported, errors.New("zfs not configured"))
 	if !errors.Is(wrapped2, ErrUnsupported) {
