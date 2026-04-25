@@ -208,3 +208,21 @@ func TestReflinkBackend_CloneFile_OnTmpFS_FailsClean(t *testing.T) {
 		t.Errorf("dst must not exist after failed clone")
 	}
 }
+
+func TestStubBackends_AlwaysUnsupported(t *testing.T) {
+	for _, b := range []Backend{&BtrfsSubvolBackend{}, &ZfsBackend{}} {
+		caps := b.Capabilities()
+		if caps.InstantClone || caps.SharesBlocks {
+			t.Errorf("%s: stub must not advertise CoW caps, got %+v", b.Name(), caps)
+		}
+		err := b.CloneFile(context.Background(), "/x", "/y")
+		if err == nil || !errors.Is(err, ErrUnsupported) {
+			t.Errorf("%s: stub CloneFile must return ErrUnsupported, got %v", b.Name(), err)
+		}
+	}
+}
+
+var (
+	_ Backend = (*BtrfsSubvolBackend)(nil)
+	_ Backend = (*ZfsBackend)(nil)
+)
