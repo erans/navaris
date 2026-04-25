@@ -38,14 +38,17 @@ EOF
 )
             ;;
         btrfs)
-            # Loop-backed btrfs pool. Incus creates the loop file at the
-            # given source path and mkfs.btrfs's it on first init.
+            # Loop-backed btrfs pool. Incus enforces that any source under
+            # /var/lib/incus must be exactly
+            # /var/lib/incus/storage-pools/<pool-name> (no .img suffix, no
+            # extra path component). Incus creates the loop file at that
+            # path and mkfs.btrfs's it on first init.
             storage_pool_block=$(cat <<'EOF'
 storage_pools:
   - name: default
     driver: btrfs
     config:
-      source: /var/lib/incus/storage-pools/default.img
+      source: /var/lib/incus/storage-pools/default
       size: 5GiB
 EOF
 )
