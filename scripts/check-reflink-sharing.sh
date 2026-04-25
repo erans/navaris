@@ -1,29 +1,31 @@
 #!/bin/sh
-# Verifies that snapshot/sandbox rootfs files on /srv/firecracker share
-# btrfs extents with their source images — i.e. that ReflinkBackend is
-# actually doing copy-on-write at the kernel level rather than full
-# byte copies that happen to look right.
+# Verifies that btrfs at /srv/firecracker actually shares extents after a
+# reflink call. This complements the strict-mode startup probe in navarisd:
 #
-# Strategy: btrfs filesystem du --raw reports Total / Exclusive / Set
-# shared bytes per file. A reflinked clone has Exclusive ≈ 0 and
-# Set shared ≈ Total. A full copy has Exclusive ≈ Total and Set
-# shared ≈ 0.
+#   - The startup probe (--storage-mode=reflink in BuildRegistry) calls
+#     ioctl(FICLONE) and checks that it returns success. So a healthy
+#     navarisd proves "the kernel ACCEPTS FICLONE on this filesystem".
 #
-# Pass criterion: at least one rootfs.ext4 under /srv/firecracker has
-# Set shared > 0. That's a direct, kernel-level assertion that FICLONE
-# actually deduplicated extents on this filesystem.
+#   - This script proves "the kernel actually DEDUPLICATES extents after
+#     FICLONE". A buggy kernel that returned success from FICLONE but
+#     silently full-copied would pass the startup probe and fail this.
+#
+# We do this self-contained instead of inspecting post-test artifacts
+# because the test-runner cleans up its sandboxes/snapshots on exit, so
+# by the time we get here only the staged images remain — and those are
+# independent files with no reflinks between them by design.
 #
 # Exit codes:
-#   0 — sharing confirmed
-#   1 — preconditions not met (no rootfs files, not btrfs, etc.)
-#   2 — sharing NOT detected (clones look like full copies)
+#   0 — kernel correctly shares extents after reflink
+#   1 — preconditions not met (no btrfs, no source image, etc.)
+#   2 — kernel returned success but did not share extents
 
 set -eu
 
 target="${1:-/srv/firecracker}"
 
 if ! command -v btrfs >/dev/null 2>&1; then
-    echo "ERROR: btrfs command not available in this image" >&2
+    echo "ERROR: btrfs command not in path" >&2
     exit 1
 fi
 
@@ -33,55 +35,65 @@ if [ "$fstype" != "btrfs" ]; then
     exit 1
 fi
 
-# Find every rootfs.ext4 under target. The integration test creates
-# at least one snapshot (test/integration/snapshot_test.go), so by
-# the time this script runs there should be at least one snapshot
-# rootfs in addition to the staged image rootfs.
-files=$(find "$target" -type f -name 'rootfs.ext4' -o -type f -name '*.ext4' 2>/dev/null | sort -u)
-if [ -z "$files" ]; then
-    echo "ERROR: no rootfs.ext4 / *.ext4 files under $target — integration test should have populated some" >&2
+# Use one of the staged images as the source — we know it's a real file
+# of substantial size on this btrfs.
+src=$(find "$target/images" -maxdepth 1 -type f -name '*.ext4' 2>/dev/null | head -n 1)
+if [ -z "$src" ]; then
+    echo "ERROR: no source image under $target/images — entrypoint should have staged one" >&2
     exit 1
 fi
-file_count=$(printf "%s\n" "$files" | wc -l)
-echo "Inspecting $file_count file(s) under $target:"
-echo "$files" | sed 's/^/  /'
+src_size=$(stat -c %s "$src")
+echo "Source: $src ($src_size bytes)"
+
+dst="$target/.cow-sharing-check.ext4"
+# Clean up the dst on every exit path including failures.
+trap 'rm -f "$dst" 2>/dev/null || true' EXIT INT TERM
+
+# `cp --reflink=always` issues FICLONE under the hood. If the kernel
+# doesn't support it on this fs, cp exits non-zero — but our strict
+# probe already passed, so this should succeed.
+if ! cp --reflink=always "$src" "$dst" 2>&1; then
+    echo "FAIL: cp --reflink=always failed unexpectedly (strict probe should have caught this earlier)"
+    exit 2
+fi
+
 echo
+echo "btrfs filesystem du --raw output for src + clone:"
+btrfs filesystem du --raw "$src" "$dst"
 
-echo "btrfs filesystem du --raw output:"
-btrfs filesystem du --raw $files
-
-# Re-run with awk to compute aggregates and assert on shared bytes.
-btrfs filesystem du --raw $files | awk '
-    BEGIN { found = 0; total_shared = 0; total_apparent = 0; total_exclusive = 0 }
-    NR == 1 { next }                       # header row "     Total   Exclusive  Set shared  Filename"
-    /^[[:space:]]*Total/ { next }          # final summary row
-    /^[[:space:]]*$/ { next }              # blank lines
+# Aggregate across the two files. With a working reflink:
+#   - Total ≈ 2 × src_size (logical size)
+#   - Exclusive should be small (most blocks are shared)
+#   - Set shared should be the bulk of the data
+#
+# With a buggy "FICLONE-but-actually-copies" kernel:
+#   - Total ≈ 2 × src_size
+#   - Exclusive ≈ Total
+#   - Set shared = 0
+btrfs filesystem du --raw "$src" "$dst" | awk -v ssize="$src_size" '
+    BEGIN { total = 0; exclusive = 0; shared = 0 }
+    NR == 1 { next }                       # header
+    /^[[:space:]]*Total/ { next }          # final summary
+    /^[[:space:]]*$/ { next }
     {
-        # btrfs prints "-" for entries it cannot inspect (e.g. holes-only files);
-        # treat those as zero for safety.
         gsub(/-/, "0", $1); gsub(/-/, "0", $2); gsub(/-/, "0", $3)
-        total = $1 + 0; exclusive = $2 + 0; shared = $3 + 0
-        total_apparent  += total
-        total_exclusive += exclusive
-        total_shared    += shared
-        if (shared > 0) { found++ }
+        total     += $1 + 0
+        exclusive += $2 + 0
+        shared    += $3 + 0
     }
     END {
-        printf "\nAggregate: total=%d exclusive=%d shared=%d (%d file(s) with shared extents)\n", \
-            total_apparent, total_exclusive, total_shared, found
-        if (found == 0 || total_shared == 0) {
-            print "FAIL: no shared extents detected — reflink/CoW not working"
+        printf "\nAggregate: total=%d exclusive=%d shared=%d\n", total, exclusive, shared
+        if (shared <= 0) {
+            print "FAIL: cp --reflink=always succeeded but no shared extents — kernel returned success without deduplicating"
             exit 2
         }
-        # Stronger sanity: shared should be a meaningful fraction of total.
-        # With 1 image + N snapshots that fully share, total_shared ≈
-        # (N+1) × image_size and total_exclusive should be small. We
-        # require total_shared >= 50% of total_apparent.
-        threshold = int(total_apparent / 2)
-        if (total_shared < threshold) {
-            printf "FAIL: shared %d < 50%% of apparent %d (threshold %d) — most data is exclusive, looks copied\n", total_shared, total_apparent, threshold
+        # The clone should account for nearly all of src_size as shared.
+        # Allow some slack for btrfs metadata granularity.
+        threshold = int(ssize * 0.8)
+        if (shared < threshold) {
+            printf "FAIL: shared %d < 80%% of source size %d (threshold %d)\n", shared, ssize, threshold
             exit 2
         }
-        printf "OK: shared %d >= 50%% of apparent %d (threshold %d) — extent sharing confirmed\n", total_shared, total_apparent, threshold
+        printf "OK: shared %d >= 80%% of source size %d (threshold %d) — kernel correctly deduplicates after FICLONE\n", shared, ssize, threshold
     }
 '
