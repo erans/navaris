@@ -14,16 +14,18 @@ import (
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/storage"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
 type snapInfo struct {
-	ID        string                `json:"id"`
-	SourceVM  string                `json:"source_vm"`
-	Label     string                `json:"label"`
-	Mode      domain.ConsistencyMode `json:"mode"`
-	SubnetIdx int                   `json:"subnet_idx,omitempty"` // preserved for live restore
-	CreatedAt time.Time             `json:"created_at"`
+	ID             string                 `json:"id"`
+	SourceVM       string                 `json:"source_vm"`
+	Label          string                 `json:"label"`
+	Mode           domain.ConsistencyMode `json:"mode"`
+	SubnetIdx      int                    `json:"subnet_idx,omitempty"` // preserved for live restore
+	CreatedAt      time.Time              `json:"created_at"`
+	StorageBackend string                 `json:"storage_backend,omitempty"`
 }
 
 func (p *Provider) snapshotDir(snapID string) string {
@@ -68,22 +70,32 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 		return domain.BackendRef{}, fmt.Errorf("firecracker create snapshot dir: %w", err)
 	}
 
+	var diskBackend storage.Backend
+
 	switch mode {
 	case domain.ConsistencyStopped:
-		if err := p.createStoppedSnapshot(ctx, vmDir, snapDir); err != nil {
+		b, err := p.createStoppedSnapshot(ctx, vmDir, snapDir)
+		if err != nil {
 			os.RemoveAll(snapDir)
 			return domain.BackendRef{}, err
 		}
+		diskBackend = b
 
 	case domain.ConsistencyLive:
-		if err := p.createLiveSnapshot(ctx, vmID, vmDir, snapDir); err != nil {
+		b, err := p.createLiveSnapshot(ctx, vmID, vmDir, snapDir)
+		if err != nil {
 			os.RemoveAll(snapDir)
 			return domain.BackendRef{}, err
 		}
+		diskBackend = b
 
 	default:
 		os.RemoveAll(snapDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker: unsupported consistency mode %q", mode)
+	}
+
+	if diskBackend != nil {
+		slog.Debug("firecracker snapshot disk clone", "snap_id", snapID, "vm_id", vmID, "backend", diskBackend.Name())
 	}
 
 	si := &snapInfo{
@@ -92,6 +104,9 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 		Label:     label,
 		Mode:      mode,
 		CreatedAt: time.Now().UTC(),
+	}
+	if diskBackend != nil {
+		si.StorageBackend = diskBackend.Name()
 	}
 
 	// For live snapshots, preserve SubnetIdx for network-correct restore.
@@ -113,16 +128,17 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 	return domain.BackendRef{Backend: backendName, Ref: snapID}, nil
 }
 
-func (p *Provider) createStoppedSnapshot(ctx context.Context, vmDir, snapDir string) error {
+func (p *Provider) createStoppedSnapshot(ctx context.Context, vmDir, snapDir string) (storage.Backend, error) {
 	src := filepath.Join(vmDir, "rootfs.ext4")
 	dst := filepath.Join(snapDir, "rootfs.ext4")
-	if _, err := p.storage.CloneFile(ctx, src, dst); err != nil {
-		return fmt.Errorf("firecracker snapshot copy rootfs: %w", err)
+	b, err := p.storage.CloneFile(ctx, src, dst)
+	if err != nil {
+		return nil, fmt.Errorf("firecracker snapshot copy rootfs: %w", err)
 	}
-	return nil
+	return b, nil
 }
 
-func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir string) error {
+func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir string) (storage.Backend, error) {
 	// Connect to running VM via the API socket.
 	var sockPath string
 	if p.config.EnableJailer {
@@ -132,12 +148,12 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	}
 	machine, err := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
 	if err != nil {
-		return fmt.Errorf("firecracker live snapshot connect %s: %w", vmID, err)
+		return nil, fmt.Errorf("firecracker live snapshot connect %s: %w", vmID, err)
 	}
 
 	// Pause -> snapshot -> copy -> resume.
 	if err := machine.PauseVM(ctx); err != nil {
-		return fmt.Errorf("firecracker pause %s: %w", vmID, err)
+		return nil, fmt.Errorf("firecracker pause %s: %w", vmID, err)
 	}
 
 	// Ensure we resume even if something fails.
@@ -163,14 +179,16 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		snapMeta = filepath.Join(vmDir, "snapshot.meta")
 	}
 	if snapErr = machine.CreateSnapshot(ctx, memFile, snapMeta); snapErr != nil {
-		return fmt.Errorf("firecracker create snapshot %s: %w", vmID, snapErr)
+		return nil, fmt.Errorf("firecracker create snapshot %s: %w", vmID, snapErr)
 	}
 
 	// Copy rootfs while VM is paused (disk consistent).
 	rootfsSrc := filepath.Join(vmDir, "rootfs.ext4")
 	rootfsDst := filepath.Join(snapDir, "rootfs.ext4")
-	if _, snapErr = p.storage.CloneFile(ctx, rootfsSrc, rootfsDst); snapErr != nil {
-		return fmt.Errorf("firecracker snapshot copy rootfs: %w", snapErr)
+	var diskBackend storage.Backend
+	diskBackend, snapErr = p.storage.CloneFile(ctx, rootfsSrc, rootfsDst)
+	if snapErr != nil {
+		return nil, fmt.Errorf("firecracker snapshot copy rootfs: %w", snapErr)
 	}
 
 	// Copy snapshot files from VM directory to snapshot dir.
@@ -184,13 +202,13 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		src := filepath.Join(snapshotFilesDir, name)
 		dst := filepath.Join(snapDir, name)
 		if _, snapErr = p.storage.CloneFile(ctx, src, dst); snapErr != nil {
-			return fmt.Errorf("firecracker snapshot copy %s: %w", name, snapErr)
+			return nil, fmt.Errorf("firecracker snapshot copy %s: %w", name, snapErr)
 		}
 	}
 
 	// Resume the VM.
 	if err := machine.ResumeVM(ctx); err != nil {
-		return fmt.Errorf("firecracker resume %s: %w", vmID, err)
+		return nil, fmt.Errorf("firecracker resume %s: %w", vmID, err)
 	}
 	snapErr = nil // Clear so defer doesn't try to resume again.
 
@@ -199,7 +217,7 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		os.Remove(filepath.Join(snapshotFilesDir, name))
 	}
 
-	return nil
+	return diskBackend, nil
 }
 
 func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.BackendRef, snapshotRef domain.BackendRef) (retErr error) {
