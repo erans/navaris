@@ -19,6 +19,7 @@ import (
 	internalmcp "github.com/navaris/navaris/internal/mcp"
 	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/service"
+	"github.com/navaris/navaris/internal/storage"
 	"github.com/navaris/navaris/internal/store/sqlite"
 	"github.com/navaris/navaris/internal/telemetry"
 	"github.com/navaris/navaris/internal/webui"
@@ -30,17 +31,20 @@ type config struct {
 	dbPath         string
 	logLevel       string
 	authToken      string
-	incusSocket    string
+	incusSocket        string
+	incusStrictPoolCoW bool
 	gcInterval     time.Duration
 	concurrency    int
 	firecrackerBin string
 	jailerBin      string
 	kernelPath     string
-	imageDir       string
-	chrootBase     string
-	hostInterface  string
-	snapshotDir    string
-	enableJailer   bool
+	imageDir        string
+	chrootBase      string
+	hostInterface   string
+	snapshotDir     string
+	enableJailer    bool
+	storageMode     string
+	storageRegistry *storage.Registry
 	otlpEndpoint   string
 	otlpProtocol   string
 	serviceName    string
@@ -68,6 +72,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.authToken, "auth-token", "", "bearer token for API authentication (empty = no auth)")
 	flag.StringVar(&cfg.incusSocket, "incus-socket", "", "path to Incus socket (Firecracker > Incus > mock)")
+	flag.BoolVar(&cfg.incusStrictPoolCoW, "incus-strict-pool-cow", false, "fail startup if Incus storage pool driver is not CoW-capable (default: warn)")
 	flag.DurationVar(&cfg.gcInterval, "gc-interval", 5*time.Minute, "garbage collection sweep interval")
 	flag.IntVar(&cfg.concurrency, "concurrency", 8, "max concurrent operations")
 	flag.StringVar(&cfg.firecrackerBin, "firecracker-bin", "", "path to Firecracker binary")
@@ -78,6 +83,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.hostInterface, "host-interface", "", "network interface for masquerade (auto-detect if empty)")
 	flag.StringVar(&cfg.snapshotDir, "snapshot-dir", "/srv/firecracker/snapshots", "directory for Firecracker snapshots")
 	flag.BoolVar(&cfg.enableJailer, "enable-jailer", true, "use the Firecracker jailer (disable for Docker-in-Docker)")
+	flag.StringVar(&cfg.storageMode, "storage-mode", "auto", "CoW backend selection: auto | copy | reflink (btrfs-subvol/zfs reserved, not wired in v1)")
 	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
 	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
 	flag.StringVar(&cfg.serviceName, "service-name", "navarisd", "service name in telemetry data")
@@ -90,6 +96,38 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.mcpMaxTimeout, "mcp-max-timeout", 10*time.Minute, "cap on per-tool timeout_seconds")
 	flag.Parse()
 	return cfg
+}
+
+// buildStorageRegistry constructs the storage Registry over the
+// CoW-relevant roots: chroot base, image dir, snapshot dir. It MkdirAlls
+// each non-empty root before probing so a fresh install works without
+// pre-creation. With mode=auto, each root is probed; explicit modes are
+// hard preconditions and propagate startup-fatal errors.
+func buildStorageRegistry(cfg config) (*storage.Registry, error) {
+	rootSpec := []struct {
+		name, path string
+	}{
+		{"chroot-base", cfg.chrootBase},
+		{"image-dir", cfg.imageDir},
+		{"snapshot-dir", cfg.snapshotDir},
+	}
+
+	var roots []string
+	for _, r := range rootSpec {
+		if r.path == "" {
+			continue
+		}
+		if err := os.MkdirAll(r.path, 0o755); err != nil {
+			return nil, fmt.Errorf("storage: create %s %s: %w", r.name, r.path, err)
+		}
+		roots = append(roots, r.path)
+	}
+
+	return storage.BuildRegistry(
+		storage.Config{Mode: storage.Mode(cfg.storageMode)},
+		roots,
+		nil, // per-root overrides not exposed via flags in v1
+	)
 }
 
 func run(cfg config) error {
@@ -159,11 +197,33 @@ func run(cfg config) error {
 	// Worker dispatcher
 	disp := worker.NewDispatcher(store.OperationStore(), bus, cfg.concurrency)
 
+	// Storage backends: probe CoW capability per-root so the Firecracker
+	// provider can use reflink where available, copy otherwise.
+	storageReg, err := buildStorageRegistry(cfg)
+	if err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+	cfg.storageRegistry = storageReg
+	{
+		resolved := func(p string) string {
+			if p == "" {
+				return ""
+			}
+			return storageReg.For(p).Name()
+		}
+		logger.Info("storage backends",
+			"mode", cfg.storageMode,
+			"chroot_base", resolved(cfg.chrootBase),
+			"image_dir", resolved(cfg.imageDir),
+			"snapshot_dir", resolved(cfg.snapshotDir),
+		)
+	}
+
 	// Provider registry — enable all configured backends.
 	reg := provider.NewRegistry()
 
 	if cfg.incusSocket != "" {
-		p, err := newIncusProvider(cfg.incusSocket)
+		p, err := newIncusProvider(cfg)
 		if err != nil {
 			return fmt.Errorf("incus provider: %w", err)
 		}

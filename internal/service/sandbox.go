@@ -90,6 +90,7 @@ func (s *SandboxService) registerHandlers() {
 	s.workers.Register("start_sandbox", s.handleStart)
 	s.workers.Register("stop_sandbox", s.handleStop)
 	s.workers.Register("destroy_sandbox", s.handleDestroy)
+	s.workers.Register("fork_sandbox", s.handleFork)
 }
 
 func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID string, opts CreateSandboxOpts) (*domain.Operation, error) {
@@ -202,6 +203,98 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		s.sandboxes.Delete(ctx, sbx.SandboxID)
+		return nil, err
+	}
+	s.workers.Enqueue(op)
+	return op, nil
+}
+
+// Fork creates count children from a running parent sandbox. Each child
+// is created in pending state with metadata["fork_parent_id"] set to the
+// parent's sandbox ID; a single fork_sandbox operation is enqueued whose
+// worker calls provider.ForkSandbox and binds the children to their
+// returned BackendRefs.
+//
+// Validation: count >= 1; parent must exist. Provider-side caps (currently
+// 64 children per fork on Firecracker) surface as worker-time errors,
+// not pre-flight rejection.
+func (s *SandboxService) Fork(ctx context.Context, parentID string, count int) (*domain.Operation, error) {
+	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.ForkSandbox")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("sandbox.id", parentID),
+		attribute.Int("fork.count", count),
+	)
+
+	if count < 1 {
+		return nil, fmt.Errorf("fork: count must be >= 1: %w", domain.ErrInvalidState)
+	}
+
+	parent, err := s.sandboxes.Get(ctx, parentID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	if parent.State != domain.SandboxRunning {
+		err := fmt.Errorf("fork: parent sandbox %q is %s, want running: %w",
+			parent.SandboxID, parent.State, domain.ErrInvalidState)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	childIDs := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		child := &domain.Sandbox{
+			SandboxID:     uuid.NewString(),
+			ProjectID:     parent.ProjectID,
+			Name:          fmt.Sprintf("%s-fork-%d", parent.Name, i),
+			State:         domain.SandboxPending,
+			Backend:       parent.Backend,
+			NetworkMode:   parent.NetworkMode,
+			CPULimit:      parent.CPULimit,
+			MemoryLimitMB: parent.MemoryLimitMB,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			Metadata: map[string]any{
+				"fork_parent_id": parent.SandboxID,
+			},
+		}
+		if err := s.sandboxes.Create(ctx, child); err != nil {
+			// Roll back already-created children before returning.
+			for _, id := range childIDs {
+				_ = s.sandboxes.Delete(ctx, id)
+			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, fmt.Errorf("fork: create child %d: %w", i, err)
+		}
+		childIDs = append(childIDs, child.SandboxID)
+	}
+
+	op := &domain.Operation{
+		OperationID:  uuid.NewString(),
+		ResourceType: "sandbox",
+		ResourceID:   parent.SandboxID,
+		SandboxID:    parent.SandboxID,
+		Type:         "fork_sandbox",
+		State:        domain.OpPending,
+		StartedAt:    now,
+		Metadata: map[string]any{
+			"parent_id": parent.SandboxID,
+			"children":  childIDs,
+			"count":     count,
+		},
+	}
+	if err := s.ops.Create(ctx, op); err != nil {
+		for _, id := range childIDs {
+			_ = s.sandboxes.Delete(ctx, id)
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	s.workers.Enqueue(op)
@@ -463,6 +556,86 @@ func (s *SandboxService) handleCreate(ctx context.Context, op *domain.Operation)
 	s.sandboxes.Update(ctx, sbx)
 	s.publishStateChange(ctx, sbx)
 	return nil
+}
+
+// handleFork dispatches the provider-level fork: read the parent sandbox,
+// call provider.ForkSandbox (which the firecracker provider implements;
+// incus returns ErrNotSupported), then bind each child's BackendRef and
+// transition state. On provider failure, all enqueued children go to failed.
+func (s *SandboxService) handleFork(ctx context.Context, op *domain.Operation) error {
+	parentID, ok := op.Metadata["parent_id"].(string)
+	if !ok {
+		return fmt.Errorf("fork op missing parent_id")
+	}
+
+	// children may be []string (in-memory, direct from Fork()) or []any
+	// (JSON round-trip via the operation store — json.Unmarshal decodes
+	// arrays into []any when the target is map[string]any).
+	var childIDs []string
+	switch v := op.Metadata["children"].(type) {
+	case []string:
+		childIDs = v
+	case []any:
+		childIDs = make([]string, 0, len(v))
+		for _, raw := range v {
+			id, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("fork op children entry is not a string")
+			}
+			childIDs = append(childIDs, id)
+		}
+	default:
+		return fmt.Errorf("fork op missing children")
+	}
+
+	parent, err := s.sandboxes.Get(ctx, parentID)
+	if err != nil {
+		s.markChildrenFailed(ctx, childIDs)
+		return err
+	}
+	parentRef := domain.BackendRef{Backend: parent.Backend, Ref: parent.BackendRef}
+
+	refs, err := s.provider.ForkSandbox(ctx, parentRef, len(childIDs))
+	if err != nil {
+		s.markChildrenFailed(ctx, childIDs)
+		return err
+	}
+
+	// Provider may return fewer refs than requested if some children failed
+	// after others succeeded. Bind the successful ones; mark the rest failed.
+	for i, id := range childIDs {
+		sbx, getErr := s.sandboxes.Get(ctx, id)
+		if getErr != nil {
+			continue
+		}
+		now := time.Now().UTC()
+		if i < len(refs) {
+			sbx.BackendRef = refs[i].Ref
+			sbx.Backend = refs[i].Backend
+			sbx.State = domain.SandboxStarting
+		} else {
+			sbx.State = domain.SandboxFailed
+		}
+		sbx.UpdatedAt = now
+		_ = s.sandboxes.Update(ctx, sbx)
+		s.publishStateChange(ctx, sbx)
+	}
+	return nil
+}
+
+// markChildrenFailed best-effort transitions every listed child to failed.
+// Used when fork dispatch errors before any per-child binding happens.
+func (s *SandboxService) markChildrenFailed(ctx context.Context, childIDs []string) {
+	for _, id := range childIDs {
+		sbx, err := s.sandboxes.Get(ctx, id)
+		if err != nil {
+			continue
+		}
+		sbx.State = domain.SandboxFailed
+		sbx.UpdatedAt = time.Now().UTC()
+		_ = s.sandboxes.Update(ctx, sbx)
+		s.publishStateChange(ctx, sbx)
+	}
 }
 
 func (s *SandboxService) handleStart(ctx context.Context, op *domain.Operation) error {

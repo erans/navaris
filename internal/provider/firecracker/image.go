@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +33,7 @@ type imageInfo struct {
 	Architecture   string `json:"architecture"`
 	Size           int64  `json:"size"`
 	SourceSnapshot string `json:"source_snapshot"`
+	StorageBackend string `json:"storage_backend,omitempty"`
 }
 
 func (p *Provider) imageExtPath(ref string) string {
@@ -57,8 +59,15 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 	// Copy rootfs from snapshot to image directory.
 	src := filepath.Join(snapDir, "rootfs.ext4")
 	dst := p.imageExtPath(imgRef)
-	if err := copyFile(src, dst); err != nil {
+	b, err := p.cloneFile(ctx, src, dst)
+	if err != nil {
 		return domain.BackendRef{}, fmt.Errorf("firecracker publish image copy: %w", err)
+	}
+
+	backendName := ""
+	if b != nil {
+		backendName = b.Name()
+		slog.Debug("firecracker image clone", "image_ref", imgRef, "snap_id", snapID, "backend", backendName)
 	}
 
 	// Get file size.
@@ -76,6 +85,7 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 		Architecture:   runtime.GOARCH,
 		Size:           fi.Size(),
 		SourceSnapshot: snapID,
+		StorageBackend: backendName,
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {

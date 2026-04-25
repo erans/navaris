@@ -30,6 +30,7 @@ type MockProvider struct {
 	PublishPortFn               func(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (domain.PublishedEndpoint, error)
 	UnpublishPortFn             func(ctx context.Context, ref domain.BackendRef, publishedPort int) error
 	HealthFn                    func(ctx context.Context) domain.ProviderHealth
+	ForkSandboxFn               func(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error)
 }
 
 func NewMock() *MockProvider {
@@ -73,6 +74,19 @@ func NewMock() *MockProvider {
 		},
 		UnpublishPortFn: func(_ context.Context, _ domain.BackendRef, _ int) error { return nil },
 		HealthFn:        func(_ context.Context) domain.ProviderHealth { return domain.ProviderHealth{Backend: "mock", Healthy: true} },
+		ForkSandboxFn: func(_ context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
+			if count < 1 {
+				return nil, fmt.Errorf("mock fork: count must be >= 1")
+			}
+			out := make([]domain.BackendRef, 0, count)
+			for i := 0; i < count; i++ {
+				out = append(out, domain.BackendRef{
+					Backend: parent.Backend,
+					Ref:     fmt.Sprintf("mock-fork-%s-%d", uuid.NewString()[:8], i),
+				})
+			}
+			return out, nil
+		},
 	}
 }
 
@@ -129,4 +143,7 @@ func (m *MockProvider) UnpublishPort(ctx context.Context, ref domain.BackendRef,
 }
 func (m *MockProvider) Health(ctx context.Context) domain.ProviderHealth {
 	return m.HealthFn(ctx)
+}
+func (m *MockProvider) ForkSandbox(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
+	return m.ForkSandboxFn(ctx, parent, count)
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,7 +48,7 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	// Copy rootfs image.
 	srcImage := filepath.Join(p.config.ImageDir, req.ImageRef+".ext4")
 	dstImage := filepath.Join(vmDir, "rootfs.ext4")
-	if err := copyFile(srcImage, dstImage); err != nil {
+	if _, err := p.cloneFile(ctx, srcImage, dstImage); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker copy rootfs %s: %w", vmID, err)
 	}
@@ -430,6 +429,15 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	vmID := ref.Ref
 	vmDir := p.vmDir(vmID)
 
+	// Capture ForkPointID before we delete the VM dir, so we can release
+	// the descendant set after the file is gone. Errors here are tolerated
+	// — a missing or malformed vminfo just means we won't release; the
+	// fork-point's own GC will sweep eventually.
+	var fpID string
+	if vmi, err := ReadVMInfo(p.vmInfoPath(vmID)); err == nil && vmi != nil {
+		fpID = vmi.ForkPointID
+	}
+
 	if err := os.RemoveAll(vmDir); err != nil {
 		return fmt.Errorf("firecracker destroy %s: %w", vmID, err)
 	}
@@ -437,6 +445,12 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	p.vmMu.Lock()
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
+
+	if fpID != "" {
+		if err := p.ReleaseForkPointDescendant(fpID, vmID); err != nil {
+			slog.Warn("firecracker forkpoint release", "fp_id", fpID, "vm_id", vmID, "error", err)
+		}
+	}
 
 	return nil
 }
@@ -505,7 +519,7 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	// Copy rootfs from snapshot.
 	src := filepath.Join(snapDir, "rootfs.ext4")
 	dst := filepath.Join(vmDir, "rootfs.ext4")
-	if err := copyFile(src, dst); err != nil {
+	if _, err := p.cloneFile(ctx, src, dst); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker copy snapshot rootfs %s: %w", vmID, err)
 	}
@@ -580,21 +594,4 @@ func (p *Provider) pingAgent(ctx context.Context, vmID string) error {
 	}
 	defer client.Close()
 	return client.Ping(5 * time.Second)
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
 }

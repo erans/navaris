@@ -19,6 +19,7 @@ func newFirecrackerProvider(cfg config) (domain.Provider, error) {
 		HostInterface:  cfg.hostInterface,
 		SnapshotDir:    cfg.snapshotDir,
 		EnableJailer:   cfg.enableJailer,
+		Storage:        cfg.storageRegistry,
 	})
 }
 

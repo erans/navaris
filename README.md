@@ -382,6 +382,14 @@ make integration-env-firecracker-down  # tear down Firecracker
 go test ./...
 ```
 
+## Documentation
+
+- [Native install](docs/native-install.md)
+- [MCP server](docs/mcp.md)
+- [Claude Code skills](docs/claude-skills.md)
+- [Storage backends](docs/storage-backends.md)
+- [Sandbox fork](docs/sandbox-fork.md)
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
