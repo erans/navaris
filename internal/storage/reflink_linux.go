@@ -64,6 +64,20 @@ func (ReflinkBackend) CloneFile(ctx context.Context, src, dst string) error {
 
 // isReflinkUnsupported reports whether the error means "this filesystem or
 // kernel does not support reflinks here" — distinct from a real I/O error.
+//
+// The errno set:
+//   - EOPNOTSUPP: target filesystem does not implement clone (note: on
+//     Linux, ENOTSUP and EOPNOTSUPP share an errno value, so listing both
+//     would be a redundant case).
+//   - EXDEV: src and dst are on different filesystems.
+//   - ENOTTY: kernel is too old to know the FICLONE ioctl, or the fd is
+//     not a regular file (e.g. a directory).
+//   - EINVAL: the ranges or file types are incompatible with reflinking
+//     on this filesystem. We treat this as "unsupported here" so the
+//     caller falls back to a byte copy. A genuine programmer error (bad
+//     fd) would more typically surface as EBADF, so the false-positive
+//     risk is small in practice; the trade-off is graceful auto-fallback
+//     over loud failure.
 func isReflinkUnsupported(err error) bool {
 	var errno syscall.Errno
 	if !errors.As(err, &errno) {

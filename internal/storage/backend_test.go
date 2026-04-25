@@ -146,14 +146,11 @@ func TestCopyBackend_NameAndCapabilities(t *testing.T) {
 // Compile-time: ReflinkBackend must satisfy Backend.
 var _ Backend = (*ReflinkBackend)(nil)
 
-func TestReflinkBackend_NameAndCapabilities(t *testing.T) {
+func TestReflinkBackend_Name(t *testing.T) {
+	// Name is platform-stable: "reflink" on Linux and on the non-Linux stub.
 	b := &ReflinkBackend{}
 	if b.Name() != "reflink" {
 		t.Errorf("Name = %q, want %q", b.Name(), "reflink")
-	}
-	caps := b.Capabilities()
-	if !caps.InstantClone || !caps.SharesBlocks || !caps.RequiresSameFS {
-		t.Errorf("ReflinkBackend caps want all-true, got %+v", caps)
 	}
 }
 
