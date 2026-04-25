@@ -66,6 +66,9 @@ func mapErrorCode(err error) int {
 	if errors.Is(err, domain.ErrConflict) {
 		return http.StatusConflict
 	}
+	if errors.Is(err, domain.ErrInvalidArgument) {
+		return http.StatusBadRequest
+	}
 	if errors.Is(err, domain.ErrNotSupported) {
 		return http.StatusNotImplemented
 	}
