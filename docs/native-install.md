@@ -96,6 +96,36 @@ NAVARIS_ENABLE_JAILER=true
 If these are unset, `navarisd` should run without the Firecracker backend and
 continue serving whichever backends are configured, such as Incus.
 
+## Storage Backend (Copy-on-Write)
+
+Navaris clones rootfs files via a pluggable storage backend (full reference:
+[docs/storage-backends.md](storage-backends.md)). On a CoW-capable host the
+clone is a metadata-only `ioctl(FICLONE)` — N sandboxes spawned from one
+template share blocks instead of paying N × rootfsSize.
+
+Recommended host filesystems for the storage roots
+(`NAVARIS_IMAGE_DIR`, `NAVARIS_CHROOT_BASE`, `NAVARIS_SNAPSHOT_DIR`):
+
+- **btrfs** — native CoW. Consider `nodatacow` on the storage subvolume to
+  reduce fragmentation under heavy random writes inside guest rootfs images.
+- **XFS** — must be created with `mkfs.xfs -m reflink=1`. Reflink cannot be
+  enabled in place on an existing XFS filesystem.
+- **bcachefs** — recent kernels.
+- **ext4 / tmpfs / NFS** — no reflink; clones fall back to a full byte copy.
+
+Place all three storage roots on the same filesystem to maximise CoW
+coverage. Select the mode at startup with `NAVARIS_STORAGE_MODE` (`auto` —
+default — probes each root; `copy` forces full copy; `reflink` is a hard
+precondition that fails startup on a non-CoW root).
+
+Memory-CoW forking of running Firecracker sandboxes is exposed via
+`POST /v1/sandboxes/{id}/fork` — see [docs/sandbox-fork.md](sandbox-fork.md).
+
+For Incus, navaris does not implement CoW directly — Incus uses its own
+storage pools. The daemon checks the configured pool driver at startup and
+warns on `dir`/`lvm`. Set `NAVARIS_INCUS_STRICT_POOL_COW=true` to upgrade
+the warning to a startup error.
+
 ## Install From A Release Tarball
 
 After extracting the release archive, run:
