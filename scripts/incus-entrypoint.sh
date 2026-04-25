@@ -23,6 +23,39 @@ fi
 # Initialize Incus on first run (use a sentinel file for idempotency).
 if [ ! -f /var/lib/incus/.initialized ]; then
     echo "Initializing Incus..."
+
+    # Storage driver selection. Default "dir" preserves the historical
+    # integration-test behavior. Set INCUS_STORAGE_DRIVER=btrfs to exercise
+    # the CoW path (used by the integration-incus-cow leg).
+    driver="${INCUS_STORAGE_DRIVER:-dir}"
+    case "$driver" in
+        dir)
+            storage_pool_block=$(cat <<'EOF'
+storage_pools:
+  - name: default
+    driver: dir
+EOF
+)
+            ;;
+        btrfs)
+            # Loop-backed btrfs pool. Incus creates the loop file at the
+            # given source path and mkfs.btrfs's it on first init.
+            storage_pool_block=$(cat <<'EOF'
+storage_pools:
+  - name: default
+    driver: btrfs
+    config:
+      source: /var/lib/incus/storage-pools/default.img
+      size: 5GiB
+EOF
+)
+            ;;
+        *)
+            echo "ERROR: unsupported INCUS_STORAGE_DRIVER=$driver (expected dir|btrfs)" >&2
+            exit 1
+            ;;
+    esac
+
     cat <<PRESEED | incus admin init --preseed
 networks:
   - name: incusbr0
@@ -31,9 +64,7 @@ networks:
       ipv4.address: 10.75.0.1/24
       ipv4.nat: "true"
       ipv6.address: none
-storage_pools:
-  - name: default
-    driver: dir
+${storage_pool_block}
 profiles:
   - name: default
     devices:

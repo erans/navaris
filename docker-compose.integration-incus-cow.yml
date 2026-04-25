@@ -1,0 +1,89 @@
+services:
+  incus:
+    build:
+      context: .
+      dockerfile: Dockerfile.incus
+    privileged: true
+    cgroup: host
+    environment:
+      # Drives the entrypoint preseed to use a btrfs-loop-backed pool
+      # (CoW-capable). Default behavior (driver: dir) is preserved by
+      # the base docker-compose.integration.yml — this leg differs in
+      # exactly one variable.
+      INCUS_STORAGE_DRIVER: btrfs
+      INCUS_PRELOAD_IMAGE: images:alpine/3.21,images:debian/12
+    volumes:
+      - incus-socket:/var/lib/incus
+      - incus-data:/var/lib/incus/storage-pools
+    healthcheck:
+      test: ["CMD-SHELL", "incus query /1.0 >/dev/null 2>&1 && test -f /tmp/incus-ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+
+  navarisd:
+    build:
+      context: .
+      dockerfile: Dockerfile.navarisd
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
+    command:
+      - --listen=:8080
+      - --db-path=/tmp/navaris.db
+      - --incus-socket=/var/lib/incus/unix.socket
+      # Strict mode: refuse to start if the Incus pool driver is not
+      # CoW-capable. With INCUS_STORAGE_DRIVER=btrfs above, the daemon
+      # MUST start clean; if the entrypoint regresses to dir, this fails
+      # loudly instead of silently degrading.
+      - --incus-strict-pool-cow=true
+      - --firecracker-bin=/usr/local/bin/firecracker
+      - --jailer-bin=/usr/local/bin/jailer
+      - --kernel-path=/opt/firecracker/vmlinux
+      - --image-dir=/opt/firecracker/images
+      - --chroot-base=/srv/firecracker
+      - --snapshot-dir=/srv/firecracker/snapshots
+      - --enable-jailer=false
+      - --auth-token=test-token
+      - --ui-password=dev
+      - --ui-session-key=ab44eacb2cc8934bf050b2fc463e979847637905ab6b6789516a0715a14905ff
+      - --log-level=debug
+    volumes:
+      - incus-socket:/var/lib/incus:ro
+    depends_on:
+      incus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--header", "Authorization: Bearer test-token", "http://localhost:8080/v1/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  navarisd-dev:
+    extends:
+      service: navarisd
+    ports:
+      - "${NAVARIS_HOST_PORT:-8080}:8080"
+    profiles:
+      - dev
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      NAVARIS_API_URL: http://navarisd:8080
+      NAVARIS_TOKEN: test-token
+      NAVARIS_BASE_IMAGE: ${NAVARIS_BASE_IMAGE:-alpine/3.21}
+      NAVARIS_CLI: /usr/local/bin/navaris
+    depends_on:
+      navarisd:
+        condition: service_healthy
+    profiles:
+      - test
+
+volumes:
+  incus-socket:
+  incus-data:
