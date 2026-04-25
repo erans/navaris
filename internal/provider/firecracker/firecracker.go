@@ -36,6 +36,16 @@ type Config struct {
 	// Storage is required: it owns CoW cloning of rootfs files. Pass a
 	// Registry whose roots include ImageDir, ChrootBase, and SnapshotDir.
 	Storage *storage.Registry
+
+	// DefaultVcpuCount is used when CreateSandboxRequest.CPULimit is nil.
+	// Set via --firecracker-default-vcpu on the daemon.
+	DefaultVcpuCount int
+
+	// DefaultMemoryMib is used when CreateSandboxRequest.MemoryLimitMB is
+	// nil. Set via --firecracker-default-memory-mb on the daemon. Note
+	// that the API field is named ...MB but is fed straight to MemSizeMib;
+	// see docs/superpowers/specs/2026-04-25-resource-limits-design.md §3.5.
+	DefaultMemoryMib int
 }
 
 func (c *Config) defaults() {
@@ -47,6 +57,12 @@ func (c *Config) defaults() {
 	}
 	if c.SnapshotDir == "" {
 		c.SnapshotDir = "/srv/firecracker/snapshots"
+	}
+	if c.DefaultVcpuCount == 0 {
+		c.DefaultVcpuCount = 1
+	}
+	if c.DefaultMemoryMib == 0 {
+		c.DefaultMemoryMib = 256
 	}
 }
 

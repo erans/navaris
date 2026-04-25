@@ -95,3 +95,25 @@ func TestCloneFile_Wrapper_Smoke(t *testing.T) {
 		t.Errorf("dst = %q (err=%v)", got, err)
 	}
 }
+
+func TestConfig_Defaults_FillsZeroLimitFields(t *testing.T) {
+	cfg := Config{} // DefaultVcpuCount=0, DefaultMemoryMib=0
+	cfg.defaults()
+	if cfg.DefaultVcpuCount != 1 {
+		t.Errorf("DefaultVcpuCount = %d, want 1", cfg.DefaultVcpuCount)
+	}
+	if cfg.DefaultMemoryMib != 256 {
+		t.Errorf("DefaultMemoryMib = %d, want 256", cfg.DefaultMemoryMib)
+	}
+}
+
+func TestConfig_Defaults_RespectsNonZeroLimitFields(t *testing.T) {
+	cfg := Config{DefaultVcpuCount: 4, DefaultMemoryMib: 1024}
+	cfg.defaults()
+	if cfg.DefaultVcpuCount != 4 {
+		t.Errorf("DefaultVcpuCount = %d, want 4 (preserved)", cfg.DefaultVcpuCount)
+	}
+	if cfg.DefaultMemoryMib != 1024 {
+		t.Errorf("DefaultMemoryMib = %d, want 1024 (preserved)", cfg.DefaultMemoryMib)
+	}
+}
