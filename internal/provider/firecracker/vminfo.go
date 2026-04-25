@@ -19,6 +19,11 @@ type VMInfo struct {
 	Ports               map[int]int `json:"ports,omitempty"`
 	RestoreFromSnapshot bool        `json:"restore_from_snapshot,omitempty"`
 	RestoreSubnetIdx    int         `json:"restore_subnet_idx,omitempty"` // original subnet for live restore
+	// ForkPointID is set when the VM was spawned from a fork-point. The
+	// fork-point's vmstate.bin must remain on disk (the kernel may still
+	// page-fault clean memory pages from it via MAP_PRIVATE) until this VM
+	// is destroyed; T17 wires the release call.
+	ForkPointID string `json:"fork_point_id,omitempty"`
 }
 
 func (v *VMInfo) Write(path string) error {

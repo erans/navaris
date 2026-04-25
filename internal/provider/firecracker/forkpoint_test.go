@@ -120,3 +120,104 @@ func TestFPOrphanTTL(t *testing.T) {
 		t.Errorf("fpOrphanTTL = %v, want 1h", fpOrphanTTL)
 	}
 }
+
+func TestReleaseForkPointDescendant_GCsWhenEmpty(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-test1"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(fpID), &fpInfo{
+		ForkPointID:  fpID,
+		Descendants:  []string{"sbx-1"},
+		SpawnPending: 0,
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := p.ReleaseForkPointDescendant(fpID, "sbx-1"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := os.Stat(fpDir); !os.IsNotExist(err) {
+		t.Errorf("fork-point dir should be GC'd after last descendant; stat err=%v", err)
+	}
+}
+
+func TestReleaseForkPointDescendant_KeepsWhenOthersRemain(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-test2"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(fpID), &fpInfo{
+		ForkPointID: fpID,
+		Descendants: []string{"sbx-1", "sbx-2"},
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := p.ReleaseForkPointDescendant(fpID, "sbx-1"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := os.Stat(fpDir); err != nil {
+		t.Errorf("fork-point dir should remain while sbx-2 is alive: %v", err)
+	}
+	got, _ := readFPInfo(p.fpInfoPath(fpID))
+	if len(got.Descendants) != 1 || got.Descendants[0] != "sbx-2" {
+		t.Errorf("expected only sbx-2, got %v", got.Descendants)
+	}
+}
+
+func TestReleaseForkPointDescendant_KeepsWhenSpawnPending(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-test3"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(fpID), &fpInfo{
+		ForkPointID:  fpID,
+		Descendants:  []string{"sbx-1"},
+		SpawnPending: 2, // 2 children still being spawned
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := p.ReleaseForkPointDescendant(fpID, "sbx-1"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := os.Stat(fpDir); err != nil {
+		t.Errorf("fork-point dir should remain while spawns are pending: %v", err)
+	}
+}
+
+func TestReleaseForkPointDescendant_IdempotentOnMissingFP(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	// fpInfoPath does not exist — Release must return nil (already GC'd).
+	if err := p.ReleaseForkPointDescendant("fp-gone", "sbx-1"); err != nil {
+		t.Errorf("expected nil for missing fork-point, got %v", err)
+	}
+}
+
+func TestReleaseForkPointDescendant_UnknownVMIDIsNoOp(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-test5"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(fpID), &fpInfo{
+		ForkPointID: fpID,
+		Descendants: []string{"sbx-1"},
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := p.ReleaseForkPointDescendant(fpID, "sbx-NOPE"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	got, _ := readFPInfo(p.fpInfoPath(fpID))
+	if len(got.Descendants) != 1 {
+		t.Errorf("descendants should be unchanged when removing unknown vmID, got %v", got.Descendants)
+	}
+}
