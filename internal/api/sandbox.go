@@ -50,6 +50,10 @@ type stopSandboxRequest struct {
 	Force bool `json:"force"`
 }
 
+type forkSandboxRequest struct {
+	Count int `json:"count"`
+}
+
 func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 	var req createSandboxRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -210,6 +214,29 @@ func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request) {
 func (s *Server) destroySandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	op, err := s.cfg.Sandboxes.Destroy(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	respondOperation(w, op)
+}
+
+func (s *Server) forkSandbox(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing sandbox id", http.StatusBadRequest)
+		return
+	}
+	var req forkSandboxRequest
+	if err := decodeJSON(r, &req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Count < 1 {
+		http.Error(w, "count must be >= 1", http.StatusBadRequest)
+		return
+	}
+	op, err := s.cfg.Sandboxes.Fork(r.Context(), id, req.Count)
 	if err != nil {
 		respondError(w, err)
 		return

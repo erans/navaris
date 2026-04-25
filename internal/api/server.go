@@ -63,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/sandboxes/{id}/start", s.startSandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/stop", s.stopSandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/destroy", s.destroySandbox)
+	api.HandleFunc("POST /v1/sandboxes/{id}/fork", s.forkSandbox)
 
 	api.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
 	api.HandleFunc("GET /v1/sandboxes/{id}/snapshots", s.listSnapshots)
