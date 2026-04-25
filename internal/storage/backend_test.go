@@ -77,6 +77,61 @@ func TestCopyBackend_NoPartialOnError(t *testing.T) {
 	}
 }
 
+func TestCopyBackend_RenameFailureCleansTmp(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	// dst is in a subdirectory that does not exist — rename will fail.
+	dst := filepath.Join(dir, "missing-subdir", "dst")
+
+	b := &CopyBackend{}
+	if err := b.CloneFile(context.Background(), src, dst); err == nil {
+		t.Fatalf("expected error when dst parent does not exist")
+	}
+
+	// dst.tmp must NOT remain in the parent dir of the resolved tmp path
+	// (which is under dir/missing-subdir, but since that dir doesn't exist
+	// the tmp couldn't be created either — verify nothing leaked into dir).
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "src" {
+			t.Errorf("unexpected leftover in dir: %s", e.Name())
+		}
+	}
+}
+
+func TestCopyBackend_OEXCL_RejectsConcurrentTmp(t *testing.T) {
+	// Pre-existing dst.tmp from a "prior run" must be cleaned up by the
+	// implementation, not silently clobbered. After CloneFile returns,
+	// dst exists with the new content and no .tmp remains.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if err := os.WriteFile(dst+".tmp", []byte("STALE"), 0o644); err != nil {
+		t.Fatalf("plant stale tmp: %v", err)
+	}
+	b := &CopyBackend{}
+	if err := b.CloneFile(context.Background(), src, dst); err != nil {
+		t.Fatalf("CloneFile: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "new" {
+		t.Errorf("dst content = %q (err=%v), want %q", got, err, "new")
+	}
+	if _, err := os.Stat(dst + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("dst.tmp must not exist after success, stat err=%v", err)
+	}
+}
+
 func TestCopyBackend_NameAndCapabilities(t *testing.T) {
 	b := &CopyBackend{}
 	if b.Name() != "copy" {

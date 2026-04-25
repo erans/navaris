@@ -24,7 +24,13 @@ func (CopyBackend) CloneFile(ctx context.Context, src, dst string) error {
 	defer in.Close()
 
 	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// Best-effort remove a stale dst.tmp from a prior crashed run before we
+	// open with O_EXCL — that turns "tmp already exists" into a real error
+	// rather than silently clobbering whatever it pointed at.
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("storage/copy clean stale dst.tmp: %w", err)
+	}
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 	if err != nil {
 		return fmt.Errorf("storage/copy create dst.tmp: %w", err)
 	}
