@@ -1,0 +1,24 @@
+name: Integration Tests (Incus CoW / btrfs)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Parallels integration.yml but exercises the new copy-on-write paths:
+# the Incus pool is initialised with driver: btrfs (loop-backed) and
+# navarisd is launched with --incus-strict-pool-cow=true so a regression
+# in the pool advisory wiring fails the run hard.
+jobs:
+  integration-incus-cow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        image: [alpine/3.21, debian/12]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run integration tests on btrfs Incus pool (${{ matrix.image }})
+        run: make integration-test-incus-cow
+        env:
+          NAVARIS_BASE_IMAGE: ${{ matrix.image }}

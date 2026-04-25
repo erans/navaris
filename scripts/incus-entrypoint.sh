@@ -23,6 +23,61 @@ fi
 # Initialize Incus on first run (use a sentinel file for idempotency).
 if [ ! -f /var/lib/incus/.initialized ]; then
     echo "Initializing Incus..."
+
+    # Storage driver selection. Default "dir" preserves the historical
+    # integration-test behavior. Set INCUS_STORAGE_DRIVER=btrfs to exercise
+    # the CoW path (used by the integration-incus-cow leg).
+    driver="${INCUS_STORAGE_DRIVER:-dir}"
+    case "$driver" in
+        dir)
+            storage_pool_block=$(cat <<'EOF'
+storage_pools:
+  - name: default
+    driver: dir
+EOF
+)
+            ;;
+        btrfs)
+            # Mount our own btrfs loop OUTSIDE /var/lib/incus and point Incus
+            # at it. Earlier attempts hit two distinct gates in Incus's
+            # validator:
+            #   1. Source under /var/lib/incus must be exactly
+            #      /var/lib/incus/storage-pools/<pool> (no .img suffix).
+            #      OK if you pre-mount there — but then:
+            #   2. Incus refuses with "storage pool directory ... already
+            #      exists" because it wants to create that exact path
+            #      itself as its internal pool dir.
+            # Solving both: mount btrfs at /var/lib/navaris-incus-btrfs
+            # (sibling of /var/lib/incus, neither gate applies). Incus
+            # accepts the existing btrfs path as source and lays out its
+            # pool internals inside it.
+            btrfs_img=/var/lib/navaris-incus-btrfs.img
+            btrfs_mount=/var/lib/navaris-incus-btrfs
+            if [ "$(stat -f -c %T "$btrfs_mount" 2>/dev/null)" != "btrfs" ]; then
+                echo "Provisioning btrfs loop at $btrfs_mount (img=$btrfs_img, 5 GiB)..."
+                mkdir -p "$btrfs_mount"
+                if [ ! -f "$btrfs_img" ]; then
+                    truncate -s 5G "$btrfs_img"
+                    mkfs.btrfs -q "$btrfs_img"
+                fi
+                mount -o loop "$btrfs_img" "$btrfs_mount"
+                echo "  $btrfs_mount fstype=$(stat -f -c %T "$btrfs_mount")"
+            fi
+            storage_pool_block=$(cat <<'EOF'
+storage_pools:
+  - name: default
+    driver: btrfs
+    config:
+      source: /var/lib/navaris-incus-btrfs
+EOF
+)
+            ;;
+        *)
+            echo "ERROR: unsupported INCUS_STORAGE_DRIVER=$driver (expected dir|btrfs)" >&2
+            exit 1
+            ;;
+    esac
+
     cat <<PRESEED | incus admin init --preseed
 networks:
   - name: incusbr0
@@ -31,9 +86,7 @@ networks:
       ipv4.address: 10.75.0.1/24
       ipv4.nat: "true"
       ipv6.address: none
-storage_pools:
-  - name: default
-    driver: dir
+${storage_pool_block}
 profiles:
   - name: default
     devices:

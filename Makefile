@@ -73,6 +73,35 @@ integration-env-mixed-down:
 integration-logs-mixed:
 	docker compose -f $(MIXED_COMPOSE_FILE) logs -f
 
+INCUS_COW_COMPOSE_FILE := docker-compose.integration-incus-cow.yml
+
+.PHONY: integration-test-incus-cow integration-env-incus-cow integration-env-incus-cow-down integration-logs-incus-cow
+
+integration-test-incus-cow:
+	@docker compose -f $(INCUS_COW_COMPOSE_FILE) --profile test up \
+		--build --abort-on-container-exit --exit-code-from test-runner; \
+	rc=$$?; \
+	docker compose -f $(INCUS_COW_COMPOSE_FILE) --profile test down -v; \
+	exit $$rc
+
+integration-env-incus-cow:
+	NAVARIS_HOST_PORT=8080 docker compose -f $(INCUS_COW_COMPOSE_FILE) --profile dev up -d --build incus navarisd-dev
+	@echo ""
+	@echo "Navaris API (Incus + btrfs CoW): http://localhost:8080"
+	@echo "Token:                            test-token"
+	@echo ""
+	@echo "Run tests:"
+	@echo "  NAVARIS_API_URL=http://localhost:8080 NAVARIS_TOKEN=test-token go test -tags integration ./test/integration/ -v"
+	@echo ""
+	@echo "Tear down:"
+	@echo "  make integration-env-incus-cow-down"
+
+integration-env-incus-cow-down:
+	NAVARIS_HOST_PORT=8080 docker compose -f $(INCUS_COW_COMPOSE_FILE) --profile dev down -v
+
+integration-logs-incus-cow:
+	docker compose -f $(INCUS_COW_COMPOSE_FILE) logs -f
+
 # ---- All-in-one Docker image ----
 
 .PHONY: docker-build docker-up docker-up-kvm docker-down
