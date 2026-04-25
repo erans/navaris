@@ -137,6 +137,12 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off " + p.subnets.KernelBootArg(subnetIdx)
 
 	vcpu, mem := info.VcpuCount, info.MemSizeMib
+	if vcpu == 0 {
+		vcpu = int64(p.config.DefaultVcpuCount)
+	}
+	if mem == 0 {
+		mem = int64(p.config.DefaultMemoryMib)
+	}
 
 	var jailerCfg *fcsdk.JailerConfig
 	if p.config.EnableJailer {
@@ -556,8 +562,8 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	}
 
 	// Write vminfo.json.
-	vcpu2, mem2 := p.resolveMachineLimits(req)
-	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode), VcpuCount: vcpu2, MemSizeMib: mem2}
+	vcpu, mem := p.resolveMachineLimits(req)
+	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode), VcpuCount: vcpu, MemSizeMib: mem}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
