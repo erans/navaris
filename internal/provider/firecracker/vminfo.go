@@ -24,6 +24,10 @@ type VMInfo struct {
 	// page-fault clean memory pages from it via MAP_PRIVATE) until this VM
 	// is destroyed; T17 wires the release call.
 	ForkPointID string `json:"fork_point_id,omitempty"`
+	// VcpuCount and MemSizeMib are resolved at CreateSandbox time from the
+	// request limits (or provider defaults) and used when the VM is started.
+	VcpuCount  int64 `json:"vcpu_count,omitempty"`
+	MemSizeMib int64 `json:"mem_size_mib,omitempty"`
 }
 
 func (v *VMInfo) Write(path string) error {
