@@ -102,6 +102,39 @@ integration-env-incus-cow-down:
 integration-logs-incus-cow:
 	docker compose -f $(INCUS_COW_COMPOSE_FILE) logs -f
 
+FC_COW_COMPOSE_FILE := docker-compose.integration-firecracker-cow.yml
+
+.PHONY: integration-test-firecracker-cow integration-env-firecracker-cow integration-env-firecracker-cow-down integration-logs-firecracker-cow
+
+# Mounts a btrfs loop file at /srv/firecracker inside the navarisd container
+# and runs navarisd with --storage-mode=reflink (strict). If FICLONE doesn't
+# work on /srv/firecracker, navarisd refuses to start — so a healthy stack
+# is itself end-to-end proof that ReflinkBackend.CloneFile is exercised.
+integration-test-firecracker-cow:
+	@docker compose -f $(FC_COW_COMPOSE_FILE) --profile test up \
+		--build --abort-on-container-exit --exit-code-from test-runner; \
+	rc=$$?; \
+	docker compose -f $(FC_COW_COMPOSE_FILE) --profile test down -v; \
+	exit $$rc
+
+integration-env-firecracker-cow:
+	NAVARIS_HOST_PORT=8080 docker compose -f $(FC_COW_COMPOSE_FILE) --profile dev up -d --build navarisd-dev
+	@echo ""
+	@echo "Navaris API (Firecracker + btrfs reflink): http://localhost:8080"
+	@echo "Token:                                      test-token"
+	@echo ""
+	@echo "Run tests:"
+	@echo "  NAVARIS_API_URL=http://localhost:8080 NAVARIS_TOKEN=test-token NAVARIS_SKIP_SNAPSHOTS=1 NAVARIS_SKIP_PORTS=1 go test -tags integration ./test/integration/ -v"
+	@echo ""
+	@echo "Tear down:"
+	@echo "  make integration-env-firecracker-cow-down"
+
+integration-env-firecracker-cow-down:
+	NAVARIS_HOST_PORT=8080 docker compose -f $(FC_COW_COMPOSE_FILE) --profile dev down -v
+
+integration-logs-firecracker-cow:
+	docker compose -f $(FC_COW_COMPOSE_FILE) logs -f
+
 # ---- All-in-one Docker image ----
 
 .PHONY: docker-build docker-up docker-up-kvm docker-down

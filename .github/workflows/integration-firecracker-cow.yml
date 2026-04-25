@@ -1,0 +1,35 @@
+name: Integration Tests (Firecracker reflink CoW)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Mirrors integration-firecracker.yml but mounts a btrfs loop file at
+# /srv/firecracker inside the navarisd container and runs navarisd with
+# --storage-mode=reflink (strict). If FICLONE doesn't work on the storage
+# roots, navarisd refuses to start at all — so a green run is end-to-end
+# proof that ReflinkBackend.CloneFile fires on every clone path the
+# integration suite exercises.
+jobs:
+  integration-firecracker-cow:
+    # ubuntu-24.04 has /dev/kvm available; ubuntu-latest aliases are not
+    # guaranteed to.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        image: [alpine-3.21, debian-12]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Enable KVM
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::KVM not available on this runner"
+            exit 1
+          fi
+          sudo chmod 666 /dev/kvm
+      - name: Run integration tests on btrfs-reflink /srv/firecracker (${{ matrix.image }})
+        run: make integration-test-firecracker-cow
+        env:
+          NAVARIS_BASE_IMAGE: ${{ matrix.image }}

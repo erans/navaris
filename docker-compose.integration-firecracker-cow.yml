@@ -1,0 +1,67 @@
+services:
+  navarisd:
+    build:
+      context: .
+      dockerfile: Dockerfile.navarisd-firecracker
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
+    environment:
+      # Triggers the entrypoint to mkfs.btrfs a loop file and mount it at
+      # /srv/firecracker before navarisd starts. Combined with
+      # --storage-mode=reflink (strict), navarisd refuses to start unless
+      # the FICLONE probe succeeds at every storage root — so a healthy
+      # container is itself proof that reflink works end-to-end.
+      NAVARIS_FC_BTRFS_LOOP: "1"
+    command:
+      - --listen=:8080
+      - --db-path=/tmp/navaris.db
+      - --firecracker-bin=/usr/local/bin/firecracker
+      - --jailer-bin=/usr/local/bin/jailer
+      - --kernel-path=/opt/firecracker/vmlinux
+      # The Dockerfile bakes rootfs images into /opt/firecracker/images,
+      # which is on the container's overlayfs (no FICLONE). The entrypoint
+      # restages them under /srv/firecracker/images (the btrfs mount) so
+      # the image-dir storage root also passes the strict-reflink probe.
+      - --image-dir=/srv/firecracker/images
+      - --chroot-base=/srv/firecracker
+      - --snapshot-dir=/srv/firecracker/snapshots
+      - --enable-jailer=false
+      - --auth-token=test-token
+      # Strict reflink: probeReflink must succeed at chroot-base, image-dir,
+      # and snapshot-dir, otherwise navarisd exits non-zero at startup. This
+      # is the actual end-to-end CoW assertion — every successful test run
+      # has demonstrably routed clones through ReflinkBackend.
+      - --storage-mode=reflink
+      - --log-level=debug
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--header",
+             "Authorization: Bearer test-token",
+             "http://localhost:8080/v1/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  navarisd-dev:
+    extends:
+      service: navarisd
+    ports:
+      - "${NAVARIS_HOST_PORT:-8080}:8080"
+    profiles:
+      - dev
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      NAVARIS_API_URL: http://navarisd:8080
+      NAVARIS_TOKEN: test-token
+      NAVARIS_BASE_IMAGE: ${NAVARIS_BASE_IMAGE:-alpine-3.21}
+      NAVARIS_CLI: /usr/local/bin/navaris
+    depends_on:
+      navarisd:
+        condition: service_healthy
+    profiles:
+      - test
