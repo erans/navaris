@@ -131,7 +131,7 @@ func (p *Provider) CreateSnapshot(ctx context.Context, ref domain.BackendRef, la
 func (p *Provider) createStoppedSnapshot(ctx context.Context, vmDir, snapDir string) (storage.Backend, error) {
 	src := filepath.Join(vmDir, "rootfs.ext4")
 	dst := filepath.Join(snapDir, "rootfs.ext4")
-	b, err := p.storage.CloneFile(ctx, src, dst)
+	b, err := p.cloneFile(ctx, src, dst)
 	if err != nil {
 		return nil, fmt.Errorf("firecracker snapshot copy rootfs: %w", err)
 	}
@@ -186,7 +186,7 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	rootfsSrc := filepath.Join(vmDir, "rootfs.ext4")
 	rootfsDst := filepath.Join(snapDir, "rootfs.ext4")
 	var diskBackend storage.Backend
-	diskBackend, snapErr = p.storage.CloneFile(ctx, rootfsSrc, rootfsDst)
+	diskBackend, snapErr = p.cloneFile(ctx, rootfsSrc, rootfsDst)
 	if snapErr != nil {
 		return nil, fmt.Errorf("firecracker snapshot copy rootfs: %w", snapErr)
 	}
@@ -201,7 +201,7 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
 		src := filepath.Join(snapshotFilesDir, name)
 		dst := filepath.Join(snapDir, name)
-		if _, snapErr = p.storage.CloneFile(ctx, src, dst); snapErr != nil {
+		if _, snapErr = p.cloneFile(ctx, src, dst); snapErr != nil {
 			return nil, fmt.Errorf("firecracker snapshot copy %s: %w", name, snapErr)
 		}
 	}
@@ -236,7 +236,7 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 	}
 
 	// Copy rootfs from snapshot to VM.
-	if _, err := p.storage.CloneFile(ctx, filepath.Join(snapDir, "rootfs.ext4"), filepath.Join(vmDir, "rootfs.ext4")); err != nil {
+	if _, err := p.cloneFile(ctx, filepath.Join(snapDir, "rootfs.ext4"), filepath.Join(vmDir, "rootfs.ext4")); err != nil {
 		return fmt.Errorf("firecracker restore copy rootfs: %w", err)
 	}
 
@@ -250,7 +250,7 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 		}
 		os.MkdirAll(restoreDir, 0o755)
 		for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
-			if _, err := p.storage.CloneFile(ctx, filepath.Join(snapDir, name), filepath.Join(restoreDir, name)); err != nil {
+			if _, err := p.cloneFile(ctx, filepath.Join(snapDir, name), filepath.Join(restoreDir, name)); err != nil {
 				return fmt.Errorf("firecracker restore copy %s: %w", name, err)
 			}
 		}

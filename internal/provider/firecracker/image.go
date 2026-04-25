@@ -59,7 +59,7 @@ func (p *Provider) PublishSnapshotAsImage(ctx context.Context, snapshotRef domai
 	// Copy rootfs from snapshot to image directory.
 	src := filepath.Join(snapDir, "rootfs.ext4")
 	dst := p.imageExtPath(imgRef)
-	b, err := p.storage.CloneFile(ctx, src, dst)
+	b, err := p.cloneFile(ctx, src, dst)
 	if err != nil {
 		return domain.BackendRef{}, fmt.Errorf("firecracker publish image copy: %w", err)
 	}

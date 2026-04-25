@@ -48,7 +48,7 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	// Copy rootfs image.
 	srcImage := filepath.Join(p.config.ImageDir, req.ImageRef+".ext4")
 	dstImage := filepath.Join(vmDir, "rootfs.ext4")
-	if _, err := p.storage.CloneFile(ctx, srcImage, dstImage); err != nil {
+	if _, err := p.cloneFile(ctx, srcImage, dstImage); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker copy rootfs %s: %w", vmID, err)
 	}
@@ -519,7 +519,7 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	// Copy rootfs from snapshot.
 	src := filepath.Join(snapDir, "rootfs.ext4")
 	dst := filepath.Join(vmDir, "rootfs.ext4")
-	if _, err := p.storage.CloneFile(ctx, src, dst); err != nil {
+	if _, err := p.cloneFile(ctx, src, dst); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker copy snapshot rootfs %s: %w", vmID, err)
 	}

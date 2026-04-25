@@ -3,9 +3,14 @@
 package firecracker
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/navaris/navaris/internal/storage"
 )
 
 func TestNew_RequiresStorageRegistry(t *testing.T) {
@@ -62,5 +67,31 @@ func TestImageInfo_StorageBackendField_RoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"storage_backend":"copy"`) {
 		t.Errorf("expected storage_backend in JSON, got: %s", data)
+	}
+}
+
+func TestCloneFile_Wrapper_Smoke(t *testing.T) {
+	dir := t.TempDir()
+	reg := storage.NewRegistry()
+	reg.SetFallback(storage.CopyBackend{})
+
+	p := &Provider{config: Config{ChrootBase: dir}}
+	p.storage = reg
+
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	b, err := p.cloneFile(context.Background(), src, dst)
+	if err != nil {
+		t.Fatalf("cloneFile: %v", err)
+	}
+	if b == nil || b.Name() != "copy" {
+		t.Errorf("expected copy backend, got %v", b)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "data" {
+		t.Errorf("dst = %q (err=%v)", got, err)
 	}
 }

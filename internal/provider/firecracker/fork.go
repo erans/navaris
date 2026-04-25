@@ -14,6 +14,7 @@ import (
 
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/storage"
+	"github.com/navaris/navaris/internal/telemetry"
 )
 
 // CreateForkPoint materializes a fork-point from the given parent VM. If the
@@ -41,12 +42,19 @@ func (p *Provider) CreateForkPoint(ctx context.Context, parentVMID string) (stri
 	var diskBackend storage.Backend
 	if parentInfo.PID > 0 && processAlive(parentInfo.PID) {
 		mode = "live"
+		pauseStart := time.Now()
 		b, err := p.createLiveSnapshot(ctx, parentVMID, p.vmDir(parentVMID), fpDir)
 		if err != nil {
 			os.RemoveAll(fpDir)
 			return "", err
 		}
 		diskBackend = b
+		pauseDuration := time.Since(pauseStart)
+		cowCapable := false
+		if b != nil {
+			cowCapable = b.Capabilities().InstantClone
+		}
+		telemetry.RecordForkPauseDuration(ctx, cowCapable, pauseDuration)
 	} else {
 		b, err := p.createStoppedSnapshot(ctx, p.vmDir(parentVMID), fpDir)
 		if err != nil {
@@ -84,6 +92,10 @@ func (p *Provider) CreateForkPoint(ctx context.Context, parentVMID string) (stri
 // On any error, the partially-created VM dir is removed AND the descendant
 // is NOT added to the fork-point.
 func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req domain.CreateSandboxRequest) (domain.BackendRef, error) {
+	start := time.Now()
+	defer func() {
+		telemetry.RecordForkChildSpawnDuration(ctx, time.Since(start))
+	}()
 	fpDir := p.forkPointDir(fpID)
 	if _, err := readFPInfo(p.fpInfoPath(fpID)); err != nil {
 		return domain.BackendRef{}, fmt.Errorf("forkpoint not found: %w", err)
@@ -98,7 +110,7 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 	// Reflink rootfs from fork-point.
 	rootSrc := filepath.Join(fpDir, "rootfs.ext4")
 	rootDst := filepath.Join(vmDir, "rootfs.ext4")
-	if _, err := p.storage.CloneFile(ctx, rootSrc, rootDst); err != nil {
+	if _, err := p.cloneFile(ctx, rootSrc, rootDst); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("forkpoint spawn clone rootfs %s: %w", vmID, err)
 	}
@@ -120,7 +132,7 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 	for _, name := range []string{"vmstate.bin", "snapshot.meta"} {
 		src := filepath.Join(fpDir, name)
 		dst := filepath.Join(restoreDir, name)
-		if _, err := p.storage.CloneFile(ctx, src, dst); err != nil {
+		if _, err := p.cloneFile(ctx, src, dst); err != nil {
 			os.RemoveAll(vmDir)
 			return domain.BackendRef{}, fmt.Errorf("forkpoint spawn clone %s: %w", name, err)
 		}
