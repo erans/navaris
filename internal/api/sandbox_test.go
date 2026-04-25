@@ -178,3 +178,33 @@ func TestDestroySandbox(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestCreateSandbox_RejectsCPUOutOfBounds(t *testing.T) {
+	env := newTestEnv(t)
+	projectID := createTestProject(t, env)
+
+	rec := doRequest(t, env.handler, "POST", "/v1/sandboxes", map[string]any{
+		"project_id": projectID,
+		"name":       "bad-cpu",
+		"image_id":   "img-1",
+		"cpu_limit":  33,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateSandboxFromSnapshot_RejectsMemoryLimit(t *testing.T) {
+	env := newTestEnv(t)
+	projectID := createTestProject(t, env)
+
+	rec := doRequest(t, env.handler, "POST", "/v1/sandboxes/from-snapshot", map[string]any{
+		"project_id":      projectID,
+		"name":            "bad-snap",
+		"snapshot_id":     "snap-1",
+		"memory_limit_mb": 1024,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
