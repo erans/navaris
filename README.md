@@ -175,6 +175,8 @@ Backend selection for new sandboxes follows this priority:
 | `--snapshot-dir` | `/srv/firecracker/snapshots` | Snapshot storage directory |
 | `--host-interface` | *(auto-detect)* | Network interface for masquerade |
 | `--enable-jailer` | `true` | Use the Firecracker jailer (disable for Docker) |
+| `--firecracker-default-vcpu` | `1` | Default vCPU count for Firecracker sandboxes when `cpu_limit` is unset on the API |
+| `--firecracker-default-memory-mb` | `256` | Default memory (MB, treated as MiB by Firecracker) when `memory_limit_mb` is unset |
 | `--storage-mode` | `auto` | CoW backend selection: `auto` (probe) / `copy` / `reflink` — see [docs/storage-backends.md](docs/storage-backends.md) |
 | `--incus-strict-pool-cow` | `false` | Fail startup if the Incus storage pool driver is not CoW-capable (default: warn only) |
 | `--concurrency` | `8` | Max concurrent operations |
