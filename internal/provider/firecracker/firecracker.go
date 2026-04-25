@@ -203,6 +203,9 @@ func (p *Provider) recover() error {
 			}
 		}
 	}
+	if err := p.recoverForkPoints(); err != nil {
+		slog.Warn("firecracker forkpoint recover", "error", err)
+	}
 	return nil
 }
 

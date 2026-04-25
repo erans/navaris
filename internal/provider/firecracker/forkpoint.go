@@ -5,6 +5,7 @@ package firecracker
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -119,4 +120,67 @@ func updateFPInfo(path string, fn func(*fpInfo)) error {
 		return fmt.Errorf("forkpoint rename: %w", err)
 	}
 	return nil
+}
+
+// recoverForkPoints scans the fork-points directory at daemon start.
+// Two GC predicates:
+//   - Rule A (orphan): SpawnPending > 0 AND CreatedAt older than fpOrphanTTL
+//     — assume the daemon crashed mid-fork and this fork-point's spawn
+//     phase will never complete.
+//   - Unreferenced: Descendants empty AND SpawnPending == 0 — no live
+//     child holds a MAP_PRIVATE mapping of vmstate.bin AND no spawn is
+//     pending; backing files are no longer needed.
+//
+// Fork-points whose fpinfo.json is missing or unreadable are left alone
+// for human inspection; the daemon logs a warning but does not delete them.
+func (p *Provider) recoverForkPoints() error {
+	root := filepath.Join(p.config.ChrootBase, "forkpoints")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("forkpoint scan: %w", err)
+	}
+	now := time.Now().UTC()
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		fpID := e.Name()
+		info, err := readFPInfo(p.fpInfoPath(fpID))
+		if err != nil {
+			// Don't auto-delete: a half-written fpinfo could indicate a
+			// crash mid-write that needs investigation.
+			slog.Warn("firecracker forkpoint scan: skip unreadable", "fp_id", fpID, "error", err)
+			continue
+		}
+		isOrphan := info.SpawnPending > 0 && now.Sub(info.CreatedAt) > fpOrphanTTL
+		isUnreferenced := len(info.Descendants) == 0 && info.SpawnPending == 0
+		if isOrphan || isUnreferenced {
+			slog.Info("firecracker forkpoint gc on recover",
+				"fp_id", fpID,
+				"reason", reasonForGC(isOrphan, isUnreferenced),
+				"descendants", len(info.Descendants),
+				"spawn_pending", info.SpawnPending,
+			)
+			if err := os.RemoveAll(p.forkPointDir(fpID)); err != nil {
+				return fmt.Errorf("forkpoint GC %s: %w", fpID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func reasonForGC(orphan, unreferenced bool) string {
+	switch {
+	case orphan && unreferenced:
+		return "orphan+unreferenced"
+	case orphan:
+		return "orphan"
+	case unreferenced:
+		return "unreferenced"
+	default:
+		return ""
+	}
 }

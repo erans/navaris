@@ -221,3 +221,115 @@ func TestReleaseForkPointDescendant_UnknownVMIDIsNoOp(t *testing.T) {
 		t.Errorf("descendants should be unchanged when removing unknown vmID, got %v", got.Descendants)
 	}
 }
+
+func TestRecoverForkPoints_GCsOrphanForkpoints(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+
+	// Orphan: SpawnPending > 0, CreatedAt older than fpOrphanTTL.
+	orphanID := "fp-orphan"
+	orphanDir := p.forkPointDir(orphanID)
+	if err := os.MkdirAll(orphanDir, 0o755); err != nil {
+		t.Fatalf("mkdir orphan: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(orphanID), &fpInfo{
+		ForkPointID:  orphanID,
+		SpawnPending: 2,
+		CreatedAt:    time.Now().UTC().Add(-2 * fpOrphanTTL),
+	}); err != nil {
+		t.Fatalf("write orphan: %v", err)
+	}
+
+	// Live: has descendants, no spawn pending, recently created.
+	liveID := "fp-live"
+	liveDir := p.forkPointDir(liveID)
+	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+		t.Fatalf("mkdir live: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(liveID), &fpInfo{
+		ForkPointID: liveID,
+		Descendants: []string{"sbx-1"},
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("write live: %v", err)
+	}
+
+	if err := p.recoverForkPoints(); err != nil {
+		t.Fatalf("recoverForkPoints: %v", err)
+	}
+
+	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
+		t.Errorf("orphan should have been GC'd, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(liveDir, "fpinfo.json")); err != nil {
+		t.Errorf("live fork-point should remain: %v", err)
+	}
+}
+
+func TestRecoverForkPoints_GCsUnreferenced(t *testing.T) {
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-unref"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(fpID), &fpInfo{
+		ForkPointID: fpID,
+		// Descendants empty, SpawnPending = 0 → unreferenced
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := p.recoverForkPoints(); err != nil {
+		t.Fatalf("recoverForkPoints: %v", err)
+	}
+	if _, err := os.Stat(fpDir); !os.IsNotExist(err) {
+		t.Errorf("unreferenced fork-point should have been GC'd")
+	}
+}
+
+func TestRecoverForkPoints_PreservesYoungOrphan(t *testing.T) {
+	// SpawnPending > 0 but CreatedAt within TTL → not yet an orphan.
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-young"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := writeFPInfo(p.fpInfoPath(fpID), &fpInfo{
+		ForkPointID:  fpID,
+		SpawnPending: 1,
+		CreatedAt:    time.Now().UTC().Add(-time.Minute), // far younger than fpOrphanTTL
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := p.recoverForkPoints(); err != nil {
+		t.Fatalf("recoverForkPoints: %v", err)
+	}
+	if _, err := os.Stat(fpDir); err != nil {
+		t.Errorf("young orphan should NOT have been GC'd: %v", err)
+	}
+}
+
+func TestRecoverForkPoints_NoForkPointsDir(t *testing.T) {
+	// recover should be a no-op (and not error) when forkpoints dir doesn't exist.
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	if err := p.recoverForkPoints(); err != nil {
+		t.Errorf("recoverForkPoints with no dir should be no-op, got %v", err)
+	}
+}
+
+func TestRecoverForkPoints_IgnoresUnreadable(t *testing.T) {
+	// Fork-point dir with no fpinfo.json: must NOT be deleted (operator
+	// can investigate). The function must not fail.
+	p := &Provider{config: Config{ChrootBase: t.TempDir()}}
+	fpID := "fp-broken"
+	fpDir := p.forkPointDir(fpID)
+	if err := os.MkdirAll(fpDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := p.recoverForkPoints(); err != nil {
+		t.Errorf("recoverForkPoints with unreadable fp should not error, got %v", err)
+	}
+	if _, err := os.Stat(fpDir); err != nil {
+		t.Errorf("unreadable fork-point should be left alone: %v", err)
+	}
+}

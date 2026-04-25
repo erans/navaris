@@ -429,6 +429,15 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	vmID := ref.Ref
 	vmDir := p.vmDir(vmID)
 
+	// Capture ForkPointID before we delete the VM dir, so we can release
+	// the descendant set after the file is gone. Errors here are tolerated
+	// — a missing or malformed vminfo just means we won't release; the
+	// fork-point's own GC will sweep eventually.
+	var fpID string
+	if vmi, err := ReadVMInfo(p.vmInfoPath(vmID)); err == nil && vmi != nil {
+		fpID = vmi.ForkPointID
+	}
+
 	if err := os.RemoveAll(vmDir); err != nil {
 		return fmt.Errorf("firecracker destroy %s: %w", vmID, err)
 	}
@@ -436,6 +445,12 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 	p.vmMu.Lock()
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
+
+	if fpID != "" {
+		if err := p.ReleaseForkPointDescendant(fpID, vmID); err != nil {
+			slog.Warn("firecracker forkpoint release", "fp_id", fpID, "vm_id", vmID, "error", err)
+		}
+	}
 
 	return nil
 }
