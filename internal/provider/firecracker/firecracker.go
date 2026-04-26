@@ -46,6 +46,17 @@ type Config struct {
 	// that the API field is named ...MB but is fed straight to MemSizeMib;
 	// see docs/superpowers/specs/2026-04-25-resource-limits-design.md §3.5.
 	DefaultMemoryMib int
+
+	// VcpuHeadroomMult controls boot-time vCPU headroom: every new VM boots
+	// with vcpu_count = ceil(limit * VcpuHeadroomMult). Must be >= 1.0.
+	// Default 2.0; set to 1.0 to disable headroom (boot at exact limit).
+	// Set via --firecracker-vcpu-headroom-mult.
+	VcpuHeadroomMult float64
+
+	// MemHeadroomMult controls boot-time memory headroom analogously.
+	// Memory above the user's limit is reclaimed via a balloon device
+	// inflated to (ceiling - limit) MiB at boot.
+	MemHeadroomMult float64
 }
 
 func (c *Config) defaults() {
@@ -63,6 +74,12 @@ func (c *Config) defaults() {
 	}
 	if c.DefaultMemoryMib == 0 {
 		c.DefaultMemoryMib = 256
+	}
+	if c.VcpuHeadroomMult == 0 {
+		c.VcpuHeadroomMult = 2.0
+	}
+	if c.MemHeadroomMult == 0 {
+		c.MemHeadroomMult = 2.0
 	}
 }
 
@@ -83,6 +100,12 @@ func (c *Config) validateDefaults() error {
 	}
 	if c.DefaultMemoryMib < defaultMinMemMB || c.DefaultMemoryMib > defaultMaxMemMB {
 		return fmt.Errorf("firecracker-default-memory-mb=%d out of range %d..%d", c.DefaultMemoryMib, defaultMinMemMB, defaultMaxMemMB)
+	}
+	if c.VcpuHeadroomMult < 1.0 {
+		return fmt.Errorf("firecracker-vcpu-headroom-mult=%g must be >= 1.0", c.VcpuHeadroomMult)
+	}
+	if c.MemHeadroomMult < 1.0 {
+		return fmt.Errorf("firecracker-mem-headroom-mult=%g must be >= 1.0", c.MemHeadroomMult)
 	}
 	return nil
 }
