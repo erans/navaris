@@ -87,3 +87,12 @@ func (s *Server) startBoost(w http.ResponseWriter, r *http.Request) {
 	}
 	respondData(w, http.StatusOK, boostToResponse(b))
 }
+
+func (s *Server) deleteBoost(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.cfg.Boosts.Cancel(r.Context(), id); err != nil {
+		respondError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

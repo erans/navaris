@@ -68,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/sandboxes/{id}/resources", s.updateSandboxResources)
 	api.HandleFunc("POST /v1/sandboxes/{id}/boost", s.startBoost)
 	api.HandleFunc("GET /v1/sandboxes/{id}/boost", s.getBoost)
+	api.HandleFunc("DELETE /v1/sandboxes/{id}/boost", s.deleteBoost)
 
 	api.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
 	api.HandleFunc("GET /v1/sandboxes/{id}/snapshots", s.listSnapshots)
