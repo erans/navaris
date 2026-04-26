@@ -1,5 +1,6 @@
 import { apiFetch } from "./client";
 import type { ListResponse, NetworkMode, Operation, Sandbox } from "@/types/navaris";
+import type { ActiveBoost } from "@/types/navaris";
 
 // listSandboxes is scoped to a single project. The /v1/sandboxes endpoint
 // requires the project_id query parameter — see internal/api/sandbox.go
@@ -92,5 +93,38 @@ export async function updateSandboxResources(
       method: "PATCH",
       json: req,
     },
+  );
+}
+
+// Re-export ActiveBoost so consumers can import it from api/sandboxes if
+// they prefer, without going to types/navaris directly.
+export type { ActiveBoost };
+
+export interface StartBoostRequest {
+  cpu_limit?: number;
+  memory_limit_mb?: number;
+  duration_seconds: number;
+}
+
+export async function startBoost(
+  id: string,
+  body: StartBoostRequest,
+): Promise<ActiveBoost> {
+  return apiFetch<ActiveBoost>(
+    `/v1/sandboxes/${encodeURIComponent(id)}/boost`,
+    { method: "POST", json: body },
+  );
+}
+
+export async function getBoost(id: string): Promise<ActiveBoost> {
+  return apiFetch<ActiveBoost>(
+    `/v1/sandboxes/${encodeURIComponent(id)}/boost`,
+  );
+}
+
+export async function cancelBoost(id: string): Promise<void> {
+  await apiFetch<unknown>(
+    `/v1/sandboxes/${encodeURIComponent(id)}/boost`,
+    { method: "DELETE" },
   );
 }

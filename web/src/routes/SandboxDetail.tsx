@@ -3,13 +3,15 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  cancelBoost,
   destroySandbox,
   getSandbox,
+  startBoost,
   startSandbox,
   stopSandbox,
   updateSandboxResources,
 } from "@/api/sandboxes";
-import type { UpdateSandboxResourcesRequest } from "@/api/sandboxes";
+import type { StartBoostRequest, UpdateSandboxResourcesRequest } from "@/api/sandboxes";
 import { ApiError } from "@/api/client";
 import { StateBadge } from "@/components/StateBadge";
 import type { Sandbox } from "@/types/navaris";
@@ -130,6 +132,8 @@ export default function SandboxDetail() {
       </section>
 
       <ResourcesPanel sandbox={data} sandboxId={id!} />
+
+      <BoostSection sandbox={data} sandboxId={id!} />
 
       <section className="flex gap-2">
         <button
@@ -285,6 +289,172 @@ function ResourcesPanel({
           className="font-mono text-xs border border-[var(--border-strong)] px-3 py-1.5 disabled:opacity-50 hover:bg-[var(--bg-overlay)]"
         >
           {busy ? "Applying…" : "Apply"}
+        </button>
+      </div>
+      {err !== null && (
+        <p role="alert" className="mt-2 text-xs text-[var(--status-failed)]">
+          {err}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function parseDuration(s: string): number {
+  const m = /^(\d+)\s*(s|m|h)$/.exec(s.trim());
+  if (!m) {
+    const n = Number(s);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    throw new Error(`invalid duration: ${s}`);
+  }
+  const n = Number(m[1]);
+  return n * (m[2] === "h" ? 3600 : m[2] === "m" ? 60 : 1);
+}
+
+function BoostSection({
+  sandbox,
+  sandboxId,
+}: {
+  sandbox: Sandbox;
+  sandboxId: string;
+}) {
+  const qc = useQueryClient();
+  const [cpu, setCpu] = useState<string>("");
+  const [mem, setMem] = useState<string>("");
+  const [duration, setDuration] = useState<string>("5m");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const active = sandbox.active_boost;
+
+  async function start() {
+    setErr(null);
+    setBusy(true);
+    try {
+      const durSec = parseDuration(duration);
+      const body: StartBoostRequest = { duration_seconds: durSec };
+      const cpuN = cpu === "" ? undefined : Number(cpu);
+      const memN = mem === "" ? undefined : Number(mem);
+      if (cpuN !== undefined) body.cpu_limit = cpuN;
+      if (memN !== undefined) body.memory_limit_mb = memN;
+      if (cpuN === undefined && memN === undefined) {
+        throw new Error("set at least one of CPU or memory");
+      }
+      await startBoost(sandboxId, body);
+      await qc.invalidateQueries({ queryKey: ["sandbox", sandboxId] });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "boost failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancel() {
+    setErr(null);
+    setBusy(true);
+    try {
+      await cancelBoost(sandboxId);
+      await qc.invalidateQueries({ queryKey: ["sandbox", sandboxId] });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "cancel failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (active) {
+    return (
+      <section className="mb-6 border border-[var(--border-subtle)] p-4">
+        <div className="mb-3 font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+          Boost active
+        </div>
+        <div className="mb-3 flex flex-wrap gap-4">
+          <div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">CPU</div>
+            <div className="mt-1 text-sm text-[var(--fg-primary)]">{active.boosted_cpu_limit ?? "—"}</div>
+          </div>
+          <div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">Memory (MB)</div>
+            <div className="mt-1 text-sm text-[var(--fg-primary)]">{active.boosted_memory_limit_mb ?? "—"}</div>
+          </div>
+          <div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">Expires</div>
+            <div className="mt-1 text-sm text-[var(--fg-primary)]">{active.expires_at}</div>
+          </div>
+        </div>
+        {active.state === "revert_failed" && (
+          <p role="alert" className="mb-3 text-xs text-[var(--status-failed)]">
+            Revert failed ({active.revert_attempts ?? 0}x): {active.last_error}
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={cancel}
+          disabled={busy}
+          className="font-mono text-xs border border-[var(--border-strong)] px-3 py-1.5 disabled:opacity-50 hover:bg-[var(--bg-overlay)]"
+        >
+          {busy ? "Cancelling…" : "Cancel boost"}
+        </button>
+        {err !== null && (
+          <p role="alert" className="mt-2 text-xs text-[var(--status-failed)]">
+            {err}
+          </p>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="mb-6 border border-[var(--border-subtle)] p-4">
+      <div className="mb-3 font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+        Boost
+      </div>
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex flex-col gap-1">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+            CPU limit
+          </span>
+          <input
+            type="number"
+            min="1"
+            value={cpu}
+            onChange={(e) => setCpu(e.currentTarget.value)}
+            disabled={busy}
+            className="w-24 border border-[var(--border-strong)] bg-transparent px-2 py-1 text-sm text-[var(--fg-primary)] disabled:opacity-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+            Memory (MB)
+          </span>
+          <input
+            type="number"
+            min="64"
+            value={mem}
+            onChange={(e) => setMem(e.currentTarget.value)}
+            disabled={busy}
+            className="w-28 border border-[var(--border-strong)] bg-transparent px-2 py-1 text-sm text-[var(--fg-primary)] disabled:opacity-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+            Duration
+          </span>
+          <input
+            value={duration}
+            onChange={(e) => setDuration(e.currentTarget.value)}
+            disabled={busy}
+            placeholder="5m"
+            className="w-20 border border-[var(--border-strong)] bg-transparent px-2 py-1 text-sm text-[var(--fg-primary)] disabled:opacity-50"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={start}
+          disabled={busy}
+          className="font-mono text-xs border border-[var(--border-strong)] px-3 py-1.5 disabled:opacity-50 hover:bg-[var(--bg-overlay)]"
+        >
+          {busy ? "Boosting…" : "Boost"}
         </button>
       </div>
       {err !== null && (
