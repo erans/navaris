@@ -331,7 +331,8 @@ func TestBoostExpire_RetriesOnFailure_ThenRevertFailed(t *testing.T) {
 	clk.fire(2 * time.Second)  // attempt 2 fails -> 5s retry
 	clk.fire(6 * time.Second)  // 3 -> 30s
 	clk.fire(31 * time.Second) // 4 -> 2m
-	clk.fire(2 * time.Minute)  // 5 -> exhausted
+	clk.fire(2 * time.Minute)  // 5 -> 10m
+	clk.fire(11 * time.Minute) // 6 -> exhausted
 
 	got, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
 	if err != nil {
@@ -340,8 +341,8 @@ func TestBoostExpire_RetriesOnFailure_ThenRevertFailed(t *testing.T) {
 	if got.State != domain.BoostRevertFailed {
 		t.Fatalf("state = %s, want revert_failed", got.State)
 	}
-	if got.RevertAttempts < 5 {
-		t.Fatalf("revert_attempts = %d, want >= 5", got.RevertAttempts)
+	if got.RevertAttempts < 6 {
+		t.Fatalf("revert_attempts = %d, want >= 6", got.RevertAttempts)
 	}
 }
 

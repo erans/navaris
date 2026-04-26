@@ -93,6 +93,10 @@ export interface Session {
 // values must be added in lockstep with internal/domain/event.go.
 export type EventType =
   | "sandbox_state_changed"
+  | "sandbox_resources_updated"
+  | "sandbox_boost_started"
+  | "sandbox_boost_expired"
+  | "sandbox_boost_revert_failed"
   | "snapshot_state_changed"
   | "image_state_changed"
   | "session_state_changed"

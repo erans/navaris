@@ -202,7 +202,7 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 
 	// Failure: increment attempts, retry with backoff or transition to revert_failed.
 	attempts := boost.RevertAttempts + 1
-	if attempts >= len(boostBackoff) {
+	if attempts > len(boostBackoff) {
 		_ = s.boosts.UpdateState(ctx, boostID, domain.BoostRevertFailed, attempts, applyErr.Error())
 		_ = s.events.Publish(ctx, domain.Event{
 			Type:      domain.EventBoostRevertFailed,
