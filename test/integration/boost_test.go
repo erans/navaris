@@ -16,12 +16,18 @@ func ptrIntBoost(v int) *int { return &v }
 // TestBoost_Memory_AppliesAndReverts creates a sandbox, boosts memory by
 // shrinking it (works on both backends regardless of headroom configuration),
 // then waits for the timer to fire and verifies the boost is gone via GET.
+//
+// The 512 MiB starting limit and 384 MiB shrink target are deliberately
+// generous: 256 MiB is the Firecracker minimum and works fine there, but
+// Incus's CI environment seems to fail forkstart on containers below ~512
+// MiB on the docker-in-docker runner. Picking a value comfortably above
+// both backends' minimums keeps the test green on both legs.
 func TestBoost_Memory_AppliesAndReverts(t *testing.T) {
 	c := newClient()
 	ctx := context.Background()
 	proj := createTestProject(t, c)
 
-	mem := 256
+	mem := 512
 	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
 		ProjectID: proj.ProjectID, Name: "boost-mem-revert",
 		ImageID: baseImage(), MemoryLimitMB: &mem,
@@ -35,10 +41,10 @@ func TestBoost_Memory_AppliesAndReverts(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
-	// SHRINK boost (works regardless of headroom): persisted limit is 256;
-	// boost to 192 for 3s.
+	// SHRINK boost (works regardless of headroom): persisted limit is 512;
+	// boost to 384 for 3s.
 	if _, err := c.StartBoost(ctx, sandboxID, client.StartBoostRequest{
-		MemoryLimitMB:   ptrIntBoost(192),
+		MemoryLimitMB:   ptrIntBoost(384),
 		DurationSeconds: 3,
 	}); err != nil {
 		t.Fatalf("StartBoost: %v", err)
@@ -67,7 +73,7 @@ func TestBoost_Cancel_RevertsImmediately(t *testing.T) {
 	ctx := context.Background()
 	proj := createTestProject(t, c)
 
-	mem := 256
+	mem := 512
 	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
 		ProjectID: proj.ProjectID, Name: "boost-cancel",
 		ImageID: baseImage(), MemoryLimitMB: &mem,
@@ -79,7 +85,7 @@ func TestBoost_Cancel_RevertsImmediately(t *testing.T) {
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
 	if _, err := c.StartBoost(ctx, sandboxID, client.StartBoostRequest{
-		MemoryLimitMB:   ptrIntBoost(192),
+		MemoryLimitMB:   ptrIntBoost(384),
 		DurationSeconds: 600, // long; we'll cancel
 	}); err != nil {
 		t.Fatalf("StartBoost: %v", err)
@@ -98,7 +104,7 @@ func TestBoost_Stop_CancelsBoost(t *testing.T) {
 	ctx := context.Background()
 	proj := createTestProject(t, c)
 
-	mem := 256
+	mem := 512
 	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
 		ProjectID: proj.ProjectID, Name: "boost-stop",
 		ImageID: baseImage(), MemoryLimitMB: &mem,
@@ -110,7 +116,7 @@ func TestBoost_Stop_CancelsBoost(t *testing.T) {
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
 	if _, err := c.StartBoost(ctx, sandboxID, client.StartBoostRequest{
-		MemoryLimitMB:   ptrIntBoost(192),
+		MemoryLimitMB:   ptrIntBoost(384),
 		DurationSeconds: 600,
 	}); err != nil {
 		t.Fatalf("StartBoost: %v", err)
