@@ -250,16 +250,70 @@ func copyIntPtr(p *int) *int {
 	return &v
 }
 
+// Cancel reverts the active boost immediately and deletes the row. If no
+// boost exists, returns ErrNotFound. If the boost is in BoostRevertFailed
+// state, the cancel attempts the revert one more time and surfaces the
+// provider error if it still fails.
 func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
-	return errors.New("BoostService.Cancel: not implemented")
+	boost, err := s.boosts.Get(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if t, ok := s.timers[boost.BoostID]; ok {
+		t.Stop()
+		delete(s.timers, boost.BoostID)
+	}
+	s.mu.Unlock()
+
+	sbx, err := s.sandboxes.Get(ctx, sandboxID)
+	if err != nil {
+		_ = s.boosts.Delete(ctx, boost.BoostID)
+		return err
+	}
+	if sbx.State != domain.SandboxRunning {
+		_ = s.boosts.Delete(ctx, boost.BoostID)
+		s.emitExpired(ctx, boost, "cancelled", sbx.CPULimit, sbx.MemoryLimitMB)
+		return nil
+	}
+
+	_, applyErr := s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
+		SandboxID:     sbx.SandboxID,
+		CPULimit:      sbx.CPULimit,
+		MemoryLimitMB: sbx.MemoryLimitMB,
+		ApplyLiveOnly: true,
+	})
+	if applyErr != nil {
+		// Surface to the caller; leave the row in revert_failed for visibility.
+		_ = s.boosts.UpdateState(ctx, boost.BoostID, domain.BoostRevertFailed,
+			boost.RevertAttempts+1, applyErr.Error())
+		return applyErr
+	}
+
+	_ = s.boosts.Delete(ctx, boost.BoostID)
+	s.emitExpired(ctx, boost, "cancelled", sbx.CPULimit, sbx.MemoryLimitMB)
+	return nil
 }
 
 func (s *BoostService) Recover(ctx context.Context) error {
 	return errors.New("BoostService.Recover: not implemented")
 }
 
+// cancelOnLifecycle is called from SandboxService.Stop/Destroy. It drops
+// the boost row + timer WITHOUT attempting a revert (the live VM is going
+// away or being suspended; nothing to apply to). Errors are best-effort
+// and are not propagated.
 func (s *BoostService) cancelOnLifecycle(ctx context.Context, sandboxID string) {
-	// filled in Task 9
-	_ = ctx
-	_ = sandboxID
+	boost, err := s.boosts.Get(ctx, sandboxID)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	if t, ok := s.timers[boost.BoostID]; ok {
+		t.Stop()
+		delete(s.timers, boost.BoostID)
+	}
+	s.mu.Unlock()
+	_ = s.boosts.Delete(ctx, boost.BoostID)
 }

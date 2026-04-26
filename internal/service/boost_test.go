@@ -344,3 +344,65 @@ func TestBoostExpire_RetriesOnFailure_ThenRevertFailed(t *testing.T) {
 		t.Fatalf("revert_attempts = %d, want >= 5", got.RevertAttempts)
 	}
 }
+
+func TestBoostCancel_Reverts(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+	origCPU := *sbx.CPULimit
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var lastReq domain.UpdateResourcesRequest
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, req domain.UpdateResourcesRequest) error {
+		lastReq = req
+		return nil
+	}
+
+	if err := env.boost.Cancel(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if lastReq.CPULimit == nil || *lastReq.CPULimit != origCPU {
+		t.Fatalf("revert called with CPULimit=%+v; want %d", lastReq.CPULimit, origCPU)
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row not deleted after Cancel; got %v", err)
+	}
+}
+
+func TestBoostCancel_NoActiveBoost_NotFound(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+	err := env.boost.Cancel(t.Context(), sbx.SandboxID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSandboxStop_CancelsBoost(t *testing.T) {
+	env := newBoostEnv(t)
+	env.sandbox.SetBoostService(env.boost)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stop the sandbox. The boost row must be gone afterwards.
+	if _, err := env.sandbox.Stop(t.Context(), sbx.SandboxID, false); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	env.dispatcher.WaitIdle()
+
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row not removed by Stop hook; got %v", err)
+	}
+}

@@ -49,6 +49,7 @@ type SandboxService struct {
 	events         domain.EventBus
 	workers        *worker.Dispatcher
 	defaultBackend string
+	boostSvc       *BoostService
 }
 
 // SetSessionService injects the SessionService after construction.
@@ -57,6 +58,13 @@ type SandboxService struct {
 // initialisation sequence.
 func (s *SandboxService) SetSessionService(svc *SessionService) {
 	s.sessionSvc = svc
+}
+
+// SetBoostService injects the BoostService after construction, mirroring
+// SetSessionService — the boost service is constructed in main.go after
+// SandboxService, and the lifecycle hooks need to call into it.
+func (s *SandboxService) SetBoostService(svc *BoostService) {
+	s.boostSvc = svc
 }
 
 func NewSandboxService(
@@ -429,6 +437,10 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 		return nil, err
 	}
 
+	if s.boostSvc != nil {
+		s.boostSvc.cancelOnLifecycle(ctx, id)
+	}
+
 	// Transition to stopping before enqueue to prevent duplicate operations
 	sbx.State = domain.SandboxStopping
 	sbx.UpdatedAt = time.Now().UTC()
@@ -482,6 +494,10 @@ func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operat
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
+	}
+
+	if s.boostSvc != nil {
+		s.boostSvc.cancelOnLifecycle(ctx, id)
 	}
 
 	now := time.Now().UTC()
