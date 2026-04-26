@@ -4,14 +4,18 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/service"
 )
 
 // createTestProject creates a project and returns its ID.
+// The name is unique per call so multiple projects can coexist in one test.
 func createTestProject(t *testing.T, env *testEnv) string {
 	t.Helper()
-	p, err := env.projects.Create(context.Background(), "test-project", nil)
+	p, err := env.projects.Create(context.Background(), "test-project-"+uuid.NewString()[:8], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +32,30 @@ func createTestSandbox(t *testing.T, env *testEnv, projectID string) string {
 	}
 	env.dispatcher.WaitIdle()
 	return op.ResourceID
+}
+
+// insertTestSnapshot creates a parent sandbox and inserts a Ready snapshot
+// with the given backend, returning the snapshot ID. The parent is needed
+// because the snapshot row has a FK to sandboxes.
+func insertTestSnapshot(t *testing.T, env *testEnv, backend string) string {
+	t.Helper()
+	projectID := createTestProject(t, env)
+	sandboxID := createTestSandbox(t, env, projectID)
+	now := time.Now().UTC()
+	snap := &domain.Snapshot{
+		SnapshotID: uuid.NewString(),
+		SandboxID:  sandboxID,
+		Backend:    backend,
+		BackendRef: "snap-ref",
+		Label:      "test",
+		State:      domain.SnapshotReady,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := env.store.SnapshotStore().Create(context.Background(), snap); err != nil {
+		t.Fatal(err)
+	}
+	return snap.SnapshotID
 }
 
 func TestCreateSandbox(t *testing.T) {
@@ -70,11 +98,12 @@ func TestCreateSandboxMissingProjectID(t *testing.T) {
 func TestCreateSandboxFromSnapshot(t *testing.T) {
 	env := newTestEnv(t)
 	projectID := createTestProject(t, env)
+	snapID := insertTestSnapshot(t, env, "mock")
 
 	rec := doRequest(t, env.handler, "POST", "/v1/sandboxes/from-snapshot", map[string]any{
 		"project_id":  projectID,
 		"name":        "snap-sandbox",
-		"snapshot_id": "snap-123",
+		"snapshot_id": snapID,
 	})
 
 	if rec.Code != http.StatusAccepted {
@@ -197,12 +226,29 @@ func TestCreateSandbox_RejectsCPUOutOfBounds(t *testing.T) {
 func TestCreateSandboxFromSnapshot_RejectsMemoryLimit(t *testing.T) {
 	env := newTestEnv(t)
 	projectID := createTestProject(t, env)
+	snapID := insertTestSnapshot(t, env, "mock")
 
 	rec := doRequest(t, env.handler, "POST", "/v1/sandboxes/from-snapshot", map[string]any{
 		"project_id":      projectID,
 		"name":            "bad-snap",
-		"snapshot_id":     "snap-1",
+		"snapshot_id":     snapID,
 		"memory_limit_mb": 524289,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateSandboxFromSnapshot_RejectsBackendMismatch(t *testing.T) {
+	env := newTestEnv(t)
+	projectID := createTestProject(t, env)
+	snapID := insertTestSnapshot(t, env, "mock")
+
+	rec := doRequest(t, env.handler, "POST", "/v1/sandboxes/from-snapshot", map[string]any{
+		"project_id":  projectID,
+		"name":        "wrong-backend",
+		"snapshot_id": snapID,
+		"backend":     "firecracker",
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())

@@ -143,6 +143,12 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	if mem == 0 {
 		mem = int64(p.config.DefaultMemoryMib)
 	}
+	// Persist resolved values back so legacy sandboxes (created before the
+	// limit fields existed) and explicit-zero records keep the same machine
+	// size across stop/start cycles instead of re-resolving to whatever the
+	// daemon defaults are at the time of the next start.
+	info.VcpuCount = vcpu
+	info.MemSizeMib = mem
 
 	var jailerCfg *fcsdk.JailerConfig
 	if p.config.EnableJailer {

@@ -69,6 +69,8 @@ func (p *Provider) CreateForkPoint(ctx context.Context, parentVMID string) (stri
 		ParentVMID:  parentVMID,
 		Mode:        mode,
 		CreatedAt:   time.Now().UTC(),
+		VcpuCount:   parentInfo.VcpuCount,
+		MemSizeMib:  parentInfo.MemSizeMib,
 	}
 	if diskBackend != nil {
 		info.StorageBackend = diskBackend.Name()
@@ -97,7 +99,8 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 		telemetry.RecordForkChildSpawnDuration(ctx, time.Since(start))
 	}()
 	fpDir := p.forkPointDir(fpID)
-	if _, err := readFPInfo(p.fpInfoPath(fpID)); err != nil {
+	fp, err := readFPInfo(p.fpInfoPath(fpID))
+	if err != nil {
 		return domain.BackendRef{}, fmt.Errorf("forkpoint not found: %w", err)
 	}
 
@@ -156,6 +159,25 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 		}
 	}
 
+	// Spawn-time machine size: prefer an explicit override on the spawn
+	// request, otherwise inherit the fork-point's recorded values, otherwise
+	// fall back to daemon defaults. Without the inherit step, children would
+	// silently re-resolve to whatever defaults are in effect at spawn time.
+	vcpu := int64(p.config.DefaultVcpuCount)
+	mem := int64(p.config.DefaultMemoryMib)
+	if fp.VcpuCount > 0 {
+		vcpu = fp.VcpuCount
+	}
+	if fp.MemSizeMib > 0 {
+		mem = fp.MemSizeMib
+	}
+	if req.CPULimit != nil {
+		vcpu = int64(*req.CPULimit)
+	}
+	if req.MemoryLimitMB != nil {
+		mem = int64(*req.MemoryLimitMB)
+	}
+
 	info := &VMInfo{
 		ID:                  vmID,
 		CID:                 cid,
@@ -163,6 +185,8 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 		NetworkMode:         string(req.NetworkMode),
 		RestoreFromSnapshot: true,
 		ForkPointID:         fpID,
+		VcpuCount:           vcpu,
+		MemSizeMib:          mem,
 	}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)

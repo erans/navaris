@@ -35,6 +35,13 @@ type fpInfo struct {
 	StorageBackend string    `json:"storage_backend,omitempty"`
 	SpawnPending   int       `json:"spawn_pending"`
 	Descendants    []string  `json:"descendants,omitempty"`
+	// VcpuCount/MemSizeMib record the parent VM's machine size at fork time.
+	// Children spawned from this fork-point inherit these unless the spawn
+	// request supplies its own CPULimit/MemoryLimitMB. Without this, children
+	// re-resolve to whatever the daemon defaults are at spawn time, which can
+	// silently shrink (or refuse to boot) a snapshot saved at a larger size.
+	VcpuCount  int64 `json:"vcpu_count,omitempty"`
+	MemSizeMib int64 `json:"mem_size_mib,omitempty"`
 }
 
 // fpOrphanTTL is the age threshold for orphan-cleanup of fork-points whose

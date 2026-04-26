@@ -66,6 +66,27 @@ func (c *Config) defaults() {
 	}
 }
 
+// Firecracker hardware/policy bounds — must match the validation bounds the
+// service layer applies to per-sandbox limits (see internal/service/limits.go).
+// Defaults outside this range would let nil-limit sandboxes persist invalid
+// machine sizes and only fail at VM boot.
+const (
+	defaultMinVcpu  = 1
+	defaultMaxVcpu  = 32
+	defaultMinMemMB = 128
+	defaultMaxMemMB = 8192
+)
+
+func (c *Config) validateDefaults() error {
+	if c.DefaultVcpuCount < defaultMinVcpu || c.DefaultVcpuCount > defaultMaxVcpu {
+		return fmt.Errorf("firecracker-default-vcpu=%d out of range %d..%d", c.DefaultVcpuCount, defaultMinVcpu, defaultMaxVcpu)
+	}
+	if c.DefaultMemoryMib < defaultMinMemMB || c.DefaultMemoryMib > defaultMaxMemMB {
+		return fmt.Errorf("firecracker-default-memory-mb=%d out of range %d..%d", c.DefaultMemoryMib, defaultMinMemMB, defaultMaxMemMB)
+	}
+	return nil
+}
+
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
 	config        Config
@@ -84,6 +105,10 @@ type Provider struct {
 // New creates a Firecracker provider and recovers any orphaned VMs.
 func New(cfg Config) (*Provider, error) {
 	cfg.defaults()
+
+	if err := cfg.validateDefaults(); err != nil {
+		return nil, fmt.Errorf("firecracker: %w", err)
+	}
 
 	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
 		return nil, fmt.Errorf("firecracker: create snapshot dir: %w", err)

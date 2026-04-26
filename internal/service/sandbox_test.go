@@ -241,11 +241,51 @@ func TestCreate_RejectsOutOfBoundsMemory(t *testing.T) {
 	}
 }
 
+func snapshotForTest(t *testing.T, env *serviceEnv, label string) *domain.Snapshot {
+	t.Helper()
+	createOp, err := env.sandbox.Create(t.Context(), env.projectID, "parent-"+label, "img",
+		service.CreateSandboxOpts{Backend: "mock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.dispatcher.WaitIdle()
+	sbx, _ := env.sandbox.Get(t.Context(), createOp.ResourceID)
+	now := time.Now().UTC()
+	snap := &domain.Snapshot{
+		SnapshotID: uuid.NewString(),
+		SandboxID:  sbx.SandboxID,
+		Backend:    sbx.Backend,
+		BackendRef: "snap-ref-" + label,
+		Label:      label,
+		State:      domain.SnapshotReady,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := env.store.SnapshotStore().Create(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
 func TestCreateFromSnapshot_AppliesBoundsValidation(t *testing.T) {
 	env := newServiceEnv(t)
+	snap := snapshotForTest(t, env, "bounds")
 	cpu := 257
 	op, err := env.sandbox.CreateFromSnapshot(t.Context(), env.projectID, "from-snap",
-		"snap-irrelevant", service.CreateSandboxOpts{CPULimit: &cpu})
+		snap.SnapshotID, service.CreateSandboxOpts{CPULimit: &cpu})
+	if err == nil {
+		t.Fatalf("expected error, got op=%+v", op)
+	}
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
+	}
+}
+
+func TestCreateFromSnapshot_RejectsBackendMismatch(t *testing.T) {
+	env := newServiceEnv(t)
+	snap := snapshotForTest(t, env, "mismatch")
+	op, err := env.sandbox.CreateFromSnapshot(t.Context(), env.projectID, "wrong-backend",
+		snap.SnapshotID, service.CreateSandboxOpts{Backend: "firecracker"})
 	if err == nil {
 		t.Fatalf("expected error, got op=%+v", op)
 	}
