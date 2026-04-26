@@ -255,10 +255,15 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	info.SubnetIdx = subnetIdx
 	info.Write(infoPath)
 
-	// Inflate the balloon to enforce LimitMemMib if the VM was booted with
-	// headroom on top.
-	if info.CeilingMemMib > 0 && info.CeilingMemMib > info.LimitMemMib {
+	// Attach a balloon device so PATCH /balloon works for both shrink and grow.
+	// With mult=1.0 (default), ceiling==limit so balloonMib=0; the device
+	// exists but takes no memory at boot. UpdateResources can later inflate
+	// it to shrink the visible memory.
+	if info.CeilingMemMib > 0 {
 		balloonMib := info.CeilingMemMib - info.LimitMemMib
+		if balloonMib < 0 {
+			balloonMib = 0
+		}
 		if err := machine.CreateBalloon(machineCtx, balloonMib, true, 0); err != nil {
 			// Best-effort: log and continue. The VM is still usable; the user
 			// just has access to the full ceiling instead of LimitMemMib.

@@ -31,11 +31,11 @@ The result is that resize succeeds in a sub-second sync request in the common ca
 Two new flags on `navarisd`:
 
 ```
---firecracker-vcpu-headroom-mult float   default 2.0
---firecracker-mem-headroom-mult  float   default 2.0
+--firecracker-vcpu-headroom-mult float   default 1.0
+--firecracker-mem-headroom-mult  float   default 1.0
 ```
 
-Both must be `>= 1.0`. A multiplier of `1.0` disables headroom (sandbox boots at exactly `limit`, no growth headroom — equivalent to today's behavior). Validated at daemon startup; out-of-range values cause startup failure with a clear message.
+Both must be `>= 1.0`. A multiplier of `1.0` (the default) disables headroom (sandbox boots at exactly `limit`, no growth headroom — equivalent to today's behavior). Set to a value `> 1.0` to enable grow-resize within the boot-time ceiling. Validated at daemon startup; out-of-range values cause startup failure with a clear message.
 
 These live on `firecracker.Config` alongside `DefaultVcpuCount` / `DefaultMemoryMib`.
 
@@ -324,7 +324,7 @@ None at the time of writing. CPU live-resize on Firecracker is deferred to a fol
 - Existing sandboxes (booted before this change): VMInfo lacks `CeilingCPU` / `CeilingMemMib`. The resize path treats `ceiling = MemSizeMib` (i.e. the boot value) — so memory can shrink but not grow. CPU on a running FC VM is rejected as in §3.6 regardless.
 - No SQLite schema change. The existing `cpu_limit` and `memory_limit_mb` columns are reused.
 - API additions are pure-additive (new endpoint, new event type). No client breakage.
-- The `--firecracker-*-headroom-mult` flags default to `2.0` — meaning **fresh installs / restarts apply 2x headroom by default**. This roughly doubles the per-VM `mem_size_mib` reservation on Firecracker. Operators with tight host memory should set both to `1.0` to preserve the prior allocation behavior. This is called out in the changelog and the daemon `--help` text.
+- The `--firecracker-*-headroom-mult` flags default to `1.0` — meaning sandboxes boot at exactly the user's limit by default (no headroom). This preserves prior allocation behavior. Operators who want grow-resize headroom set the flags to a value `> 1.0` explicitly.
 
 ## 7. Out-of-scope notes for spec #2 and spec #3
 

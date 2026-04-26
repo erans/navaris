@@ -62,7 +62,7 @@ You can run both backends in a single Navaris instance — containers for speed,
 
 - **Multi-backend**: Incus (system containers) and Firecracker (microVMs)
 - **Full lifecycle management**: create, start, stop, destroy sandboxes
-- **Runtime resize**: change CPU and/or memory limits on a running sandbox via `PATCH /v1/sandboxes/{id}/resources` (Incus: live cgroup writes; Firecracker: memory-balloon adjustment within boot-time headroom — `--firecracker-vcpu-headroom-mult` / `--firecracker-mem-headroom-mult`, default 2x)
+- **Runtime resize**: change CPU and/or memory limits on a running sandbox via `PATCH /v1/sandboxes/{id}/resources` (Incus: live cgroup writes; Firecracker: memory-balloon adjustment — by default sandboxes can SHRINK memory; set `--firecracker-mem-headroom-mult > 1.0` to allow GROW-resize within the boot-time ceiling)
 - **Snapshots**: point-in-time captures (stopped and live consistency modes)
 - **Images**: promote snapshots into reusable base images
 - **Copy-on-write cloning**: rootfs clones via `ioctl(FICLONE)` on btrfs / XFS-reflink / bcachefs hosts — see [docs/storage-backends.md](docs/storage-backends.md)

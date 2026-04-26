@@ -13,11 +13,9 @@ import (
 func ptrIntResize(v int) *int { return &v }
 
 // TestResize_Memory_Live verifies that a runtime memory resize takes effect
-// on a running sandbox. It works on both backends:
-//   - Incus: cgroup memory.max is updated.
-//   - Firecracker: balloon is deflated/inflated within the boot-time ceiling.
-//     With the default --firecracker-mem-headroom-mult=2.0, a sandbox booted
-//     with memory_limit_mb=256 has a 512 MiB ceiling, so we can grow up to 512.
+// on a running sandbox. Tests SHRINK (which works regardless of headroom
+// configuration). GROW above the original limit requires --firecracker-mem-headroom-mult > 1.0
+// and is exercised in TestResize_Memory_AboveCeiling_Firecracker.
 func TestResize_Memory_Live(t *testing.T) {
 	img := baseImage()
 	if strings.Contains(img, "/") {
@@ -44,9 +42,9 @@ func TestResize_Memory_Live(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
-	// Resize to a higher value still within the ceiling (256 * 2.0 = 512).
+	// SHRINK 256 -> 192 (works regardless of headroom multiplier).
 	resp, err := c.UpdateSandboxResources(ctx, sandboxID, client.UpdateResourcesRequest{
-		MemoryLimitMB: ptrIntResize(384),
+		MemoryLimitMB: ptrIntResize(192),
 	})
 	if err != nil {
 		t.Fatalf("UpdateSandboxResources: %v", err)
@@ -54,8 +52,8 @@ func TestResize_Memory_Live(t *testing.T) {
 	if !resp.AppliedLive {
 		t.Fatalf("AppliedLive=false; expected true on running sandbox")
 	}
-	if resp.MemoryLimitMB == nil || *resp.MemoryLimitMB != 384 {
-		t.Fatalf("response MemoryLimitMB = %v; want 384", resp.MemoryLimitMB)
+	if resp.MemoryLimitMB == nil || *resp.MemoryLimitMB != 192 {
+		t.Fatalf("response MemoryLimitMB = %v; want 192", resp.MemoryLimitMB)
 	}
 
 	// Read it back via Get.
@@ -63,8 +61,8 @@ func TestResize_Memory_Live(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSandbox: %v", err)
 	}
-	if sbx.MemoryLimitMB == nil || *sbx.MemoryLimitMB != 384 {
-		t.Fatalf("persisted MemoryLimitMB = %v; want 384", sbx.MemoryLimitMB)
+	if sbx.MemoryLimitMB == nil || *sbx.MemoryLimitMB != 192 {
+		t.Fatalf("persisted MemoryLimitMB = %v; want 192", sbx.MemoryLimitMB)
 	}
 }
 
@@ -99,7 +97,7 @@ func TestResize_Memory_AboveCeiling_Firecracker(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
-	// 600 > ceiling 512 → expect 409 with exceeds_ceiling.
+	// 600 > ceiling (ceiling = limit = 256 when --firecracker-mem-headroom-mult=1.0, the default) → expect 409 with exceeds_ceiling.
 	_, err = c.UpdateSandboxResources(ctx, sandboxID, client.UpdateResourcesRequest{
 		MemoryLimitMB: ptrIntResize(600),
 	})

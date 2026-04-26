@@ -49,13 +49,15 @@ type Config struct {
 
 	// VcpuHeadroomMult controls boot-time vCPU headroom: every new VM boots
 	// with vcpu_count = ceil(limit * VcpuHeadroomMult). Must be >= 1.0.
-	// Default 2.0; set to 1.0 to disable headroom (boot at exact limit).
+	// Default 1.0 (no headroom; boot at exact limit). Set > 1.0 to enable
+	// grow-resize within the boot-time ceiling.
 	// Set via --firecracker-vcpu-headroom-mult.
 	VcpuHeadroomMult float64
 
 	// MemHeadroomMult controls boot-time memory headroom analogously.
 	// Memory above the user's limit is reclaimed via a balloon device
 	// inflated to (ceiling - limit) MiB at boot.
+	// Default 1.0 (no headroom). Set > 1.0 to enable grow-resize.
 	MemHeadroomMult float64
 }
 
@@ -76,10 +78,10 @@ func (c *Config) defaults() {
 		c.DefaultMemoryMib = 256
 	}
 	if c.VcpuHeadroomMult == 0 {
-		c.VcpuHeadroomMult = 2.0
+		c.VcpuHeadroomMult = 1.0
 	}
 	if c.MemHeadroomMult == 0 {
-		c.MemHeadroomMult = 2.0
+		c.MemHeadroomMult = 1.0
 	}
 }
 
