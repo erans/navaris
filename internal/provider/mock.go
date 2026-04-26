@@ -39,10 +39,12 @@ func NewMock() *MockProvider {
 		CreateSandboxFn: func(_ context.Context, _ domain.CreateSandboxRequest) (domain.BackendRef, error) {
 			return domain.BackendRef{Backend: "mock", Ref: "mock-" + uuid.NewString()[:8]}, nil
 		},
-		StartSandboxFn:    func(_ context.Context, _ domain.BackendRef) error { return nil },
-		StopSandboxFn:     func(_ context.Context, _ domain.BackendRef, _ bool) error { return nil },
-		DestroySandboxFn:  func(_ context.Context, _ domain.BackendRef) error { return nil },
-		GetSandboxStateFn: func(_ context.Context, _ domain.BackendRef) (domain.SandboxState, error) { return domain.SandboxRunning, nil },
+		StartSandboxFn:   func(_ context.Context, _ domain.BackendRef) error { return nil },
+		StopSandboxFn:    func(_ context.Context, _ domain.BackendRef, _ bool) error { return nil },
+		DestroySandboxFn: func(_ context.Context, _ domain.BackendRef) error { return nil },
+		GetSandboxStateFn: func(_ context.Context, _ domain.BackendRef) (domain.SandboxState, error) {
+			return domain.SandboxRunning, nil
+		},
 		ExecFn: func(_ context.Context, _ domain.BackendRef, _ domain.ExecRequest) (domain.ExecHandle, error) {
 			return domain.ExecHandle{
 				Stdout: io.NopCloser(io.LimitReader(nil, 0)),
@@ -68,13 +70,17 @@ func NewMock() *MockProvider {
 		PublishSnapshotAsImageFn: func(_ context.Context, _ domain.BackendRef, _ domain.PublishImageRequest) (domain.BackendRef, error) {
 			return domain.BackendRef{Backend: "mock", Ref: "img-" + uuid.NewString()[:8]}, nil
 		},
-		DeleteImageFn:  func(_ context.Context, _ domain.BackendRef) error { return nil },
-		GetImageInfoFn: func(_ context.Context, _ domain.BackendRef) (domain.ImageInfo, error) { return domain.ImageInfo{Architecture: "amd64"}, nil },
+		DeleteImageFn: func(_ context.Context, _ domain.BackendRef) error { return nil },
+		GetImageInfoFn: func(_ context.Context, _ domain.BackendRef) (domain.ImageInfo, error) {
+			return domain.ImageInfo{Architecture: "amd64"}, nil
+		},
 		PublishPortFn: func(_ context.Context, _ domain.BackendRef, targetPort int, _ domain.PublishPortOptions) (domain.PublishedEndpoint, error) {
 			return domain.PublishedEndpoint{HostAddress: "0.0.0.0", PublishedPort: 40000 + targetPort}, nil
 		},
 		UnpublishPortFn: func(_ context.Context, _ domain.BackendRef, _ int) error { return nil },
-		HealthFn:        func(_ context.Context) domain.ProviderHealth { return domain.ProviderHealth{Backend: "mock", Healthy: true} },
+		HealthFn: func(_ context.Context) domain.ProviderHealth {
+			return domain.ProviderHealth{Backend: "mock", Healthy: true}
+		},
 		ForkSandboxFn: func(_ context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
 			if count < 1 {
 				return nil, fmt.Errorf("mock fork: count must be >= 1")
