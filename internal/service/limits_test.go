@@ -63,3 +63,37 @@ func TestValidateLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateResourceBounds(t *testing.T) {
+	cases := []struct {
+		name       string
+		cpu        *int
+		mem        *int
+		backend    string
+		wantErr    bool
+		wantSubstr string
+	}{
+		{name: "fc cpu out of range", cpu: ptrInt(33), mem: nil, backend: "firecracker", wantErr: true, wantSubstr: "cpu_limit"},
+		{name: "fc mem ok", cpu: nil, mem: ptrInt(512), backend: "firecracker", wantErr: false},
+		{name: "incus generic bounds", cpu: ptrInt(257), mem: nil, backend: "incus", wantErr: true, wantSubstr: "cpu_limit"},
+		{name: "both nil ok at this level", cpu: nil, mem: nil, backend: "firecracker", wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateResourceBounds(tc.cpu, tc.mem, tc.backend)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.wantSubstr != "" && !strings.Contains(err.Error(), tc.wantSubstr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantSubstr)
+				}
+				if !errors.Is(err, domain.ErrInvalidArgument) {
+					t.Fatalf("error does not wrap ErrInvalidArgument: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
