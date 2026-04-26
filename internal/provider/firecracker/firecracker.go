@@ -36,6 +36,16 @@ type Config struct {
 	// Storage is required: it owns CoW cloning of rootfs files. Pass a
 	// Registry whose roots include ImageDir, ChrootBase, and SnapshotDir.
 	Storage *storage.Registry
+
+	// DefaultVcpuCount is used when CreateSandboxRequest.CPULimit is nil.
+	// Set via --firecracker-default-vcpu on the daemon.
+	DefaultVcpuCount int
+
+	// DefaultMemoryMib is used when CreateSandboxRequest.MemoryLimitMB is
+	// nil. Set via --firecracker-default-memory-mb on the daemon. Note
+	// that the API field is named ...MB but is fed straight to MemSizeMib;
+	// see docs/superpowers/specs/2026-04-25-resource-limits-design.md §3.5.
+	DefaultMemoryMib int
 }
 
 func (c *Config) defaults() {
@@ -48,6 +58,33 @@ func (c *Config) defaults() {
 	if c.SnapshotDir == "" {
 		c.SnapshotDir = "/srv/firecracker/snapshots"
 	}
+	if c.DefaultVcpuCount == 0 {
+		c.DefaultVcpuCount = 1
+	}
+	if c.DefaultMemoryMib == 0 {
+		c.DefaultMemoryMib = 256
+	}
+}
+
+// Firecracker hardware/policy bounds — must match the validation bounds the
+// service layer applies to per-sandbox limits (see internal/service/limits.go).
+// Defaults outside this range would let nil-limit sandboxes persist invalid
+// machine sizes and only fail at VM boot.
+const (
+	defaultMinVcpu  = 1
+	defaultMaxVcpu  = 32
+	defaultMinMemMB = 128
+	defaultMaxMemMB = 8192
+)
+
+func (c *Config) validateDefaults() error {
+	if c.DefaultVcpuCount < defaultMinVcpu || c.DefaultVcpuCount > defaultMaxVcpu {
+		return fmt.Errorf("firecracker-default-vcpu=%d out of range %d..%d", c.DefaultVcpuCount, defaultMinVcpu, defaultMaxVcpu)
+	}
+	if c.DefaultMemoryMib < defaultMinMemMB || c.DefaultMemoryMib > defaultMaxMemMB {
+		return fmt.Errorf("firecracker-default-memory-mb=%d out of range %d..%d", c.DefaultMemoryMib, defaultMinMemMB, defaultMaxMemMB)
+	}
+	return nil
 }
 
 // Provider implements domain.Provider for Firecracker microVMs.
@@ -68,6 +105,10 @@ type Provider struct {
 // New creates a Firecracker provider and recovers any orphaned VMs.
 func New(cfg Config) (*Provider, error) {
 	cfg.defaults()
+
+	if err := cfg.validateDefaults(); err != nil {
+		return nil, fmt.Errorf("firecracker: %w", err)
+	}
 
 	if err := os.MkdirAll(cfg.SnapshotDir, 0o755); err != nil {
 		return nil, fmt.Errorf("firecracker: create snapshot dir: %w", err)

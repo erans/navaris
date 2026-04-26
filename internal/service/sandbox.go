@@ -94,6 +94,10 @@ func (s *SandboxService) registerHandlers() {
 }
 
 func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	backend := s.resolveBackend(opts.Backend, imageID)
+	if err := validateLimits(opts, backend); err != nil {
+		return nil, err
+	}
 	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSandbox")
 	defer span.End()
 
@@ -113,7 +117,7 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		ProjectID:     projectID,
 		Name:          name,
 		State:         domain.SandboxPending,
-		Backend:       s.resolveBackend(opts.Backend, imageID),
+		Backend:       backend,
 		SourceImageID: imageID,
 		NetworkMode:   networkMode,
 		CPULimit:      opts.CPULimit,
@@ -152,6 +156,21 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 }
 
 func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name, snapshotID string, opts CreateSandboxOpts) (*domain.Operation, error) {
+	snap, err := s.snapshots.Get(ctx, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	// The snapshot's backend is authoritative: a Firecracker snapshot can only
+	// boot in Firecracker, an Incus container snapshot only in Incus. Reject
+	// explicit overrides that disagree, and validate limits against the actual
+	// backend (bounds differ between Firecracker and the rest).
+	if opts.Backend != "" && opts.Backend != snap.Backend {
+		return nil, fmt.Errorf("backend %q does not match snapshot backend %q: %w", opts.Backend, snap.Backend, domain.ErrInvalidArgument)
+	}
+	backend := snap.Backend
+	if err := validateLimits(opts, backend); err != nil {
+		return nil, err
+	}
 	ctx, span := otel.Tracer("navaris.service").Start(ctx, "service.CreateSandboxFromSnapshot")
 	defer span.End()
 
@@ -171,7 +190,7 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		ProjectID:        projectID,
 		Name:             name,
 		State:            domain.SandboxPending,
-		Backend:          s.resolveBackend(opts.Backend, ""),
+		Backend:          backend,
 		ParentSnapshotID: snapshotID,
 		NetworkMode:      networkMode,
 		CPULimit:         opts.CPULimit,

@@ -11,4 +11,5 @@ var (
 	ErrForbidden        = errors.New("forbidden")
 	ErrBusy             = errors.New("database busy")
 	ErrNotSupported     = errors.New("operation not supported")
+	ErrInvalidArgument  = errors.New("invalid argument")
 )

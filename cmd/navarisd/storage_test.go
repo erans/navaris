@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"os"
 	"strings"
 	"testing"
 
@@ -80,5 +82,41 @@ func TestBuildStorageRegistry_UnknownModeFails(t *testing.T) {
 	_, err := buildStorageRegistry(cfg)
 	if err == nil {
 		t.Fatal("expected error for unknown mode")
+	}
+}
+
+func TestParseFlags_FirecrackerDefaults_Defaults(t *testing.T) {
+	oldArgs := os.Args
+	oldFlags := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldFlags
+	}()
+	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
+	os.Args = []string{"navarisd"}
+	cfg := parseFlags()
+	if cfg.firecrackerDefaultVcpu != 1 {
+		t.Errorf("default vcpu = %d, want 1", cfg.firecrackerDefaultVcpu)
+	}
+	if cfg.firecrackerDefaultMemoryMB != 256 {
+		t.Errorf("default memory mb = %d, want 256", cfg.firecrackerDefaultMemoryMB)
+	}
+}
+
+func TestParseFlags_FirecrackerDefaults_Explicit(t *testing.T) {
+	oldArgs := os.Args
+	oldFlags := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldFlags
+	}()
+	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
+	os.Args = []string{"navarisd", "--firecracker-default-vcpu=4", "--firecracker-default-memory-mb=1024"}
+	cfg := parseFlags()
+	if cfg.firecrackerDefaultVcpu != 4 {
+		t.Errorf("explicit vcpu = %d, want 4", cfg.firecrackerDefaultVcpu)
+	}
+	if cfg.firecrackerDefaultMemoryMB != 1024 {
+		t.Errorf("explicit memory mb = %d, want 1024", cfg.firecrackerDefaultMemoryMB)
 	}
 }

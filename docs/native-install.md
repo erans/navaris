@@ -91,6 +91,8 @@ NAVARIS_IMAGE_DIR=/var/lib/navaris/firecracker/images
 NAVARIS_CHROOT_BASE=/var/lib/navaris/firecracker/vm
 NAVARIS_SNAPSHOT_DIR=/var/lib/navaris/firecracker/snapshots
 NAVARIS_ENABLE_JAILER=true
+# NAVARIS_FIRECRACKER_DEFAULT_VCPU=1
+# NAVARIS_FIRECRACKER_DEFAULT_MEMORY_MB=256
 ```
 
 If these are unset, `navarisd` should run without the Firecracker backend and

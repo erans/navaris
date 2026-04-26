@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/storage"
 )
 
@@ -95,3 +96,54 @@ func TestCloneFile_Wrapper_Smoke(t *testing.T) {
 		t.Errorf("dst = %q (err=%v)", got, err)
 	}
 }
+
+func TestConfig_Defaults_FillsZeroLimitFields(t *testing.T) {
+	cfg := Config{} // DefaultVcpuCount=0, DefaultMemoryMib=0
+	cfg.defaults()
+	if cfg.DefaultVcpuCount != 1 {
+		t.Errorf("DefaultVcpuCount = %d, want 1", cfg.DefaultVcpuCount)
+	}
+	if cfg.DefaultMemoryMib != 256 {
+		t.Errorf("DefaultMemoryMib = %d, want 256", cfg.DefaultMemoryMib)
+	}
+}
+
+func TestConfig_Defaults_RespectsNonZeroLimitFields(t *testing.T) {
+	cfg := Config{DefaultVcpuCount: 4, DefaultMemoryMib: 1024}
+	cfg.defaults()
+	if cfg.DefaultVcpuCount != 4 {
+		t.Errorf("DefaultVcpuCount = %d, want 4 (preserved)", cfg.DefaultVcpuCount)
+	}
+	if cfg.DefaultMemoryMib != 1024 {
+		t.Errorf("DefaultMemoryMib = %d, want 1024 (preserved)", cfg.DefaultMemoryMib)
+	}
+}
+
+func TestResolveMachineLimits(t *testing.T) {
+	p := &Provider{config: Config{DefaultVcpuCount: 1, DefaultMemoryMib: 256}}
+
+	cases := []struct {
+		name     string
+		req      domain.CreateSandboxRequest
+		wantVcpu int64
+		wantMem  int64
+	}{
+		{name: "all nil → defaults", req: domain.CreateSandboxRequest{}, wantVcpu: 1, wantMem: 256},
+		{name: "cpu set", req: domain.CreateSandboxRequest{CPULimit: ptrInt(4)}, wantVcpu: 4, wantMem: 256},
+		{name: "mem set", req: domain.CreateSandboxRequest{MemoryLimitMB: ptrInt(512)}, wantVcpu: 1, wantMem: 512},
+		{name: "both set", req: domain.CreateSandboxRequest{CPULimit: ptrInt(2), MemoryLimitMB: ptrInt(1024)}, wantVcpu: 2, wantMem: 1024},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vcpu, mem := p.resolveMachineLimits(tc.req)
+			if vcpu != tc.wantVcpu {
+				t.Errorf("vcpu = %d, want %d", vcpu, tc.wantVcpu)
+			}
+			if mem != tc.wantMem {
+				t.Errorf("mem = %d, want %d", mem, tc.wantMem)
+			}
+		})
+	}
+}
+
+func ptrInt(v int) *int { return &v }

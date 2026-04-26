@@ -220,3 +220,76 @@ func TestSandboxServiceCreateFromSnapshot(t *testing.T) {
 		t.Errorf("expected backend ref mock-from-snap, got %s", newSbx.BackendRef)
 	}
 }
+
+func TestCreate_RejectsOutOfBoundsMemory(t *testing.T) {
+	env := newServiceEnv(t)
+	mem := 524289
+	op, err := env.sandbox.Create(t.Context(), env.projectID, "too-big",
+		"alpine-3.21", service.CreateSandboxOpts{MemoryLimitMB: &mem})
+	if err == nil {
+		t.Fatalf("expected error, got op=%+v", op)
+	}
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
+	}
+	// Sandbox row must NOT have been created.
+	all, _ := env.store.SandboxStore().List(t.Context(), domain.SandboxFilter{})
+	for _, sb := range all {
+		if sb.Name == "too-big" {
+			t.Errorf("sandbox 'too-big' was created despite validation failure")
+		}
+	}
+}
+
+func snapshotForTest(t *testing.T, env *serviceEnv, label string) *domain.Snapshot {
+	t.Helper()
+	createOp, err := env.sandbox.Create(t.Context(), env.projectID, "parent-"+label, "img",
+		service.CreateSandboxOpts{Backend: "mock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.dispatcher.WaitIdle()
+	sbx, _ := env.sandbox.Get(t.Context(), createOp.ResourceID)
+	now := time.Now().UTC()
+	snap := &domain.Snapshot{
+		SnapshotID: uuid.NewString(),
+		SandboxID:  sbx.SandboxID,
+		Backend:    sbx.Backend,
+		BackendRef: "snap-ref-" + label,
+		Label:      label,
+		State:      domain.SnapshotReady,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := env.store.SnapshotStore().Create(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+func TestCreateFromSnapshot_AppliesBoundsValidation(t *testing.T) {
+	env := newServiceEnv(t)
+	snap := snapshotForTest(t, env, "bounds")
+	cpu := 257
+	op, err := env.sandbox.CreateFromSnapshot(t.Context(), env.projectID, "from-snap",
+		snap.SnapshotID, service.CreateSandboxOpts{CPULimit: &cpu})
+	if err == nil {
+		t.Fatalf("expected error, got op=%+v", op)
+	}
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
+	}
+}
+
+func TestCreateFromSnapshot_RejectsBackendMismatch(t *testing.T) {
+	env := newServiceEnv(t)
+	snap := snapshotForTest(t, env, "mismatch")
+	op, err := env.sandbox.CreateFromSnapshot(t.Context(), env.projectID, "wrong-backend",
+		snap.SnapshotID, service.CreateSandboxOpts{Backend: "firecracker"})
+	if err == nil {
+		t.Fatalf("expected error, got op=%+v", op)
+	}
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Errorf("error %v should wrap ErrInvalidArgument", err)
+	}
+}

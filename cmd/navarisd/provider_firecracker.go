@@ -20,6 +20,8 @@ func newFirecrackerProvider(cfg config) (domain.Provider, error) {
 		SnapshotDir:    cfg.snapshotDir,
 		EnableJailer:   cfg.enableJailer,
 		Storage:        cfg.storageRegistry,
+		DefaultVcpuCount: cfg.firecrackerDefaultVcpu,
+		DefaultMemoryMib: cfg.firecrackerDefaultMemoryMB,
 	})
 }
 

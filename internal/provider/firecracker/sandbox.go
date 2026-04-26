@@ -28,6 +28,22 @@ func vmName() string {
 	return "nvrs-fc-" + uuid.NewString()[:8]
 }
 
+// resolveMachineLimits picks the vCPU count and memory size for a new
+// VM, falling back to the provider's configured defaults when the
+// request leaves them unset. See
+// docs/superpowers/specs/2026-04-25-resource-limits-design.md §3.4.
+func (p *Provider) resolveMachineLimits(req domain.CreateSandboxRequest) (vcpu, mem int64) {
+	vcpu = int64(p.config.DefaultVcpuCount)
+	if req.CPULimit != nil {
+		vcpu = int64(*req.CPULimit)
+	}
+	mem = int64(p.config.DefaultMemoryMib)
+	if req.MemoryLimitMB != nil {
+		mem = int64(*req.MemoryLimitMB)
+	}
+	return vcpu, mem
+}
+
 func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (_ domain.BackendRef, retErr error) {
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "CreateSandbox")
 	defer func() { endSpan(retErr) }()
@@ -66,7 +82,8 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	}
 
 	// Write vminfo.json.
-	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
+	vcpu, mem := p.resolveMachineLimits(req)
+	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode), VcpuCount: vcpu, MemSizeMib: mem}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
@@ -119,6 +136,20 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off " + p.subnets.KernelBootArg(subnetIdx)
 
+	vcpu, mem := info.VcpuCount, info.MemSizeMib
+	if vcpu == 0 {
+		vcpu = int64(p.config.DefaultVcpuCount)
+	}
+	if mem == 0 {
+		mem = int64(p.config.DefaultMemoryMib)
+	}
+	// Persist resolved values back so legacy sandboxes (created before the
+	// limit fields existed) and explicit-zero records keep the same machine
+	// size across stop/start cycles instead of re-resolving to whatever the
+	// daemon defaults are at the time of the next start.
+	info.VcpuCount = vcpu
+	info.MemSizeMib = mem
+
 	var jailerCfg *fcsdk.JailerConfig
 	if p.config.EnableJailer {
 		jailerCfg = &fcsdk.JailerConfig{
@@ -139,8 +170,8 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      bootArgs,
 		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  fcsdk.Int64(1),
-			MemSizeMib: fcsdk.Int64(256),
+			VcpuCount:  fcsdk.Int64(vcpu),
+			MemSizeMib: fcsdk.Int64(mem),
 		},
 		Drives: []models.Drive{
 			{
@@ -537,7 +568,8 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	}
 
 	// Write vminfo.json.
-	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode)}
+	vcpu, mem := p.resolveMachineLimits(req)
+	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode), VcpuCount: vcpu, MemSizeMib: mem}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
