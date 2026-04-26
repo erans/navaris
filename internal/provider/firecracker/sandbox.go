@@ -239,6 +239,20 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		return fmt.Errorf("firecracker new machine %s: %w", vmID, err)
 	}
 
+	// Attach a balloon device pre-boot so PATCH /balloon works for runtime
+	// resize. PUT /balloon is rejected post-boot by Firecracker, so the SDK
+	// handler must run before machine.Start issues the instance-start action.
+	// With mult=1.0 (default), ceiling==limit so balloonMib=0 — the device
+	// exists but reserves no memory at boot. UpdateResources can later
+	// inflate it to shrink the visible memory.
+	if info.CeilingMemMib > 0 {
+		balloonMib := info.CeilingMemMib - info.LimitMemMib
+		if balloonMib < 0 {
+			balloonMib = 0
+		}
+		machine.Handlers.FcInit = machine.Handlers.FcInit.Append(fcsdk.NewCreateBalloonHandler(balloonMib, true, 0))
+	}
+
 	if err := machine.Start(machineCtx); err != nil {
 		network.DeleteTap(tapName)
 		p.subnets.Release(subnetIdx)
@@ -254,22 +268,6 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	info.TapDevice = tapName
 	info.SubnetIdx = subnetIdx
 	info.Write(infoPath)
-
-	// Attach a balloon device so PATCH /balloon works for both shrink and grow.
-	// With mult=1.0 (default), ceiling==limit so balloonMib=0; the device
-	// exists but takes no memory at boot. UpdateResources can later inflate
-	// it to shrink the visible memory.
-	if info.CeilingMemMib > 0 {
-		balloonMib := info.CeilingMemMib - info.LimitMemMib
-		if balloonMib < 0 {
-			balloonMib = 0
-		}
-		if err := machine.CreateBalloon(machineCtx, balloonMib, true, 0); err != nil {
-			// Best-effort: log and continue. The VM is still usable; the user
-			// just has access to the full ceiling instead of LimitMemMib.
-			slog.Warn("firecracker: attach balloon failed", "vm", vmID, "err", err)
-		}
-	}
 
 	// Register in memory.
 	p.vmMu.Lock()
