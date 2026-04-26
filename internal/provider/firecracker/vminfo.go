@@ -28,6 +28,24 @@ type VMInfo struct {
 	// request limits (or provider defaults) and used when the VM is started.
 	VcpuCount  int64 `json:"vcpu_count,omitempty"`
 	MemSizeMib int64 `json:"mem_size_mib,omitempty"`
+
+	// LimitCPU is the user-facing CPU limit (what the guest sees enforced).
+	// VcpuCount above is the booted ceiling (limit * VcpuHeadroomMult,
+	// clamped). Recorded for use by runtime resize.
+	LimitCPU int64 `json:"limit_cpu,omitempty"`
+
+	// LimitMemMib is the user-facing memory limit. The balloon device is
+	// inflated to (CeilingMemMib - LimitMemMib) at boot to enforce it.
+	LimitMemMib int64 `json:"limit_mem_mib,omitempty"`
+
+	// CeilingCPU is the boot-time vCPU count (== VcpuCount). Stored
+	// separately from VcpuCount for forward compatibility with runtime
+	// vCPU hotplug, which would otherwise mutate VcpuCount.
+	CeilingCPU int64 `json:"ceiling_cpu,omitempty"`
+
+	// CeilingMemMib is the boot-time mem_size_mib (== MemSizeMib).
+	// Bounds the maximum memory_limit_mb a runtime resize can grant.
+	CeilingMemMib int64 `json:"ceiling_mem_mib,omitempty"`
 }
 
 func (v *VMInfo) Write(path string) error {

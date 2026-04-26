@@ -32,27 +32,31 @@ const (
 	limitGenericMaxMemMB = 524288 // 512 GiB
 )
 
-// validateLimits checks CPULimit / MemoryLimitMB against backend-specific
-// bounds. Errors wrap domain.ErrInvalidArgument so the API maps them to 400.
-//
-// `backend` is the resolved backend name ("firecracker", "incus", "mock", ...).
-// Pass the result of SandboxService.resolveBackend.
-func validateLimits(opts CreateSandboxOpts, backend string) error {
+// validateResourceBounds checks raw CPU / memory pointers against
+// backend-specific bounds. Wraps domain.ErrInvalidArgument so the API maps
+// to 400. Nil pointers are allowed and treated as "unchanged".
+func validateResourceBounds(cpu *int, mem *int, backend string) error {
 	minCPU, maxCPU, minMem, maxMem := limitGenericMinCPU, limitGenericMaxCPU, limitGenericMinMemMB, limitGenericMaxMemMB
 	if backend == backendFirecracker {
 		minCPU, maxCPU, minMem, maxMem = limitFCMinCPU, limitFCMaxCPU, limitFCMinMemMB, limitFCMaxMemMB
 	}
-	if opts.CPULimit != nil {
-		v := *opts.CPULimit
+	if cpu != nil {
+		v := *cpu
 		if v < minCPU || v > maxCPU {
 			return fmt.Errorf("cpu_limit must be %d..%d for backend %q, got %d: %w", minCPU, maxCPU, backend, v, domain.ErrInvalidArgument)
 		}
 	}
-	if opts.MemoryLimitMB != nil {
-		v := *opts.MemoryLimitMB
+	if mem != nil {
+		v := *mem
 		if v < minMem || v > maxMem {
 			return fmt.Errorf("memory_limit_mb must be %d..%d for backend %q, got %d: %w", minMem, maxMem, backend, v, domain.ErrInvalidArgument)
 		}
 	}
 	return nil
+}
+
+// validateLimits is the create-time bounds check; preserved for callers in
+// service/sandbox.go.
+func validateLimits(opts CreateSandboxOpts, backend string) error {
+	return validateResourceBounds(opts.CPULimit, opts.MemoryLimitMB, backend)
 }

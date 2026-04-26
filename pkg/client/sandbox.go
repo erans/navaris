@@ -121,3 +121,27 @@ func (c *Client) DestroySandboxAndWait(ctx context.Context, id string, opts *Wai
 	}
 	return c.WaitForOperation(ctx, op.OperationID, opts)
 }
+
+// UpdateResourcesRequest is the body for PATCH /v1/sandboxes/{id}/resources.
+type UpdateResourcesRequest struct {
+	CPULimit      *int `json:"cpu_limit,omitempty"`
+	MemoryLimitMB *int `json:"memory_limit_mb,omitempty"`
+}
+
+// UpdateResourcesResponse is returned by PATCH /v1/sandboxes/{id}/resources.
+type UpdateResourcesResponse struct {
+	SandboxID     string `json:"sandbox_id"`
+	CPULimit      *int   `json:"cpu_limit"`
+	MemoryLimitMB *int   `json:"memory_limit_mb"`
+	AppliedLive   bool   `json:"applied_live"`
+}
+
+// UpdateSandboxResources updates the CPU and/or memory limits for a sandbox.
+// At least one of CPULimit or MemoryLimitMB must be set.
+func (c *Client) UpdateSandboxResources(ctx context.Context, id string, req UpdateResourcesRequest) (*UpdateResourcesResponse, error) {
+	var resp UpdateResourcesResponse
+	if err := c.patch(ctx, fmt.Sprintf("/v1/sandboxes/%s/resources", id), req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

@@ -180,6 +180,19 @@ func (c *Client) put(ctx context.Context, path string, body, v any) error {
 	return nil
 }
 
+// patch performs a PATCH request and decodes the response into v.
+func (c *Client) patch(ctx context.Context, path string, body, v any) error {
+	resp, err := c.doRequest(ctx, http.MethodPatch, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if v != nil {
+		return json.NewDecoder(resp.Body).Decode(v)
+	}
+	return nil
+}
+
 // del performs a DELETE request. It expects a 204 No Content response.
 func (c *Client) del(ctx context.Context, path string) error {
 	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)

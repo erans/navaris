@@ -64,3 +64,33 @@ export async function createSandbox(
     json: req,
   });
 }
+
+// UpdateSandboxResourcesRequest mirrors internal/api/sandbox.go
+// updateResourcesRequest. At least one field is required; the backend
+// returns 400 if both are omitted.
+export interface UpdateSandboxResourcesRequest {
+  cpu_limit?: number;
+  memory_limit_mb?: number;
+}
+
+// UpdateSandboxResourcesResponse mirrors updateResourcesResponse in the
+// same backend file.
+export interface UpdateSandboxResourcesResponse {
+  sandbox_id: string;
+  cpu_limit: number | null;
+  memory_limit_mb: number | null;
+  applied_live: boolean;
+}
+
+export async function updateSandboxResources(
+  id: string,
+  req: UpdateSandboxResourcesRequest,
+): Promise<UpdateSandboxResourcesResponse> {
+  return apiFetch<UpdateSandboxResourcesResponse>(
+    `/v1/sandboxes/${encodeURIComponent(id)}/resources`,
+    {
+      method: "PATCH",
+      json: req,
+    },
+  );
+}

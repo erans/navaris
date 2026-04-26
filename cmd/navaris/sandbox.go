@@ -28,6 +28,7 @@ func init() {
 	sandboxCmd.AddCommand(sandboxExecCmd)
 	sandboxCmd.AddCommand(sandboxWaitStateCmd)
 	sandboxCmd.AddCommand(sandboxAttachCmd)
+	sandboxCmd.AddCommand(sandboxResizeCmd)
 
 	sandboxCreateCmd.Flags().String("name", "", "Sandbox name")
 	sandboxCreateCmd.Flags().String("image", "", "Image ID (required)")

@@ -54,6 +54,18 @@ type forkSandboxRequest struct {
 	Count int `json:"count"`
 }
 
+type updateResourcesRequest struct {
+	CPULimit      *int `json:"cpu_limit"`
+	MemoryLimitMB *int `json:"memory_limit_mb"`
+}
+
+type updateResourcesResponse struct {
+	SandboxID     string `json:"sandbox_id"`
+	CPULimit      *int   `json:"cpu_limit"`
+	MemoryLimitMB *int   `json:"memory_limit_mb"`
+	AppliedLive   bool   `json:"applied_live"`
+}
+
 func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 	var req createSandboxRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -242,4 +254,38 @@ func (s *Server) forkSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondOperation(w, op)
+}
+
+func (s *Server) updateSandboxResources(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing sandbox id", http.StatusBadRequest)
+		return
+	}
+	var req updateResourcesRequest
+	if err := decodeJSON(r, &req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.CPULimit == nil && req.MemoryLimitMB == nil {
+		http.Error(w, "at least one of cpu_limit, memory_limit_mb is required", http.StatusBadRequest)
+		return
+	}
+
+	res, err := s.cfg.Sandboxes.UpdateResources(r.Context(), service.UpdateResourcesOpts{
+		SandboxID:     id,
+		CPULimit:      req.CPULimit,
+		MemoryLimitMB: req.MemoryLimitMB,
+	})
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+
+	respondData(w, http.StatusOK, updateResourcesResponse{
+		SandboxID:     res.Sandbox.SandboxID,
+		CPULimit:      res.Sandbox.CPULimit,
+		MemoryLimitMB: res.Sandbox.MemoryLimitMB,
+		AppliedLive:   res.AppliedLive,
+	})
 }

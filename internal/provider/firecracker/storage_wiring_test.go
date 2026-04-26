@@ -120,7 +120,7 @@ func TestConfig_Defaults_RespectsNonZeroLimitFields(t *testing.T) {
 }
 
 func TestResolveMachineLimits(t *testing.T) {
-	p := &Provider{config: Config{DefaultVcpuCount: 1, DefaultMemoryMib: 256}}
+	p := &Provider{config: Config{DefaultVcpuCount: 1, DefaultMemoryMib: 256, VcpuHeadroomMult: 1.0, MemHeadroomMult: 1.0}}
 
 	cases := []struct {
 		name     string
@@ -135,12 +135,12 @@ func TestResolveMachineLimits(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			vcpu, mem := p.resolveMachineLimits(tc.req)
-			if vcpu != tc.wantVcpu {
-				t.Errorf("vcpu = %d, want %d", vcpu, tc.wantVcpu)
+			got := p.resolveMachineLimits(tc.req)
+			if got.LimitCPU != tc.wantVcpu {
+				t.Errorf("vcpu = %d, want %d", got.LimitCPU, tc.wantVcpu)
 			}
-			if mem != tc.wantMem {
-				t.Errorf("mem = %d, want %d", mem, tc.wantMem)
+			if got.LimitMemMib != tc.wantMem {
+				t.Errorf("mem = %d, want %d", got.LimitMemMib, tc.wantMem)
 			}
 		})
 	}

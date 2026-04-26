@@ -180,6 +180,15 @@ func (r *Registry) ForkSandbox(ctx context.Context, parent domain.BackendRef, co
 	return p.ForkSandbox(ctx, parent, count)
 }
 
+// UpdateResources dispatches by ref.Backend.
+func (r *Registry) UpdateResources(ctx context.Context, ref domain.BackendRef, req domain.UpdateResourcesRequest) error {
+	p, err := r.resolve(ref.Backend)
+	if err != nil {
+		return err
+	}
+	return p.UpdateResources(ctx, ref, req)
+}
+
 // PublishSnapshotAsImage dispatches by snapshotRef.Backend.
 func (r *Registry) PublishSnapshotAsImage(ctx context.Context, snapshotRef domain.BackendRef, req domain.PublishImageRequest) (domain.BackendRef, error) {
 	p, err := r.resolve(snapshotRef.Backend)
