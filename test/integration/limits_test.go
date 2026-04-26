@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +22,9 @@ import (
 // backends now honor the requested limit (Incus always has;
 // Firecracker as of #PR <this one>).
 func TestSandbox_HonorsRequestedMemoryLimit(t *testing.T) {
+	if img := os.Getenv("NAVARIS_BASE_IMAGE"); strings.Contains(img, "/") {
+		t.Skipf("skipping on Incus (image=%s): the test image lacks lxcfs, so /proc/meminfo reports host RAM not container limit; Firecracker still exercises this path", img)
+	}
 	c := newClient()
 	ctx := context.Background()
 	proj := createTestProject(t, c)
