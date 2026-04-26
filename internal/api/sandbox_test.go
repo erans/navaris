@@ -187,7 +187,7 @@ func TestCreateSandbox_RejectsCPUOutOfBounds(t *testing.T) {
 		"project_id": projectID,
 		"name":       "bad-cpu",
 		"image_id":   "img-1",
-		"cpu_limit":  33,
+		"cpu_limit":  257,
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -202,7 +202,7 @@ func TestCreateSandboxFromSnapshot_RejectsMemoryLimit(t *testing.T) {
 		"project_id":      projectID,
 		"name":            "bad-snap",
 		"snapshot_id":     "snap-1",
-		"memory_limit_mb": 1024,
+		"memory_limit_mb": 524289,
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d: %s", rec.Code, rec.Body.String())

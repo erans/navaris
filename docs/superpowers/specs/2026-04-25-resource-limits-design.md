@@ -39,23 +39,29 @@ ErrInvalidArgument = errors.New("invalid argument")
 A new file `internal/service/limits.go` provides:
 
 ```go
-func validateLimits(opts CreateSandboxOpts, fromSnapshot bool) error
+func validateLimits(opts CreateSandboxOpts, backend string) error
 ```
 
 Called at the top of both `SandboxService.Create` and `SandboxService.CreateFromSnapshot`, before any sandbox row is written or operation enqueued. Failing here produces an HTTP 400 cleanly with no DB or worker side effects.
 
 **Rules:**
 
-| Field | Nil | Set, normal create | Set, from-snapshot |
-|---|---|---|---|
-| `CPULimit` | OK — provider applies its default | Must be `1 ≤ n ≤ 32` | Reject: "cpu_limit cannot be set on from-snapshot create; vCPU count is baked into the snapshot" |
-| `MemoryLimitMB` | OK — provider applies its default | Must be `128 ≤ n ≤ 8192` | Reject: "memory_limit_mb cannot be set on from-snapshot create; memory size is baked into the snapshot" |
+| Backend | CPULimit (nil OK) | MemoryLimitMB (nil OK) |
+|---|---|---|
+| `firecracker` | `1..32` (Firecracker `MAX_SUPPORTED_VCPUS`) | `128..8192` MB |
+| any other backend (`incus`, `mock`, ...) | `1..256` (sanity-check ceiling) | `16..524288` MB (16 MB..512 GiB) |
+
+**`CreateFromSnapshot` applies the same bounds.** The from-snapshot path
+creates a new sandbox booted from the snapshot's rootfs (Firecracker) or
+copies the container with reapplied limits (Incus); both backends accept
+limit overrides at create time. The earlier "limits are baked into the
+snapshot" framing was incorrect — that constraint applies to in-place
+`RestoreSnapshot`, which doesn't take limit args.
 
 **Bounds rationale:**
 
-- `CPULimit` upper bound 32 = Firecracker's `MAX_SUPPORTED_VCPUS`. Lower bound 1 = obvious.
-- `MemoryLimitMB` upper bound 8192 (8 GiB) = a sane sandbox ceiling. Operators who need more can patch the constant; we did not expose this as a flag because the brainstorm answer was "hard bounds."
-- `MemoryLimitMB` lower bound 128 = the floor where most modern guest kernels boot without panic.
+- Firecracker bounds match the kernel/policy constraints: `MAX_SUPPORTED_VCPUS` = 32; 128 MB is the floor for booting most modern guest kernels; 8192 MB is the sandbox-policy ceiling.
+- Generic bounds (Incus, mock, etc.) are sanity checks against absurd inputs — containers can run with much higher limits than VMs.
 
 **Notably NOT validated:**
 
@@ -201,11 +207,9 @@ These confirm the `mapErrorCode` wiring end-to-end.
 
 1. **Firecracker honors `memory_limit_mb` and `cpu_limit`.** Previously these were silently ignored on Firecracker; callers got 256 MiB / 1 vCPU regardless. After this PR, callers get the value they asked for (subject to §3.2 bounds). The change is "doing what the API documentation always implied," but anyone happening to send these fields today without noticing will see real allocations now.
 
-2. **`POST /v1/sandboxes/from-snapshot` rejects `cpu_limit` / `memory_limit_mb`.** Previously these were silently ignored on Firecracker (snapshots restore with `vmstate.bin`-baked values). After this PR, sending them produces HTTP 400. Same release-note caveat — surfacing a misuse instead of swallowing it.
+2. **Memory upper bound is now backend-aware.** Previously navaris applied no upper bound on `memory_limit_mb`; large values flowed through to the backend. Firecracker is capped at 8192 MB; other backends (Incus, mock) are capped at 524288 MB (512 GiB). **Incus deployments today running containers with `memory_limit_mb > 524288` will see HTTP 400 after this PR.** Operators who need higher must edit the constants in `internal/service/limits.go`.
 
-3. **Memory upper bound is now 8192 MB.** Previously navaris applied no upper bound on `memory_limit_mb`; large values flowed through to the backend. **Incus deployments today running containers with `memory_limit_mb > 8192` will see HTTP 400 after this PR.** (Firecracker callers are unaffected — they were silently capped at 256 MiB regardless of what they sent.) Operators who need higher must edit the constant in `internal/service/limits.go`. A daemon flag was deliberately not exposed to keep policy decisions out of operator hands at this stage; revisit if real users hit this.
-
-**Migration path:** none required for callers using ≤ 8192 MB. Operators who set `--firecracker-default-vcpu` / `--firecracker-default-memory-mb` get the new defaults; everyone else preserves the status quo.
+**Migration path:** none required for callers using supported limits. Operators who set `--firecracker-default-vcpu` / `--firecracker-default-memory-mb` get the new defaults; everyone else preserves the status quo.
 
 ## 6. Documentation
 

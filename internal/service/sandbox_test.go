@@ -223,7 +223,7 @@ func TestSandboxServiceCreateFromSnapshot(t *testing.T) {
 
 func TestCreate_RejectsOutOfBoundsMemory(t *testing.T) {
 	env := newServiceEnv(t)
-	mem := 8193
+	mem := 524289
 	op, err := env.sandbox.Create(t.Context(), env.projectID, "too-big",
 		"alpine-3.21", service.CreateSandboxOpts{MemoryLimitMB: &mem})
 	if err == nil {
@@ -241,9 +241,9 @@ func TestCreate_RejectsOutOfBoundsMemory(t *testing.T) {
 	}
 }
 
-func TestCreateFromSnapshot_RejectsCPULimit(t *testing.T) {
+func TestCreateFromSnapshot_AppliesBoundsValidation(t *testing.T) {
 	env := newServiceEnv(t)
-	cpu := 2
+	cpu := 257
 	op, err := env.sandbox.CreateFromSnapshot(t.Context(), env.projectID, "from-snap",
 		"snap-irrelevant", service.CreateSandboxOpts{CPULimit: &cpu})
 	if err == nil {
