@@ -187,6 +187,10 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 		ForkPointID:         fpID,
 		VcpuCount:           vcpu,
 		MemSizeMib:          mem,
+		LimitCPU:            vcpu,
+		LimitMemMib:         mem,
+		CeilingCPU:          vcpu,
+		CeilingMemMib:       mem,
 	}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
