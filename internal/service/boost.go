@@ -152,13 +152,94 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 	return boost, nil
 }
 
-// expire is filled in Task 8. For now it deletes the row so timer-fire
-// in tests doesn't dangle.
+// boostBackoff is the per-attempt sleep between revert retries. The slice
+// length is the maximum number of attempts. If a provider error persists
+// past the last entry, the boost transitions to BoostRevertFailed.
+var boostBackoff = []time.Duration{
+	1 * time.Second,
+	5 * time.Second,
+	30 * time.Second,
+	2 * time.Minute,
+	10 * time.Minute,
+}
+
 func (s *BoostService) expire(ctx context.Context, boostID string) {
 	s.mu.Lock()
 	delete(s.timers, boostID)
 	s.mu.Unlock()
-	_ = s.boosts.Delete(ctx, boostID)
+
+	boost, err := s.boosts.GetByID(ctx, boostID)
+	if err != nil {
+		// Race: boost was cancelled or deleted while the timer was firing.
+		return
+	}
+
+	sbx, err := s.sandboxes.Get(ctx, boost.SandboxID)
+	if err != nil {
+		// Sandbox is gone; clean up the boost row.
+		_ = s.boosts.Delete(ctx, boostID)
+		return
+	}
+	if sbx.State != domain.SandboxRunning {
+		// Defense-in-depth: lifecycle hooks should have removed this.
+		_ = s.boosts.Delete(ctx, boostID)
+		s.emitExpired(ctx, boost, "sandbox_not_running", sbx.CPULimit, sbx.MemoryLimitMB)
+		return
+	}
+
+	// Apply the persisted (current) limits live.
+	_, applyErr := s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
+		SandboxID:     sbx.SandboxID,
+		CPULimit:      sbx.CPULimit,
+		MemoryLimitMB: sbx.MemoryLimitMB,
+		ApplyLiveOnly: true,
+	})
+
+	if applyErr == nil {
+		_ = s.boosts.Delete(ctx, boostID)
+		s.emitExpired(ctx, boost, "expired", sbx.CPULimit, sbx.MemoryLimitMB)
+		return
+	}
+
+	// Failure: increment attempts, retry with backoff or transition to revert_failed.
+	attempts := boost.RevertAttempts + 1
+	if attempts >= len(boostBackoff) {
+		_ = s.boosts.UpdateState(ctx, boostID, domain.BoostRevertFailed, attempts, applyErr.Error())
+		_ = s.events.Publish(ctx, domain.Event{
+			Type:      domain.EventBoostRevertFailed,
+			Timestamp: s.clock.Now().UTC(),
+			Data: map[string]any{
+				"boost_id":   boostID,
+				"sandbox_id": boost.SandboxID,
+				"attempts":   attempts,
+				"last_error": applyErr.Error(),
+			},
+		})
+		return
+	}
+
+	_ = s.boosts.UpdateState(ctx, boostID, domain.BoostActive, attempts, applyErr.Error())
+
+	// Schedule retry under the lock to keep the timers map consistent.
+	s.mu.Lock()
+	s.timers[boostID] = s.clock.AfterFunc(boostBackoff[attempts-1], func() {
+		s.expire(context.Background(), boostID)
+	})
+	s.mu.Unlock()
+}
+
+func (s *BoostService) emitExpired(ctx context.Context, b *domain.Boost, cause string, cpu, mem *int) {
+	_ = s.events.Publish(ctx, domain.Event{
+		Type:      domain.EventBoostExpired,
+		Timestamp: s.clock.Now().UTC(),
+		Data: map[string]any{
+			"boost_id":                 b.BoostID,
+			"sandbox_id":               b.SandboxID,
+			"cause":                    cause,
+			"reverted_cpu_limit":       cpu,
+			"reverted_memory_limit_mb": mem,
+		},
+	})
 }
 
 func copyIntPtr(p *int) *int {

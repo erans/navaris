@@ -213,3 +213,134 @@ func TestBoostStart_ReplacesExisting(t *testing.T) {
 		t.Fatalf("store has %s, want %s", got.BoostID, second.BoostID)
 	}
 }
+
+// fakeClock advances time on demand and runs scheduled timers synchronously
+// when their deadline passes.
+type fakeClock struct {
+	now    time.Time
+	timers []*fakeTimer
+}
+
+type fakeTimer struct {
+	at      time.Time
+	fn      func()
+	stopped bool
+}
+
+func (t *fakeTimer) Stop() bool { t.stopped = true; return true }
+
+func newFakeClock(t time.Time) *fakeClock { return &fakeClock{now: t} }
+func (c *fakeClock) Now() time.Time       { return c.now }
+func (c *fakeClock) AfterFunc(d time.Duration, fn func()) service.Timer {
+	t := &fakeTimer{at: c.now.Add(d), fn: fn}
+	c.timers = append(c.timers, t)
+	return t
+}
+
+// fire advances the clock by dur and synchronously invokes any timer whose
+// deadline has elapsed (in scheduled order). Timers scheduled by callbacks
+// during fire accumulate for the next fire call.
+func (c *fakeClock) fire(dur time.Duration) {
+	c.now = c.now.Add(dur)
+	pending := c.timers
+	c.timers = nil
+	for _, t := range pending {
+		if t.stopped || t.at.After(c.now) {
+			c.timers = append(c.timers, t)
+			continue
+		}
+		t.fn()
+	}
+}
+
+func newBoostEnvWithClock(t *testing.T, clk service.Clock) *boostEnv {
+	t.Helper()
+	env := newServiceEnv(t)
+	bs := service.NewBoostService(
+		env.store.BoostStore(), env.store.SandboxStore(), env.sandbox,
+		env.events, clk, time.Hour,
+	)
+	return &boostEnv{serviceEnv: env, boost: bs}
+}
+
+func TestBoostExpire_RevertsToCurrentPersisted(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+	origCPU := *sbx.CPULimit
+
+	cpu := 8
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch, cancel, _ := env.events.Subscribe(t.Context(), domain.EventFilter{
+		Types: []domain.EventType{domain.EventBoostExpired},
+	})
+	defer cancel()
+
+	var lastReq domain.UpdateResourcesRequest
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, req domain.UpdateResourcesRequest) error {
+		lastReq = req
+		return nil
+	}
+
+	clk.fire(61 * time.Second)
+
+	if lastReq.CPULimit == nil || *lastReq.CPULimit != origCPU {
+		t.Fatalf("revert called with CPULimit=%+v; want %d", lastReq.CPULimit, origCPU)
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row not deleted on expire; got %v", err)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.Data["cause"] != "expired" {
+			t.Errorf("event cause = %v", ev.Data["cause"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("EventBoostExpired not received")
+	}
+}
+
+func TestBoostExpire_RetriesOnFailure_ThenRevertFailed(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Boost apply already succeeded above (Start used the default nil-returning mock).
+	// Arm a failure for every revert call from expire onwards.
+	calls := 0
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		calls++
+		return errors.New("provider boom")
+	}
+
+	clk.fire(61 * time.Second) // attempt 1 fails -> 1s retry scheduled
+	clk.fire(2 * time.Second)  // attempt 2 fails -> 5s retry
+	clk.fire(6 * time.Second)  // 3 -> 30s
+	clk.fire(31 * time.Second) // 4 -> 2m
+	clk.fire(2 * time.Minute)  // 5 -> exhausted
+
+	got, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatalf("expected boost row to remain in revert_failed; got %v", err)
+	}
+	if got.State != domain.BoostRevertFailed {
+		t.Fatalf("state = %s, want revert_failed", got.State)
+	}
+	if got.RevertAttempts < 5 {
+		t.Fatalf("revert_attempts = %d, want >= 5", got.RevertAttempts)
+	}
+}
