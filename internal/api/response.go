@@ -84,6 +84,10 @@ func mapErrorCode(err error) int {
 	if errors.Is(err, domain.ErrBusy) {
 		return http.StatusServiceUnavailable
 	}
+	var prErr *domain.ProviderResizeError
+	if errors.As(err, &prErr) {
+		return http.StatusConflict
+	}
 	return http.StatusInternalServerError
 }
 
