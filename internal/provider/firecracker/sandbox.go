@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,20 +29,41 @@ func vmName() string {
 	return "nvrs-fc-" + uuid.NewString()[:8]
 }
 
-// resolveMachineLimits picks the vCPU count and memory size for a new
-// VM, falling back to the provider's configured defaults when the
-// request leaves them unset. See
-// docs/superpowers/specs/2026-04-25-resource-limits-design.md §3.4.
-func (p *Provider) resolveMachineLimits(req domain.CreateSandboxRequest) (vcpu, mem int64) {
-	vcpu = int64(p.config.DefaultVcpuCount)
+type resolvedLimits struct {
+	LimitCPU      int64
+	LimitMemMib   int64
+	CeilingCPU    int64
+	CeilingMemMib int64
+}
+
+// resolveMachineLimits computes the user-facing CPU/memory limit and the
+// boot-time ceiling for a new VM. The VM boots with vcpu_count =
+// CeilingCPU and mem_size_mib = CeilingMemMib; a balloon device inflated to
+// (CeilingMemMib - LimitMemMib) at boot enforces the user-facing limit.
+// See docs/superpowers/specs/2026-04-25-runtime-resource-resize-design.md §3.4.
+func (p *Provider) resolveMachineLimits(req domain.CreateSandboxRequest) resolvedLimits {
+	limitCPU := int64(p.config.DefaultVcpuCount)
 	if req.CPULimit != nil {
-		vcpu = int64(*req.CPULimit)
+		limitCPU = int64(*req.CPULimit)
 	}
-	mem = int64(p.config.DefaultMemoryMib)
+	limitMem := int64(p.config.DefaultMemoryMib)
 	if req.MemoryLimitMB != nil {
-		mem = int64(*req.MemoryLimitMB)
+		limitMem = int64(*req.MemoryLimitMB)
 	}
-	return vcpu, mem
+	ceilingCPU := int64(math.Ceil(float64(limitCPU) * p.config.VcpuHeadroomMult))
+	ceilingMem := int64(math.Ceil(float64(limitMem) * p.config.MemHeadroomMult))
+	if ceilingCPU > defaultMaxVcpu {
+		ceilingCPU = defaultMaxVcpu
+	}
+	if ceilingMem > defaultMaxMemMB {
+		ceilingMem = defaultMaxMemMB
+	}
+	return resolvedLimits{
+		LimitCPU:      limitCPU,
+		LimitMemMib:   limitMem,
+		CeilingCPU:    ceilingCPU,
+		CeilingMemMib: ceilingMem,
+	}
 }
 
 func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRequest) (_ domain.BackendRef, retErr error) {
@@ -82,8 +104,19 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 	}
 
 	// Write vminfo.json.
-	vcpu, mem := p.resolveMachineLimits(req)
-	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode), VcpuCount: vcpu, MemSizeMib: mem}
+	rl := p.resolveMachineLimits(req)
+	info := &VMInfo{
+		ID:            vmID,
+		CID:           cid,
+		UID:           uid,
+		NetworkMode:   string(req.NetworkMode),
+		VcpuCount:     rl.CeilingCPU,
+		MemSizeMib:    rl.CeilingMemMib,
+		LimitCPU:      rl.LimitCPU,
+		LimitMemMib:   rl.LimitMemMib,
+		CeilingCPU:    rl.CeilingCPU,
+		CeilingMemMib: rl.CeilingMemMib,
+	}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
@@ -221,6 +254,17 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	info.TapDevice = tapName
 	info.SubnetIdx = subnetIdx
 	info.Write(infoPath)
+
+	// Inflate the balloon to enforce LimitMemMib if the VM was booted with
+	// headroom on top.
+	if info.CeilingMemMib > 0 && info.CeilingMemMib > info.LimitMemMib {
+		balloonMib := info.CeilingMemMib - info.LimitMemMib
+		if err := machine.CreateBalloon(machineCtx, balloonMib, true, 0); err != nil {
+			// Best-effort: log and continue. The VM is still usable; the user
+			// just has access to the full ceiling instead of LimitMemMib.
+			slog.Warn("firecracker: attach balloon failed", "vm", vmID, "err", err)
+		}
+	}
 
 	// Register in memory.
 	p.vmMu.Lock()
@@ -568,8 +612,19 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 	}
 
 	// Write vminfo.json.
-	vcpu, mem := p.resolveMachineLimits(req)
-	info := &VMInfo{ID: vmID, CID: cid, UID: uid, NetworkMode: string(req.NetworkMode), VcpuCount: vcpu, MemSizeMib: mem}
+	rl := p.resolveMachineLimits(req)
+	info := &VMInfo{
+		ID:            vmID,
+		CID:           cid,
+		UID:           uid,
+		NetworkMode:   string(req.NetworkMode),
+		VcpuCount:     rl.CeilingCPU,
+		MemSizeMib:    rl.CeilingMemMib,
+		LimitCPU:      rl.LimitCPU,
+		LimitMemMib:   rl.LimitMemMib,
+		CeilingCPU:    rl.CeilingCPU,
+		CeilingMemMib: rl.CeilingMemMib,
+	}
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
