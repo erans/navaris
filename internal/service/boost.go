@@ -58,11 +58,115 @@ func (s *BoostService) Get(ctx context.Context, sandboxID string) (*domain.Boost
 	return s.boosts.Get(ctx, sandboxID)
 }
 
-// Start, Cancel, expire, cancelOnLifecycle, Recover are filled in by
-// later tasks (6–10). The stubs here let the service type satisfy
-// callers during bring-up.
 func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.Boost, error) {
-	return nil, errors.New("BoostService.Start: not implemented")
+	if opts.DurationSeconds <= 0 {
+		return nil, fmt.Errorf("duration_seconds must be > 0: %w", domain.ErrInvalidArgument)
+	}
+	dur := time.Duration(opts.DurationSeconds) * time.Second
+	if dur > s.maxDuration {
+		return nil, fmt.Errorf("duration_seconds %d exceeds max %d: %w",
+			opts.DurationSeconds, int(s.maxDuration.Seconds()), domain.ErrInvalidArgument)
+	}
+	if opts.CPULimit == nil && opts.MemoryLimitMB == nil {
+		return nil, fmt.Errorf("at least one of cpu_limit, memory_limit_mb must be supplied: %w",
+			domain.ErrInvalidArgument)
+	}
+
+	sbx, err := s.sandboxes.Get(ctx, opts.SandboxID)
+	if err != nil {
+		return nil, err
+	}
+	if sbx.State != domain.SandboxRunning {
+		return nil, fmt.Errorf("boost requires sandbox state running, got %s: %w",
+			sbx.State, domain.ErrInvalidState)
+	}
+	if err := validateResourceBounds(opts.CPULimit, opts.MemoryLimitMB, sbx.Backend); err != nil {
+		return nil, err
+	}
+
+	// Cancel any existing boost — replace semantics. Hold s.mu across the
+	// timer cancel + row delete + new timer schedule to prevent two boosts
+	// being in flight for the same sandbox.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if prior, err := s.boosts.Get(ctx, opts.SandboxID); err == nil {
+		if t, ok := s.timers[prior.BoostID]; ok {
+			t.Stop()
+			delete(s.timers, prior.BoostID)
+		}
+		if err := s.boosts.Delete(ctx, prior.BoostID); err != nil {
+			return nil, fmt.Errorf("delete prior boost: %w", err)
+		}
+	}
+
+	now := s.clock.Now().UTC()
+	boost := &domain.Boost{
+		BoostID:               "bst-" + uuid.NewString()[:8],
+		SandboxID:             sbx.SandboxID,
+		OriginalCPULimit:      copyIntPtr(sbx.CPULimit),
+		OriginalMemoryLimitMB: copyIntPtr(sbx.MemoryLimitMB),
+		BoostedCPULimit:       copyIntPtr(opts.CPULimit),
+		BoostedMemoryLimitMB:  copyIntPtr(opts.MemoryLimitMB),
+		StartedAt:             now,
+		ExpiresAt:             now.Add(dur),
+		State:                 domain.BoostActive,
+	}
+	if err := s.boosts.Upsert(ctx, boost); err != nil {
+		return nil, fmt.Errorf("persist boost: %w", err)
+	}
+
+	// Apply live-only — the persisted limits stay as the user's intent.
+	_, err = s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
+		SandboxID:     sbx.SandboxID,
+		CPULimit:      opts.CPULimit,
+		MemoryLimitMB: opts.MemoryLimitMB,
+		ApplyLiveOnly: true,
+	})
+	if err != nil {
+		// Roll back the boost row; the live VM is unchanged.
+		if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil {
+			return nil, fmt.Errorf("apply boost failed: %v; rollback also failed: %w", err, delErr)
+		}
+		return nil, err
+	}
+
+	// Schedule the auto-revert timer. The callback runs in a goroutine;
+	// expire() takes the lock itself.
+	s.timers[boost.BoostID] = s.clock.AfterFunc(dur, func() {
+		s.expire(context.Background(), boost.BoostID)
+	})
+
+	_ = s.events.Publish(ctx, domain.Event{
+		Type:      domain.EventBoostStarted,
+		Timestamp: now,
+		Data: map[string]any{
+			"boost_id":                boost.BoostID,
+			"sandbox_id":              boost.SandboxID,
+			"boosted_cpu_limit":       boost.BoostedCPULimit,
+			"boosted_memory_limit_mb": boost.BoostedMemoryLimitMB,
+			"expires_at":              boost.ExpiresAt.Format(time.RFC3339Nano),
+		},
+	})
+
+	return boost, nil
+}
+
+// expire is filled in Task 8. For now it deletes the row so timer-fire
+// in tests doesn't dangle.
+func (s *BoostService) expire(ctx context.Context, boostID string) {
+	s.mu.Lock()
+	delete(s.timers, boostID)
+	s.mu.Unlock()
+	_ = s.boosts.Delete(ctx, boostID)
+}
+
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
@@ -78,8 +182,3 @@ func (s *BoostService) cancelOnLifecycle(ctx context.Context, sandboxID string) 
 	_ = ctx
 	_ = sandboxID
 }
-
-// suppress unused-import noise during bring-up — these imports are used
-// once the later tasks fill in the real method bodies.
-var _ = fmt.Errorf
-var _ = uuid.NewString
