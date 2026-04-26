@@ -75,6 +75,7 @@ func TestValidateResourceBounds(t *testing.T) {
 	}{
 		{name: "fc cpu out of range", cpu: ptrInt(33), mem: nil, backend: "firecracker", wantErr: true, wantSubstr: "cpu_limit"},
 		{name: "fc mem ok", cpu: nil, mem: ptrInt(512), backend: "firecracker", wantErr: false},
+		{name: "fc mem out of range", cpu: nil, mem: ptrInt(9000), backend: "firecracker", wantErr: true, wantSubstr: "memory_limit_mb"},
 		{name: "incus generic bounds", cpu: ptrInt(257), mem: nil, backend: "incus", wantErr: true, wantSubstr: "cpu_limit"},
 		{name: "both nil ok at this level", cpu: nil, mem: nil, backend: "firecracker", wantErr: false},
 	}
