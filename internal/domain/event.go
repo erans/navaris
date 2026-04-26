@@ -6,6 +6,7 @@ type EventType string
 
 const (
 	EventSandboxStateChanged   EventType = "sandbox_state_changed"
+	EventSandboxResourcesUpdated EventType = "sandbox_resources_updated"
 	EventSnapshotStateChanged  EventType = "snapshot_state_changed"
 	EventImageStateChanged     EventType = "image_state_changed"
 	EventSessionStateChanged   EventType = "session_state_changed"

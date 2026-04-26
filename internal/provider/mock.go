@@ -31,6 +31,7 @@ type MockProvider struct {
 	UnpublishPortFn             func(ctx context.Context, ref domain.BackendRef, publishedPort int) error
 	HealthFn                    func(ctx context.Context) domain.ProviderHealth
 	ForkSandboxFn               func(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error)
+	UpdateResourcesFn           func(ctx context.Context, ref domain.BackendRef, req domain.UpdateResourcesRequest) error
 }
 
 func NewMock() *MockProvider {
@@ -86,6 +87,9 @@ func NewMock() *MockProvider {
 				})
 			}
 			return out, nil
+		},
+		UpdateResourcesFn: func(_ context.Context, _ domain.BackendRef, _ domain.UpdateResourcesRequest) error {
+			return nil
 		},
 	}
 }
@@ -146,4 +150,7 @@ func (m *MockProvider) Health(ctx context.Context) domain.ProviderHealth {
 }
 func (m *MockProvider) ForkSandbox(ctx context.Context, parent domain.BackendRef, count int) ([]domain.BackendRef, error) {
 	return m.ForkSandboxFn(ctx, parent, count)
+}
+func (m *MockProvider) UpdateResources(ctx context.Context, ref domain.BackendRef, req domain.UpdateResourcesRequest) error {
+	return m.UpdateResourcesFn(ctx, ref, req)
 }

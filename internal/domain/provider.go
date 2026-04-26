@@ -43,6 +43,35 @@ type PublishedEndpoint struct {
 	PublishedPort int
 }
 
+// UpdateResourcesRequest carries the desired new CPU/memory limits for a
+// running sandbox. A nil pointer means "leave unchanged". The service layer
+// rejects requests where both fields are nil.
+type UpdateResourcesRequest struct {
+	CPULimit      *int
+	MemoryLimitMB *int
+}
+
+// ProviderResizeError is returned from Provider.UpdateResources when the
+// backend cannot apply the requested change live. The Reason is a stable,
+// machine-readable code; Detail is a human-readable supplement.
+type ProviderResizeError struct {
+	Reason string
+	Detail string
+}
+
+func (e *ProviderResizeError) Error() string {
+	if e.Detail != "" {
+		return e.Reason + ": " + e.Detail
+	}
+	return e.Reason
+}
+
+const (
+	ResizeReasonExceedsCeiling          = "exceeds_ceiling"
+	ResizeReasonCPUUnsupportedByBackend = "cpu_resize_unsupported_by_backend"
+	ResizeReasonBackendRejected         = "backend_rejected"
+)
+
 type ExecHandle struct {
 	Stdout io.ReadCloser
 	Stderr io.ReadCloser
@@ -99,6 +128,12 @@ type Provider interface {
 	// that don't support this (e.g. container-only providers) MUST return an
 	// error wrapping domain.ErrNotSupported and an empty slice.
 	ForkSandbox(ctx context.Context, parent BackendRef, count int) ([]BackendRef, error)
+
+	// UpdateResources applies new CPU/memory limits to a running sandbox.
+	// Returns *ProviderResizeError when the backend cannot apply the change
+	// live (the service layer maps that to HTTP 409). Other errors are
+	// treated as backend failures.
+	UpdateResources(ctx context.Context, ref BackendRef, req UpdateResourcesRequest) error
 
 	PublishPort(ctx context.Context, ref BackendRef, targetPort int, opts PublishPortOptions) (PublishedEndpoint, error)
 	UnpublishPort(ctx context.Context, ref BackendRef, publishedPort int) error
