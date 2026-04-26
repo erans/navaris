@@ -7,9 +7,12 @@ import {
   getSandbox,
   startSandbox,
   stopSandbox,
+  updateSandboxResources,
 } from "@/api/sandboxes";
+import type { UpdateSandboxResourcesRequest } from "@/api/sandboxes";
 import { ApiError } from "@/api/client";
 import { StateBadge } from "@/components/StateBadge";
+import type { Sandbox } from "@/types/navaris";
 
 // SandboxDetail is the per-sandbox drill-down. It shows the sandbox's core
 // metadata and exposes the three lifecycle actions Navaris supports today:
@@ -126,6 +129,8 @@ export default function SandboxDetail() {
         <Field label="Network" value={data.NetworkMode || "—"} />
       </section>
 
+      <ResourcesPanel sandbox={data} sandboxId={id!} />
+
       <section className="flex gap-2">
         <button
           type="button"
@@ -197,5 +202,96 @@ function Field({ label, value }: { label: string; value: string }) {
       </div>
       <div className="mt-1 text-sm text-[var(--fg-primary)]">{value}</div>
     </div>
+  );
+}
+
+function ResourcesPanel({
+  sandbox,
+  sandboxId,
+}: {
+  sandbox: Sandbox;
+  sandboxId: string;
+}) {
+  const qc = useQueryClient();
+  const [cpu, setCpu] = useState<string>(
+    sandbox.CPULimit != null ? String(sandbox.CPULimit) : "",
+  );
+  const [mem, setMem] = useState<string>(
+    sandbox.MemoryLimitMB != null ? String(sandbox.MemoryLimitMB) : "",
+  );
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function apply() {
+    setErr(null);
+    setBusy(true);
+    try {
+      const body: UpdateSandboxResourcesRequest = {};
+      const cpuN = cpu === "" ? undefined : Number(cpu);
+      const memN = mem === "" ? undefined : Number(mem);
+      if (cpuN !== undefined && cpuN !== sandbox.CPULimit)
+        body.cpu_limit = cpuN;
+      if (memN !== undefined && memN !== sandbox.MemoryLimitMB)
+        body.memory_limit_mb = memN;
+      if (Object.keys(body).length === 0) {
+        setBusy(false);
+        return;
+      }
+      await updateSandboxResources(sandboxId, body);
+      await qc.invalidateQueries({ queryKey: ["sandbox", sandboxId] });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "resize failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="mb-6 border border-[var(--border-subtle)] p-4">
+      <div className="mb-3 font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+        Resources
+      </div>
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex flex-col gap-1">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+            CPU limit
+          </span>
+          <input
+            type="number"
+            min="1"
+            value={cpu}
+            onChange={(e) => setCpu(e.currentTarget.value)}
+            disabled={busy}
+            className="w-24 border border-[var(--border-strong)] bg-transparent px-2 py-1 text-sm text-[var(--fg-primary)] disabled:opacity-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">
+            Memory (MB)
+          </span>
+          <input
+            type="number"
+            min="64"
+            value={mem}
+            onChange={(e) => setMem(e.currentTarget.value)}
+            disabled={busy}
+            className="w-28 border border-[var(--border-strong)] bg-transparent px-2 py-1 text-sm text-[var(--fg-primary)] disabled:opacity-50"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={apply}
+          disabled={busy}
+          className="font-mono text-xs border border-[var(--border-strong)] px-3 py-1.5 disabled:opacity-50 hover:bg-[var(--bg-overlay)]"
+        >
+          {busy ? "Applying…" : "Apply"}
+        </button>
+      </div>
+      {err !== null && (
+        <p role="alert" className="mt-2 text-xs text-[var(--status-failed)]">
+          {err}
+        </p>
+      )}
+    </section>
   );
 }
