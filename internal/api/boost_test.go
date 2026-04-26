@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,5 +76,60 @@ func TestPostBoost_NotFound_404(t *testing.T) {
 		map[string]any{"cpu_limit": 4, "duration_seconds": 60})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+func TestGetBoost_OK(t *testing.T) {
+	env := newTestEnv(t)
+	projID := ensureProject(t, env)
+	sbx := seedSandbox(t, env, projID, "sbx-1", domain.SandboxRunning, "mock")
+
+	doRequest(t, env.handler, http.MethodPost,
+		"/v1/sandboxes/"+sbx.SandboxID+"/boost",
+		map[string]any{"cpu_limit": 4, "duration_seconds": 60})
+
+	rec := doRequest(t, env.handler, http.MethodGet,
+		"/v1/sandboxes/"+sbx.SandboxID+"/boost", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		BoostedCPULimit *int `json:"boosted_cpu_limit"`
+	}
+	parseJSON(t, rec, &got)
+	if got.BoostedCPULimit == nil || *got.BoostedCPULimit != 4 {
+		t.Errorf("BoostedCPULimit = %+v", got.BoostedCPULimit)
+	}
+}
+
+func TestGetBoost_NoActive_404(t *testing.T) {
+	env := newTestEnv(t)
+	projID := ensureProject(t, env)
+	sbx := seedSandbox(t, env, projID, "sbx-1", domain.SandboxRunning, "mock")
+
+	rec := doRequest(t, env.handler, http.MethodGet,
+		"/v1/sandboxes/"+sbx.SandboxID+"/boost", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+func TestGetSandbox_EmbedsActiveBoost(t *testing.T) {
+	env := newTestEnv(t)
+	projID := ensureProject(t, env)
+	sbx := seedSandbox(t, env, projID, "sbx-1", domain.SandboxRunning, "mock")
+
+	doRequest(t, env.handler, http.MethodPost,
+		"/v1/sandboxes/"+sbx.SandboxID+"/boost",
+		map[string]any{"cpu_limit": 4, "duration_seconds": 60})
+
+	rec := doRequest(t, env.handler, http.MethodGet,
+		"/v1/sandboxes/"+sbx.SandboxID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"active_boost"`) {
+		t.Fatalf("expected active_boost in body: %s", body)
 	}
 }

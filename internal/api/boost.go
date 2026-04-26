@@ -45,6 +45,16 @@ func boostToResponse(b *domain.Boost) boostResponse {
 
 const timeFormatJSON = "2006-01-02T15:04:05.999999999Z07:00"
 
+func (s *Server) getBoost(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := s.cfg.Boosts.Get(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	respondData(w, http.StatusOK, boostToResponse(b))
+}
+
 func (s *Server) startBoost(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
