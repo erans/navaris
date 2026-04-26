@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -296,8 +295,40 @@ func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
 	return nil
 }
 
+// Recover replays in-flight boosts after a daemon restart. For each
+// BoostActive row: if it's already expired (e.g. the daemon was down past
+// its ExpiresAt), trigger an immediate revert; otherwise schedule a timer
+// for the remaining duration. BoostRevertFailed rows are left alone — they
+// surface via GET and require operator action (DELETE) to clear.
+//
+// Recover should be called once at daemon startup, before the HTTP listener
+// starts, so timers are armed before requests can arrive.
 func (s *BoostService) Recover(ctx context.Context) error {
-	return errors.New("BoostService.Recover: not implemented")
+	rows, err := s.boosts.ListAll(ctx)
+	if err != nil {
+		return fmt.Errorf("list boosts: %w", err)
+	}
+	now := s.clock.Now().UTC()
+	for _, b := range rows {
+		if b.State != domain.BoostActive {
+			// Leave revert_failed (and any future states) alone.
+			continue
+		}
+		boostID := b.BoostID
+		if !now.Before(b.ExpiresAt) {
+			// Already expired; trigger revert immediately. Run in a fresh
+			// goroutine so a slow provider doesn't block daemon startup.
+			go s.expire(context.Background(), boostID)
+			continue
+		}
+		remaining := b.ExpiresAt.Sub(now)
+		s.mu.Lock()
+		s.timers[boostID] = s.clock.AfterFunc(remaining, func() {
+			s.expire(context.Background(), boostID)
+		})
+		s.mu.Unlock()
+	}
+	return nil
 }
 
 // cancelOnLifecycle is called from SandboxService.Stop/Destroy. It drops

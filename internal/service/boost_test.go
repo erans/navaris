@@ -406,3 +406,109 @@ func TestSandboxStop_CancelsBoost(t *testing.T) {
 		t.Fatalf("boost row not removed by Stop hook; got %v", err)
 	}
 }
+
+func TestBoostRecover_RescheduleInWindow(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	// Seed a boost row directly (simulates a row left over from a daemon restart).
+	cpu := 8
+	now := clk.Now().UTC()
+	row := &domain.Boost{
+		BoostID: "bst-x", SandboxID: sbx.SandboxID,
+		BoostedCPULimit: &cpu, StartedAt: now,
+		ExpiresAt: now.Add(60 * time.Second),
+		State:     domain.BoostActive,
+	}
+	if err := env.store.BoostStore().Upsert(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.boost.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Advancing past expiry must trigger the revert.
+	called := false
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		called = true
+		return nil
+	}
+	clk.fire(61 * time.Second)
+	if !called {
+		t.Fatal("recovered boost did not expire on time")
+	}
+}
+
+func TestBoostRecover_AlreadyExpired_RevertsImmediately(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	now := clk.Now().UTC()
+	row := &domain.Boost{
+		BoostID: "bst-x", SandboxID: sbx.SandboxID,
+		BoostedCPULimit: &cpu, StartedAt: now.Add(-10 * time.Minute),
+		ExpiresAt: now.Add(-5 * time.Minute), // already in the past
+		State:     domain.BoostActive,
+	}
+	if err := env.store.BoostStore().Upsert(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+
+	called := make(chan struct{}, 1)
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	if err := env.boost.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired-while-down boost did not revert immediately")
+	}
+}
+
+func TestBoostRecover_RevertFailedLeftAlone(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	now := clk.Now().UTC()
+	row := &domain.Boost{
+		BoostID: "bst-x", SandboxID: sbx.SandboxID,
+		BoostedCPULimit: &cpu, StartedAt: now,
+		ExpiresAt:      now.Add(60 * time.Second),
+		State:          domain.BoostRevertFailed,
+		RevertAttempts: 5,
+		LastError:      "stuck",
+	}
+	if err := env.store.BoostStore().Upsert(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.boost.Recover(t.Context()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Advance past expiry — no revert should fire.
+	called := false
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		called = true
+		return nil
+	}
+	clk.fire(61 * time.Second)
+	if called {
+		t.Fatal("revert_failed boost should not auto-revert on Recover")
+	}
+}
