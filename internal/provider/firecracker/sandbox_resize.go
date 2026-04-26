@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"time"
 
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/navaris/navaris/internal/domain"
@@ -64,6 +66,12 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 // setting amount_mib to the requested value. amountMib of 0 fully deflates
 // the balloon (guest sees full memory); amountMib equal to (ceiling -
 // limit) at boot reserves that delta from the guest.
+//
+// The guest's virtio-balloon driver activates as part of guest userspace
+// init, which can lag a few hundred milliseconds behind the navarisd
+// "running" state transition. PATCH /balloon arriving before activation
+// is rejected with HTTP 400 "Device not activated yet"; we retry with
+// linear backoff for up to ~3s before surfacing the error.
 func (p *Provider) patchBalloon(ctx context.Context, vmID string, amountMib int64) error {
 	var sockPath string
 	if p.config.EnableJailer {
@@ -76,5 +84,24 @@ func (p *Provider) patchBalloon(ctx context.Context, vmID string, amountMib int6
 	if err != nil {
 		return fmt.Errorf("attach to vm: %w", err)
 	}
-	return machine.UpdateBalloon(ctx, amountMib)
+
+	const maxAttempts = 10
+	const retryDelay = 300 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := machine.UpdateBalloon(ctx, amountMib); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !strings.Contains(err.Error(), "not activated") {
+				return err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryDelay):
+		}
+	}
+	return lastErr
 }
