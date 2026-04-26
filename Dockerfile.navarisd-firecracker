@@ -35,6 +35,8 @@ RUN make defconfig && \
     ./scripts/config --set-val CONFIG_VIRTIO_NET y && \
     ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS y && \
     ./scripts/config --set-val CONFIG_VIRTIO_VSOCKETS_COMMON y && \
+    ./scripts/config --set-val CONFIG_MEMORY_BALLOON y && \
+    ./scripts/config --set-val CONFIG_VIRTIO_BALLOON y && \
     ./scripts/config --set-val CONFIG_VSOCKETS y && \
     ./scripts/config --set-val CONFIG_VSOCKETS_DIAG y && \
     ./scripts/config --set-val CONFIG_IP_PNP y && \
