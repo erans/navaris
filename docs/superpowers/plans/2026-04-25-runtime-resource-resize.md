@@ -1799,7 +1799,7 @@ git commit -m "test(integration): runtime resize for Incus and Firecracker"
 
 ---
 
-## Task 15: Web UI — inline Resources panel on the sandbox detail page
+## Task 14: Web UI — inline Resources panel on the sandbox detail page
 
 The spec calls for an inline editable Resources section on the sandbox detail page. The web UI is built in `web/` (TypeScript + React). This task adds a minimal panel that lets the user edit the two limits and apply.
 
@@ -1893,7 +1893,7 @@ git commit -m "feat(web): inline Resources panel on sandbox detail page"
 
 ---
 
-## Task 16: Wire the new event into the WebSocket subscriber map (if needed)
+## Task 15: Wire the new event into the WebSocket subscriber map (if needed)
 
 The `internal/api/events.go` WebSocket handler may filter events by type. Confirm `EventSandboxResourcesUpdated` is forwarded.
 
@@ -1920,7 +1920,7 @@ git commit -m "feat(api): forward sandbox_resources_updated on the events stream
 
 ---
 
-## Task 17: README + docs touch-up
+## Task 16: README + docs touch-up
 
 **Files:**
 - Modify: `README.md`
