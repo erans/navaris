@@ -59,6 +59,7 @@ type config struct {
 	mcpReadOnly                 bool
 	mcpPath                     string
 	mcpMaxTimeout               time.Duration
+	boostMaxDuration            time.Duration
 }
 
 func main() {
@@ -102,6 +103,8 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.mcpReadOnly, "mcp-read-only", false, "hide all mutating tools from the MCP server")
 	flag.StringVar(&cfg.mcpPath, "mcp-path", "/v1/mcp", "path to mount the MCP endpoint at")
 	flag.DurationVar(&cfg.mcpMaxTimeout, "mcp-max-timeout", 10*time.Minute, "cap on per-tool timeout_seconds")
+	flag.DurationVar(&cfg.boostMaxDuration, "boost-max-duration", time.Hour,
+		"maximum duration for a single boost (1m..24h)")
 	flag.Parse()
 	return cfg
 }
@@ -281,6 +284,10 @@ func run(cfg config) error {
 	backendName := reg.Fallback()
 
 	// Services
+	if cfg.boostMaxDuration < time.Minute || cfg.boostMaxDuration > 24*time.Hour {
+		slog.Error("--boost-max-duration must be in [1m, 24h]", "got", cfg.boostMaxDuration)
+		os.Exit(1)
+	}
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
@@ -298,6 +305,16 @@ func run(cfg config) error {
 		store.SessionStore(), store.SandboxStore(), prov, bus,
 	)
 	sbxSvc.SetSessionService(sessSvc)
+	boostSvc := service.NewBoostService(
+		store.BoostStore(), store.SandboxStore(), sbxSvc, bus,
+		service.RealClock{}, cfg.boostMaxDuration,
+	)
+	sbxSvc.SetBoostService(boostSvc)
+
+	if err := boostSvc.Recover(context.Background()); err != nil {
+		slog.Error("boost recover", "error", err)
+		os.Exit(1)
+	}
 	opsSvc := service.NewOperationService(store.OperationStore(), disp)
 
 	// Ensure a default project exists so the UI is usable immediately.
@@ -330,6 +347,7 @@ func run(cfg config) error {
 	srv := api.NewServer(api.ServerConfig{
 		Projects:     projSvc,
 		Sandboxes:    sbxSvc,
+		Boosts:       boostSvc,
 		Snapshots:    snapSvc,
 		Images:       imgSvc,
 		Sessions:     sessSvc,
