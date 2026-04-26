@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -84,5 +85,86 @@ func TestUpdateResources_StoppedSandbox(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("event not received")
+	}
+}
+
+func TestUpdateResources_RunningSandbox_AppliesLive(t *testing.T) {
+	env := newServiceEnv(t)
+	sbx := env.seedSandbox(t, "sbx-running", domain.SandboxRunning, "mock")
+
+	calls := 0
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, _ domain.UpdateResourcesRequest) error {
+		calls++
+		return nil
+	}
+
+	cpu := 2
+	res, err := env.sandbox.UpdateResources(t.Context(), service.UpdateResourcesOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu,
+	})
+	if err != nil {
+		t.Fatalf("UpdateResources: %v", err)
+	}
+	if !res.AppliedLive {
+		t.Fatalf("AppliedLive=false on running sandbox; want true")
+	}
+	if calls != 1 {
+		t.Fatalf("provider.UpdateResources calls = %d; want 1", calls)
+	}
+}
+
+func TestUpdateResources_BothFieldsNil(t *testing.T) {
+	env := newServiceEnv(t)
+	sbx := env.seedSandbox(t, "sbx-bothnil", domain.SandboxStopped, "mock")
+
+	_, err := env.sandbox.UpdateResources(t.Context(), service.UpdateResourcesOpts{SandboxID: sbx.SandboxID})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestUpdateResources_DestroyedSandbox(t *testing.T) {
+	env := newServiceEnv(t)
+	sbx := env.seedSandbox(t, "sbx-destroyed", domain.SandboxDestroyed, "mock")
+
+	cpu := 2
+	_, err := env.sandbox.UpdateResources(t.Context(), service.UpdateResourcesOpts{SandboxID: sbx.SandboxID, CPULimit: &cpu})
+	if !errors.Is(err, domain.ErrInvalidState) {
+		t.Fatalf("err = %v, want ErrInvalidState", err)
+	}
+}
+
+func TestUpdateResources_BoundsViolation(t *testing.T) {
+	env := newServiceEnv(t)
+	sbx := env.seedSandbox(t, "sbx-bounds", domain.SandboxStopped, "firecracker")
+
+	cpu := 99 // out of FC range (max 32)
+	_, err := env.sandbox.UpdateResources(t.Context(), service.UpdateResourcesOpts{SandboxID: sbx.SandboxID, CPULimit: &cpu})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestUpdateResources_ProviderError_RollsBack(t *testing.T) {
+	env := newServiceEnv(t)
+	sbx := env.seedSandbox(t, "sbx-rollback", domain.SandboxRunning, "firecracker")
+	origCPU := *sbx.CPULimit
+
+	wantErr := &domain.ProviderResizeError{Reason: domain.ResizeReasonExceedsCeiling, Detail: "test"}
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		return wantErr
+	}
+
+	cpu := 2
+	_, err := env.sandbox.UpdateResources(t.Context(), service.UpdateResourcesOpts{SandboxID: sbx.SandboxID, CPULimit: &cpu})
+	var prErr *domain.ProviderResizeError
+	if !errors.As(err, &prErr) {
+		t.Fatalf("err = %v, want *ProviderResizeError", err)
+	}
+
+	// SQLite must show the original value, not the requested 2.
+	got, _ := env.store.SandboxStore().Get(t.Context(), sbx.SandboxID)
+	if got.CPULimit == nil || *got.CPULimit != origCPU {
+		t.Fatalf("CPULimit after rollback = %v; want %d (original)", got.CPULimit, origCPU)
 	}
 }
