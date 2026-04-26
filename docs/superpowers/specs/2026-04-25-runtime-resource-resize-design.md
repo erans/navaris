@@ -163,25 +163,20 @@ func (p *Provider) UpdateResources(ctx context.Context, vmID string, req domain.
     }
 
     if req.CPULimit != nil {
-        if !p.supportsCPUHotplug() {
-            return &domain.ProviderResizeError{Reason: "cpu_resize_unsupported_by_backend", Detail: "Firecracker version lacks vCPU hotplug"}
-        }
-        newLimit := int64(*req.CPULimit)
-        if newLimit > info.CeilingCPU {
-            return &domain.ProviderResizeError{Reason: "exceeds_ceiling", Detail: fmt.Sprintf("cpu_limit %d > ceiling %d", newLimit, info.CeilingCPU)}
-        }
-        // FC v1.13+ exposes PATCH /machine-config with the new vcpu_count to hot-plug vCPUs.
-        if err := p.fcClient.PatchMachineConfig(ctx, vmID, fcsdk.MachineConfiguration{VcpuCount: fcsdk.Int64(newLimit)}); err != nil {
-            return fmt.Errorf("hotplug vcpus: %w", err)
-        }
-        info.LimitCPU = newLimit
+        // The pinned firecracker-go-sdk (v1.0.0) does not expose
+        // PatchMachineConfiguration; only PutMachineConfiguration, which is
+        // pre-boot only. There is no path to hot-plug vCPUs on a running VM
+        // from the current SDK. Any CPU change request on a running FC VM is
+        // rejected. CPU resize lands in a follow-up spec that bumps the SDK
+        // (or calls Firecracker's HTTP API directly).
+        return &domain.ProviderResizeError{Reason: "cpu_resize_unsupported_by_backend", Detail: "Firecracker provider in this build does not support live vCPU resize"}
     }
 
     return p.saveVMInfo(vmID, info)
 }
 ```
 
-`supportsCPUHotplug()` is a Firecracker version probe done once at daemon startup and cached on `firecracker.Provider`. The probe shells out to `firecracker --version` and parses semver; v1.13.0+ is the minimum.
+`supportsCPUHotplug()` is removed from this spec — see §3.6 note. The `CeilingCPU` field is still recorded on `VMInfo` for future use; spec #1 just never applies a live CPU change.
 
 ### 3.6 Error reasons
 
@@ -190,8 +185,10 @@ func (p *Provider) UpdateResources(ctx context.Context, vmID string, req domain.
 | Reason                              | HTTP | Meaning                                                      |
 |-------------------------------------|------|--------------------------------------------------------------|
 | `exceeds_ceiling`                   | 409  | Request exceeds boot-time ceiling on Firecracker             |
-| `cpu_resize_unsupported_by_backend` | 409  | FC <1.13: cannot hotplug vCPUs on a running VM               |
+| `cpu_resize_unsupported_by_backend` | 409  | Firecracker SDK in this build cannot hot-plug vCPUs on a running VM |
 | `backend_rejected`                  | 409  | Backend returned an error from the live API call             |
+
+> **CPU resize on running Firecracker VMs is not supported in spec #1.** The pinned `firecracker-go-sdk@v1.0.0` only exposes `PutMachineConfiguration` (pre-boot) — there is no hot-plug method. Memory resize works fully (via `PatchBalloon`). CPU resize on a *stopped* FC sandbox is fine: SQLite is updated and the new value applies on next start. CPU resize on a *running* FC sandbox returns 409 `cpu_resize_unsupported_by_backend`. Spec #1.5 (or whichever spec lands the SDK bump) lifts this restriction.
 
 The API layer (`internal/api/sandbox.go`) maps `*domain.ProviderResizeError` → HTTP 409 with a JSON body:
 
@@ -290,7 +287,7 @@ Sandbox detail page gains an inline "Resources" section with editable CPU / Memo
     - `resolveMachineLimits` with multiplier 1.0 / 2.0 / 4.0
     - clamp to FC max bounds
     - `UpdateResources` rejects above ceiling
-    - `UpdateResources` rejects CPU change when hotplug unsupported (mock the version check)
+    - `UpdateResources` rejects any CPU change on a running FC VM with `cpu_resize_unsupported_by_backend` (CPU resize not supported by current FC SDK)
     - `UpdateResources` rolls back `info.LimitMemMib` on `saveVMInfo` failure (the in-memory `info` struct should not be left in an inconsistent state when persistence fails)
 - `internal/provider/incus/sandbox_resize_test.go`:
     - emits exactly one `incus config set` with both args
@@ -315,17 +312,16 @@ Sandbox detail page gains an inline "Resources" section with editable CPU / Memo
     2. Create VM with `memory_limit_mb=256` → boots at `mem_size_mib=512`, balloon inflated to 256.
     3. PATCH `memory_limit_mb=384` → balloon = 128. Assert via `GET /balloon`.
     4. PATCH `memory_limit_mb=600` → expect 409 `exceeds_ceiling`.
-    5. PATCH `cpu_limit=2` on a single-vCPU VM:
-        - if hotplug supported: 200, FC reports 2 online vCPUs.
-        - if not supported: 409 `cpu_resize_unsupported_by_backend`.
+    5. PATCH `cpu_limit=2` on a running FC VM: 409 `cpu_resize_unsupported_by_backend` (deferred to a future spec).
+    6. PATCH `cpu_limit=2` on a *stopped* FC sandbox: 200 `applied_live=false`. Start it; FC reports the new vcpu count.
 
 ## 5. Open Questions
 
-None at the time of writing. The CPU-on-old-Firecracker policy was decided in brainstorming: **reject with 409 `cpu_resize_unsupported_by_backend`**, do not silently bypass enforcement.
+None at the time of writing. CPU live-resize on Firecracker is deferred to a follow-up spec that bumps the SDK or calls FC's HTTP API directly (see §3.6).
 
 ## 6. Migration / Compatibility
 
-- Existing sandboxes (booted before this change): VMInfo lacks `CeilingCPU` / `CeilingMemMib`. The resize path treats `ceiling = MemSizeMib` (i.e. the boot value) — so memory can shrink but not grow, and CPU can change only if hotplug is supported and `new_limit <= VcpuCount`.
+- Existing sandboxes (booted before this change): VMInfo lacks `CeilingCPU` / `CeilingMemMib`. The resize path treats `ceiling = MemSizeMib` (i.e. the boot value) — so memory can shrink but not grow. CPU on a running FC VM is rejected as in §3.6 regardless.
 - No SQLite schema change. The existing `cpu_limit` and `memory_limit_mb` columns are reused.
 - API additions are pure-additive (new endpoint, new event type). No client breakage.
 - The `--firecracker-*-headroom-mult` flags default to `2.0` — meaning **fresh installs / restarts apply 2x headroom by default**. This roughly doubles the per-VM `mem_size_mib` reservation on Firecracker. Operators with tight host memory should set both to `1.0` to preserve the prior allocation behavior. This is called out in the changelog and the daemon `--help` text.
