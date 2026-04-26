@@ -186,6 +186,11 @@ func (s *Server) listSandboxes(w http.ResponseWriter, r *http.Request) {
 	respondList(w, http.StatusOK, sandboxes)
 }
 
+type sandboxResponse struct {
+	*domain.Sandbox
+	ActiveBoost *boostResponse `json:"active_boost,omitempty"`
+}
+
 func (s *Server) getSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sbx, err := s.cfg.Sandboxes.Get(r.Context(), id)
@@ -193,7 +198,17 @@ func (s *Server) getSandbox(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
-	respondData(w, http.StatusOK, sbx)
+	resp := sandboxResponse{Sandbox: sbx}
+	if s.cfg.Boosts != nil {
+		if b, err := s.cfg.Boosts.Get(r.Context(), id); err == nil {
+			br := boostToResponse(b)
+			resp.ActiveBoost = &br
+		}
+		// On any other error (e.g., transient store error), omit the field
+		// rather than failing the whole GET. ErrNotFound is the common case
+		// and is silently ignored above.
+	}
+	respondData(w, http.StatusOK, resp)
 }
 
 func (s *Server) startSandbox(w http.ResponseWriter, r *http.Request) {

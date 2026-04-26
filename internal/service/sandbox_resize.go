@@ -14,6 +14,12 @@ type UpdateResourcesOpts struct {
 	SandboxID     string
 	CPULimit      *int
 	MemoryLimitMB *int
+	// ApplyLiveOnly skips the SQLite persistence step. The provider is
+	// still called when the sandbox is running. Used by the boost path,
+	// where the boosted limits are a transient overlay and the persisted
+	// columns must continue to track the user's steady-state intent.
+	// See docs/superpowers/specs/2026-04-26-sandbox-boost-design.md §3.7.
+	ApplyLiveOnly bool
 }
 
 // UpdateResourcesResult is what UpdateResources returns on success.
@@ -62,8 +68,10 @@ func (s *SandboxService) UpdateResources(ctx context.Context, opts UpdateResourc
 	}
 	sbx.UpdatedAt = time.Now().UTC()
 
-	if err := s.sandboxes.Update(ctx, sbx); err != nil {
-		return nil, fmt.Errorf("persist resize: %w", err)
+	if !opts.ApplyLiveOnly {
+		if err := s.sandboxes.Update(ctx, sbx); err != nil {
+			return nil, fmt.Errorf("persist resize: %w", err)
+		}
 	}
 
 	appliedLive := false
@@ -75,10 +83,12 @@ func (s *SandboxService) UpdateResources(ctx context.Context, opts UpdateResourc
 		if err := s.provider.UpdateResources(ctx, domain.BackendRef{Backend: sbx.Backend, Ref: sbx.BackendRef}, req); err != nil {
 			// Roll back persisted limits on provider failure so DB state stays
 			// consistent with the running VM.
-			sbx.CPULimit = prevCPU
-			sbx.MemoryLimitMB = prevMem
-			if rbErr := s.sandboxes.Update(ctx, sbx); rbErr != nil {
-				return nil, fmt.Errorf("provider resize failed: %v; rollback also failed: %w", err, rbErr)
+			if !opts.ApplyLiveOnly {
+				sbx.CPULimit = prevCPU
+				sbx.MemoryLimitMB = prevMem
+				if rbErr := s.sandboxes.Update(ctx, sbx); rbErr != nil {
+					return nil, fmt.Errorf("provider resize failed: %v; rollback also failed: %w", err, rbErr)
+				}
 			}
 			var prErr *domain.ProviderResizeError
 			if errors.As(err, &prErr) {

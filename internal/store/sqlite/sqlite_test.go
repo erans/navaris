@@ -37,7 +37,7 @@ func TestOpen(t *testing.T) {
 		rows.Scan(&name)
 		tables = append(tables, name)
 	}
-	expected := []string{"base_images", "operations", "port_bindings", "projects", "sandboxes", "schema_migrations", "sessions", "snapshots"}
+	expected := []string{"base_images", "boosts", "operations", "port_bindings", "projects", "sandboxes", "schema_migrations", "sessions", "snapshots"}
 	if len(tables) != len(expected) {
 		t.Fatalf("expected %d tables, got %d: %v", len(expected), len(tables), tables)
 	}

@@ -7,6 +7,9 @@ type EventType string
 const (
 	EventSandboxStateChanged     EventType = "sandbox_state_changed"
 	EventSandboxResourcesUpdated EventType = "sandbox_resources_updated"
+	EventBoostStarted            EventType = "sandbox_boost_started"
+	EventBoostExpired            EventType = "sandbox_boost_expired"
+	EventBoostRevertFailed       EventType = "sandbox_boost_revert_failed"
 	EventSnapshotStateChanged    EventType = "snapshot_state_changed"
 	EventImageStateChanged       EventType = "image_state_changed"
 	EventSessionStateChanged     EventType = "session_state_changed"

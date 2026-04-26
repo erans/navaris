@@ -168,3 +168,37 @@ func TestUpdateResources_ProviderError_RollsBack(t *testing.T) {
 		t.Fatalf("CPULimit after rollback = %v; want %d (original)", got.CPULimit, origCPU)
 	}
 }
+
+func TestUpdateResources_ApplyLiveOnly_SkipsPersist(t *testing.T) {
+	env := newServiceEnv(t)
+	sbx := env.seedSandbox(t, "sbx-live-only", domain.SandboxRunning, "mock")
+	origCPU := *sbx.CPULimit
+
+	calls := 0
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, _ domain.UpdateResourcesRequest) error {
+		calls++
+		return nil
+	}
+
+	cpu := 4
+	res, err := env.sandbox.UpdateResources(t.Context(), service.UpdateResourcesOpts{
+		SandboxID:     sbx.SandboxID,
+		CPULimit:      &cpu,
+		ApplyLiveOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateResources: %v", err)
+	}
+	if !res.AppliedLive {
+		t.Fatalf("AppliedLive=false; want true on running sandbox")
+	}
+	if calls != 1 {
+		t.Fatalf("provider.UpdateResources calls = %d; want 1", calls)
+	}
+
+	// SQLite must show the ORIGINAL cpu, not 4.
+	got, _ := env.store.SandboxStore().Get(t.Context(), sbx.SandboxID)
+	if got.CPULimit == nil || *got.CPULimit != origCPU {
+		t.Fatalf("CPULimit after ApplyLiveOnly = %v; want %d (unchanged)", got.CPULimit, origCPU)
+	}
+}

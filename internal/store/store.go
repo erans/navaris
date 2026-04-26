@@ -10,5 +10,6 @@ type Store interface {
 	ImageStore() domain.ImageStore
 	OperationStore() domain.OperationStore
 	PortBindingStore() domain.PortBindingStore
+	BoostStore() domain.BoostStore
 	Close() error
 }

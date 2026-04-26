@@ -27,6 +27,22 @@ export interface Project {
   Metadata: Record<string, unknown> | null;
 }
 
+// ActiveBoost mirrors the boostResponse Go struct in internal/api/boost.go.
+// That struct declares json tags, so wire field names are snake_case.
+export interface ActiveBoost {
+  boost_id: string;
+  sandbox_id: string;
+  original_cpu_limit: number | null;
+  original_memory_limit_mb: number | null;
+  boosted_cpu_limit: number | null;
+  boosted_memory_limit_mb: number | null;
+  started_at: string;
+  expires_at: string;
+  state: "active" | "revert_failed";
+  revert_attempts?: number;
+  last_error?: string;
+}
+
 export interface Sandbox {
   SandboxID: string;
   ProjectID: string;
@@ -44,6 +60,10 @@ export interface Sandbox {
   MemoryLimitMB: number | null;
   NetworkMode: NetworkMode | "";
   Metadata: Record<string, unknown> | null;
+  // active_boost is snake_case because the backend serialises the embedded
+  // boostResponse with a json:"active_boost" tag (unlike the base Sandbox
+  // fields which have no tags and therefore serialise as PascalCase).
+  active_boost?: ActiveBoost;
 }
 
 // ListResponse is the envelope returned by endpoints like GET /v1/projects and
@@ -73,6 +93,10 @@ export interface Session {
 // values must be added in lockstep with internal/domain/event.go.
 export type EventType =
   | "sandbox_state_changed"
+  | "sandbox_resources_updated"
+  | "sandbox_boost_started"
+  | "sandbox_boost_expired"
+  | "sandbox_boost_revert_failed"
   | "snapshot_state_changed"
   | "image_state_changed"
   | "session_state_changed"

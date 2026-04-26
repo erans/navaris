@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/navaris/navaris/internal/api"
 	"github.com/navaris/navaris/internal/eventbus"
@@ -32,6 +33,7 @@ type testEnv struct {
 	images     *service.ImageService
 	sessions   *service.SessionService
 	operations *service.OperationService
+	boost      *service.BoostService
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -66,6 +68,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		s.SessionStore(), s.SandboxStore(), mock, bus,
 	)
 	sbxSvc.SetSessionService(sessSvc)
+	boostSvc := service.NewBoostService(
+		s.BoostStore(), s.SandboxStore(), sbxSvc, bus, service.RealClock{}, time.Hour,
+	)
+	sbxSvc.SetBoostService(boostSvc)
 	opsSvc := service.NewOperationService(s.OperationStore(), disp)
 
 	srv := api.NewServer(api.ServerConfig{
@@ -75,6 +81,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Images:     imgSvc,
 		Sessions:   sessSvc,
 		Operations: opsSvc,
+		Boosts:     boostSvc,
 		Provider:   mock,
 		Events:     bus,
 		Ports:      s.PortBindingStore(),
@@ -93,6 +100,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		images:     imgSvc,
 		sessions:   sessSvc,
 		operations: opsSvc,
+		boost:      boostSvc,
 	}
 }
 
