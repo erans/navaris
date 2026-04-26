@@ -18,6 +18,7 @@ type ServerConfig struct {
 	Images       *service.ImageService
 	Sessions     *service.SessionService
 	Operations   *service.OperationService
+	Boosts       *service.BoostService
 	Provider     domain.Provider
 	Events       domain.EventBus
 	Ports        domain.PortBindingStore
@@ -65,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/sandboxes/{id}/destroy", s.destroySandbox)
 	api.HandleFunc("POST /v1/sandboxes/{id}/fork", s.forkSandbox)
 	api.HandleFunc("PATCH /v1/sandboxes/{id}/resources", s.updateSandboxResources)
+	api.HandleFunc("POST /v1/sandboxes/{id}/boost", s.startBoost)
 
 	api.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
 	api.HandleFunc("GET /v1/sandboxes/{id}/snapshots", s.listSnapshots)
