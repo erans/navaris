@@ -102,5 +102,114 @@ func TestBoostStart_HappyPath(t *testing.T) {
 		t.Fatal("EventBoostStarted not received")
 	}
 
-	_ = errors.New
+}
+
+func TestBoostStart_StoppedSandbox_409(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx-stopped", domain.SandboxStopped, "mock")
+	cpu := 4
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	})
+	if !errors.Is(err, domain.ErrInvalidState) {
+		t.Fatalf("err = %v, want ErrInvalidState", err)
+	}
+}
+
+func TestBoostStart_BothFieldsNil_400(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, DurationSeconds: 60,
+	})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestBoostStart_DurationZero_400(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+	cpu := 4
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 0,
+	})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestBoostStart_DurationOverMax_400(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+	cpu := 4
+	// max from newBoostEnv = 1h = 3600s
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 3601,
+	})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestBoostStart_BoundsViolation_400(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "firecracker")
+	cpu := 99 // FC max is 32
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestBoostStart_ProviderError_RollsBack(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "firecracker")
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		return &domain.ProviderResizeError{Reason: domain.ResizeReasonExceedsCeiling, Detail: "test"}
+	}
+
+	cpu := 4
+	_, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+	})
+	var prErr *domain.ProviderResizeError
+	if !errors.As(err, &prErr) {
+		t.Fatalf("err = %v, want *ProviderResizeError", err)
+	}
+
+	// Boost row must NOT exist (rolled back).
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row not rolled back; got %v", err)
+	}
+}
+
+func TestBoostStart_ReplacesExisting(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	cpu1 := 4
+	first, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu1, DurationSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cpu2 := 8
+	second, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu2, DurationSeconds: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BoostID == second.BoostID {
+		t.Fatalf("expected new boost id; got same %s", first.BoostID)
+	}
+	got, _ := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if got.BoostID != second.BoostID {
+		t.Fatalf("store has %s, want %s", got.BoostID, second.BoostID)
+	}
 }
