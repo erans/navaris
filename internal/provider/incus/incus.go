@@ -5,6 +5,7 @@ package incus
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -39,6 +40,10 @@ type Config struct {
 	// configured Incus pool's driver is not CoW-capable. When false (default),
 	// such pools produce a warning log only.
 	StrictPoolCoW bool
+
+	// BoostChannelDir is the host directory where per-sandbox boost-channel UDS
+	// files live. Empty disables the in-sandbox boost channel for Incus sandboxes.
+	BoostChannelDir string
 }
 
 func (c *Config) defaults() {
@@ -56,6 +61,12 @@ func (c *Config) defaults() {
 	}
 }
 
+// boostServer is the interface the boost-channel handler must implement.
+// Serve is called once per accepted connection.
+type boostServer interface {
+	Serve(ctx context.Context, conn net.Conn, sandboxID string)
+}
+
 // IncusProvider implements domain.Provider backed by an Incus instance server.
 type IncusProvider struct {
 	client incusclient.InstanceServer
@@ -64,6 +75,10 @@ type IncusProvider struct {
 	// portMu guards nextPort to avoid races when allocating host ports.
 	portMu   sync.Mutex
 	nextPort int
+
+	boostHandler   boostServer
+	boostListeners map[string]*incusBoostListener // keyed by Incus container name (BackendRef)
+	boostMu        sync.Mutex
 }
 
 // Verify interface compliance at compile time.
@@ -91,9 +106,10 @@ func New(cfg Config) (*IncusProvider, error) {
 	}
 
 	p := &IncusProvider{
-		client:   client,
-		config:   cfg,
-		nextPort: cfg.PortRangeMin,
+		client:         client,
+		config:         cfg,
+		nextPort:       cfg.PortRangeMin,
+		boostListeners: make(map[string]*incusBoostListener),
 	}
 
 	telemetry.RegisterSandboxCountGauge(backendName, func() map[string]int64 {
@@ -116,6 +132,12 @@ func New(cfg Config) (*IncusProvider, error) {
 	})
 
 	return p, nil
+}
+
+// SetBoostHandler registers h as the handler for incoming boost connections.
+// Must be called before any sandbox is created with EnableBoostChannel=true.
+func (p *IncusProvider) SetBoostHandler(h boostServer) {
+	p.boostHandler = h
 }
 
 // Health reports whether the Incus daemon is reachable and responsive.
