@@ -1,0 +1,23 @@
+services:
+  navarisd:
+    command:
+      - --listen=:8080
+      - --db-path=/tmp/navaris.db
+      - --firecracker-bin=/usr/local/bin/firecracker
+      - --jailer-bin=/usr/local/bin/jailer
+      - --kernel-path=/opt/firecracker/vmlinux
+      - --image-dir=/opt/firecracker/images
+      - --chroot-base=/srv/firecracker
+      - --snapshot-dir=/srv/firecracker/snapshots
+      - --enable-jailer=false
+      - --auth-token=test-token
+      - --log-level=debug
+      - --firecracker-mem-headroom-mult=2.0
+
+  navarisd-dev:
+    extends:
+      service: navarisd
+    ports:
+      - "${NAVARIS_HOST_PORT:-8080}:8080"
+    profiles:
+      - dev
