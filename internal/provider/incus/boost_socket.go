@@ -84,6 +84,22 @@ func (p *IncusProvider) startBoostChannel(ctx context.Context, name string, sand
 	return nil
 }
 
+// RestartBoostChannel removes any stale "navaris-boost" device left over from
+// a prior daemon process (the host UDS source is gone after a restart, so the
+// device's source path is dangling) and then re-runs startBoostChannel to
+// create a fresh UDS + add a fresh device.
+func (p *IncusProvider) RestartBoostChannel(ctx context.Context, containerName, sandboxID string) error {
+	if inst, etag, err := p.client.GetInstance(containerName); err == nil {
+		if _, has := inst.Devices[boostDeviceName]; has {
+			delete(inst.Devices, boostDeviceName)
+			if op, err := p.client.UpdateInstance(containerName, inst.Writable(), etag); err == nil {
+				_ = op.WaitContext(ctx)
+			}
+		}
+	}
+	return p.startBoostChannel(ctx, containerName, sandboxID)
+}
+
 func (p *IncusProvider) stopBoostChannel(name string) {
 	p.boostMu.Lock()
 	bl, ok := p.boostListeners[name]

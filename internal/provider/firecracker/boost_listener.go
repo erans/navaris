@@ -74,6 +74,34 @@ func (bl *boostListener) acceptLoop(ctx context.Context, handler provider.BoostS
 	}
 }
 
+// RestartBoostListeners walks the provider's known VMs and starts a boost
+// listener for each live VM whose vminfo has EnableBoostChannel=true.
+// Call this from the daemon entrypoint after SetBoostHandler is wired —
+// recover() runs before the boost handler is set, so we replay here.
+func (p *Provider) RestartBoostListeners(ctx context.Context) {
+	if p.boostHandler == nil {
+		return
+	}
+	p.vmMu.RLock()
+	candidates := make([]*VMInfo, 0, len(p.vms))
+	for _, info := range p.vms {
+		candidates = append(candidates, info)
+	}
+	p.vmMu.RUnlock()
+
+	for _, info := range candidates {
+		if !info.EnableBoostChannel || info.SandboxID == "" {
+			continue
+		}
+		if info.PID <= 0 || !processAlive(info.PID) {
+			continue
+		}
+		if err := p.startBoostListener(ctx, info.ID); err != nil {
+			slog.Warn("firecracker: replay boost listener", "vm", info.ID, "err", err)
+		}
+	}
+}
+
 func (p *Provider) boostUDSPath(vmID string) string {
 	if p.config.EnableJailer {
 		return filepath.Join(p.vmDir(vmID), "root", "vsock_1025")

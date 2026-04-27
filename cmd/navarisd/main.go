@@ -341,6 +341,39 @@ func run(cfg config) error {
 		slog.Error("boost recover", "error", err)
 		os.Exit(1)
 	}
+
+	// Replay boost listeners/channels for sandboxes that survived the previous
+	// daemon process. FC walks its in-memory vminfo; Incus walks the SandboxStore
+	// because incus state lives in incusd, not in our process.
+	type boostListenerRestarter interface {
+		RestartBoostListeners(context.Context)
+	}
+	type boostChannelRestarter interface {
+		RestartBoostChannel(context.Context, string, string) error
+	}
+	replayCtx := context.Background()
+	for _, p := range builtProviders {
+		if r, ok := p.(boostListenerRestarter); ok {
+			r.RestartBoostListeners(replayCtx)
+		}
+		if r, ok := p.(boostChannelRestarter); ok {
+			// For Incus: list running incus sandboxes from the store and replay each.
+			backend := "incus"
+			sandboxes, err := store.SandboxStore().List(replayCtx, domain.SandboxFilter{Backend: &backend})
+			if err != nil {
+				slog.Warn("incus: list sandboxes for boost-channel replay", "err", err)
+				continue
+			}
+			for _, sbx := range sandboxes {
+				if sbx.State != domain.SandboxRunning || !sbx.EnableBoostChannel {
+					continue
+				}
+				if err := r.RestartBoostChannel(replayCtx, sbx.BackendRef, sbx.SandboxID); err != nil {
+					slog.Warn("incus: replay boost channel", "sandbox", sbx.SandboxID, "err", err)
+				}
+			}
+		}
+	}
 	opsSvc := service.NewOperationService(store.OperationStore(), disp)
 
 	// Ensure a default project exists so the UI is usable immediately.
