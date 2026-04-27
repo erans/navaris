@@ -21,6 +21,7 @@ type Boost struct {
 	StartedAt             string `json:"started_at"`
 	ExpiresAt             string `json:"expires_at"`
 	State                 string `json:"state"`
+	Source                string `json:"source,omitempty"`
 	RevertAttempts        int    `json:"revert_attempts,omitempty"`
 	LastError             string `json:"last_error,omitempty"`
 }

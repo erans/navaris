@@ -21,11 +21,15 @@ func (s *Store) BoostStore() domain.BoostStore {
 }
 
 func (bs *boostStore) Upsert(ctx context.Context, b *domain.Boost) error {
+	source := b.Source
+	if source == "" {
+		source = "external"
+	}
 	_, err := bs.writeDB.ExecContext(ctx, `INSERT INTO boosts
 		(boost_id, sandbox_id, original_cpu_limit, original_memory_limit_mb,
 		 boosted_cpu_limit, boosted_memory_limit_mb,
-		 started_at, expires_at, state, revert_attempts, last_error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 started_at, expires_at, state, revert_attempts, last_error, source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(sandbox_id) DO UPDATE SET
 			boost_id=excluded.boost_id,
 			original_cpu_limit=excluded.original_cpu_limit,
@@ -36,13 +40,14 @@ func (bs *boostStore) Upsert(ctx context.Context, b *domain.Boost) error {
 			expires_at=excluded.expires_at,
 			state=excluded.state,
 			revert_attempts=excluded.revert_attempts,
-			last_error=excluded.last_error`,
+			last_error=excluded.last_error,
+			source=excluded.source`,
 		b.BoostID, b.SandboxID,
 		nullInt(b.OriginalCPULimit), nullInt(b.OriginalMemoryLimitMB),
 		nullInt(b.BoostedCPULimit), nullInt(b.BoostedMemoryLimitMB),
 		b.StartedAt.Format(time.RFC3339Nano),
 		b.ExpiresAt.Format(time.RFC3339Nano),
-		string(b.State), b.RevertAttempts, b.LastError)
+		string(b.State), b.RevertAttempts, b.LastError, source)
 	return mapError(err)
 }
 
@@ -94,7 +99,7 @@ func (bs *boostStore) ListAll(ctx context.Context) ([]*domain.Boost, error) {
 const boostSelect = `SELECT boost_id, sandbox_id,
 	original_cpu_limit, original_memory_limit_mb,
 	boosted_cpu_limit, boosted_memory_limit_mb,
-	started_at, expires_at, state, revert_attempts, last_error
+	started_at, expires_at, state, revert_attempts, last_error, source
 	FROM boosts`
 
 type boostScannable interface {
@@ -120,10 +125,11 @@ func scanBoostFrom(s boostScannable) (*domain.Boost, error) {
 		expires string
 		state   string
 		lastErr sql.NullString
+		source  string
 	)
 	err := s.Scan(&b.BoostID, &b.SandboxID,
 		&origCPU, &origMem, &bstCPU, &bstMem,
-		&started, &expires, &state, &b.RevertAttempts, &lastErr)
+		&started, &expires, &state, &b.RevertAttempts, &lastErr, &source)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -153,6 +159,7 @@ func scanBoostFrom(s boostScannable) (*domain.Boost, error) {
 		b.ExpiresAt = t
 	}
 	b.State = domain.BoostState(state)
+	b.Source = source
 	if lastErr.Valid {
 		b.LastError = lastErr.String
 	}

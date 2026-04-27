@@ -115,6 +115,7 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		StartedAt:             now,
 		ExpiresAt:             now.Add(dur),
 		State:                 domain.BoostActive,
+		Source:                source,
 	}
 	if err := s.boosts.Upsert(ctx, boost); err != nil {
 		return nil, fmt.Errorf("persist boost: %w", err)

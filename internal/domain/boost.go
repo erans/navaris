@@ -35,6 +35,7 @@ type Boost struct {
 	StartedAt             time.Time
 	ExpiresAt             time.Time
 	State                 BoostState
+	Source                string // "external" (operator API) or "in_sandbox" (boost channel)
 	RevertAttempts        int
 	LastError             string
 }
