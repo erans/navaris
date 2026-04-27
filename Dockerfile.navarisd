@@ -53,7 +53,7 @@ RUN cp vmlinux /vmlinux
 # ---- Stage 3a: Build Alpine rootfs ext4 image ----
 FROM alpine:3.21 AS rootfs-alpine
 
-RUN apk add --no-cache openrc e2fsprogs fuse3 bash tmux
+RUN apk add --no-cache openrc e2fsprogs fuse3 bash tmux curl
 COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
 
 RUN printf '#!/sbin/openrc-run\nname="navaris-agent"\ndescription="Navaris guest agent"\ncommand="/usr/local/bin/navaris-agent"\ncommand_background="yes"\npidfile="/run/navaris-agent.pid"\noutput_log="/dev/console"\nerror_log="/dev/console"\n' \
@@ -94,7 +94,7 @@ RUN mkdir /staging && \
 FROM debian:12-slim AS rootfs-debian
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        systemd systemd-sysv e2fsprogs fuse3 bash tmux \
+        systemd systemd-sysv e2fsprogs fuse3 bash tmux curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /navaris-agent /usr/local/bin/navaris-agent

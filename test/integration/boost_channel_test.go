@@ -103,14 +103,25 @@ func TestBoostChannel_FC_OptOut(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
+	// On FC the navaris-agent always runs inside the guest and unconditionally
+	// listens on /var/run/navaris-guest.sock as an HTTP→vsock proxy. With
+	// EnableBoostChannel=false, the host-side vsock_1025 listener is not
+	// created, so the proxy's vsock.Dial(2, 1025) fails and the proxy writes
+	// HTTP/1.1 502. That's the behavioral indicator that opt-out works.
 	exec, err := c.Exec(ctx, sandboxID, client.ExecRequest{
-		Command: []string{"test", "-e", "/var/run/navaris-guest.sock"},
+		Command: []string{"sh", "-c",
+			`curl --unix-socket /var/run/navaris-guest.sock -sS -o /dev/null -w '%{http_code}' ` +
+				`-X POST http://_/boost -H 'Content-Type: application/json' ` +
+				`-d '{"memory_limit_mb":192,"duration_seconds":3}'`},
 	})
 	if err != nil {
-		t.Fatalf("exec: %v", err)
+		t.Fatalf("exec curl: %v", err)
 	}
-	if exec.ExitCode == 0 {
-		t.Fatal("/var/run/navaris-guest.sock should not exist when opt-out")
+	// curl prints the status code on stdout. Expect 502 (Bad Gateway from the
+	// guest-side proxy), or — if curl couldn't connect at all — a non-zero
+	// exit. Either way: not 200.
+	if exec.ExitCode == 0 && strings.Contains(exec.Stdout, "200") {
+		t.Fatalf("opt-out should not allow boost; got HTTP %s", exec.Stdout)
 	}
 }
 
