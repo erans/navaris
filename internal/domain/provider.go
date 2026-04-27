@@ -72,6 +72,8 @@ const (
 	ResizeReasonExceedsCeiling          = "exceeds_ceiling"
 	ResizeReasonCPUUnsupportedByBackend = "cpu_resize_unsupported_by_backend"
 	ResizeReasonBackendRejected         = "backend_rejected"
+	ResizeReasonCgroupUnavailable       = "cgroup_unavailable"
+	ResizeReasonCgroupWriteFailed       = "cgroup_write_failed"
 )
 
 type ExecHandle struct {
