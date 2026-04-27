@@ -143,6 +143,8 @@ Skipped if `mem_headroom_mult == 1.0` and `vcpu_headroom_mult == 1.0` (degenerat
 
 ### 3.5 Firecracker `UpdateResources`
 
+> **Update (2026-04-27):** the CPU-rejection branch shown below was replaced by live cgroup-based enforcement in [2026-04-27-firecracker-live-cpu-resize-design.md](2026-04-27-firecracker-live-cpu-resize-design.md). FC CPU is enforced via cgroup CPU bandwidth (`cpu.max` v2 / `cpu.cfs_quota_us` v1), not vCPU hot-plug. The `cpu_resize_unsupported_by_backend` reason is retained but no longer emitted by the FC provider.
+
 ```go
 func (p *Provider) UpdateResources(ctx context.Context, vmID string, req domain.UpdateResourcesRequest) error {
     info, err := p.loadVMInfo(vmID)
