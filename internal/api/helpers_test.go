@@ -54,7 +54,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	projSvc := service.NewProjectService(s.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		s.SandboxStore(), s.SnapshotStore(), s.OperationStore(), s.PortBindingStore(),
-		s.SessionStore(), mock, bus, disp, "mock",
+		s.SessionStore(), mock, bus, disp, "mock", false,
 	)
 	snapSvc := service.NewSnapshotService(
 		s.SnapshotStore(), s.SandboxStore(), s.OperationStore(),

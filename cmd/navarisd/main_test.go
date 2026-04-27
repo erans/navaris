@@ -40,7 +40,7 @@ func TestDaemonStartsAndServesHealth(t *testing.T) {
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), prov, bus, disp, "mock",
+		store.SessionStore(), prov, bus, disp, "mock", false,
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),
@@ -214,7 +214,7 @@ func TestWildcardListenMCPEndToEnd(t *testing.T) {
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(),
-		store.PortBindingStore(), store.SessionStore(), mock, bus, disp, "mock",
+		store.PortBindingStore(), store.SessionStore(), mock, bus, disp, "mock", false,
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),

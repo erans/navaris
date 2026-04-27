@@ -291,7 +291,7 @@ func run(cfg config) error {
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), prov, bus, disp, backendName,
+		store.SessionStore(), prov, bus, disp, backendName, false,
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),
