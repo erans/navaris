@@ -13,6 +13,7 @@ func register(s *mcpsdk.Server, opts Options) {
 	registerSnapshotReadTools(s, opts)
 	registerImageTools(s, opts)
 	registerOperationReadTools(s, opts)
+	registerBoostReadTools(s, opts)
 
 	if opts.ReadOnly {
 		return
@@ -22,4 +23,5 @@ func register(s *mcpsdk.Server, opts Options) {
 	registerSessionMutatingTools(s, opts)
 	registerSnapshotMutatingTools(s, opts)
 	registerOperationMutatingTools(s, opts)
+	registerBoostMutatingTools(s, opts)
 }

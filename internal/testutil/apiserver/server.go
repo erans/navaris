@@ -85,6 +85,10 @@ func New(t *testing.T, opts ...Option) (string, *worker.Dispatcher, *provider.Mo
 	sessSvc := service.NewSessionService(
 		store.SessionStore(), store.SandboxStore(), mock, bus,
 	)
+	boostSvc := service.NewBoostService(
+		store.BoostStore(), store.SandboxStore(), sbxSvc, bus, service.RealClock{}, time.Hour,
+	)
+	sbxSvc.SetBoostService(boostSvc)
 	opsSvc := service.NewOperationService(store.OperationStore(), disp)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -99,6 +103,7 @@ func New(t *testing.T, opts ...Option) (string, *worker.Dispatcher, *provider.Mo
 		Images:     imgSvc,
 		Sessions:   sessSvc,
 		Operations: opsSvc,
+		Boosts:     boostSvc,
 		Provider:   mock,
 		Events:     bus,
 		Ports:      store.PortBindingStore(),
