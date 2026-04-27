@@ -49,6 +49,7 @@ type StartBoostOpts struct {
 	CPULimit        *int
 	MemoryLimitMB   *int
 	DurationSeconds int
+	Source          string // "external" (operator API) or "in_sandbox" (boost channel); empty defaults to "external"
 }
 
 // Get returns the active or revert_failed boost for a sandbox, or

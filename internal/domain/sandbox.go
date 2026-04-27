@@ -49,22 +49,23 @@ const (
 )
 
 type Sandbox struct {
-	SandboxID        string
-	ProjectID        string
-	Name             string
-	State            SandboxState
-	Backend          string
-	BackendRef       string
-	HostID           string
-	SourceImageID    string
-	ParentSnapshotID string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	ExpiresAt        *time.Time
-	CPULimit         *int
-	MemoryLimitMB    *int
-	NetworkMode      NetworkMode
-	Metadata         map[string]any
+	SandboxID          string
+	ProjectID          string
+	Name               string
+	State              SandboxState
+	Backend            string
+	BackendRef         string
+	HostID             string
+	SourceImageID      string
+	ParentSnapshotID   string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	ExpiresAt          *time.Time
+	CPULimit           *int
+	MemoryLimitMB      *int
+	NetworkMode        NetworkMode
+	EnableBoostChannel bool
+	Metadata           map[string]any
 }
 
 type SandboxFilter struct {

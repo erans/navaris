@@ -11,13 +11,15 @@ type BackendRef struct {
 }
 
 type CreateSandboxRequest struct {
-	Name          string
-	ImageRef      string
-	Backend       string
-	CPULimit      *int
-	MemoryLimitMB *int
-	NetworkMode   NetworkMode
-	Metadata      map[string]any
+	Name               string
+	ImageRef           string
+	Backend            string
+	CPULimit           *int
+	MemoryLimitMB      *int
+	NetworkMode        NetworkMode
+	EnableBoostChannel *bool  // nil = caller did not specify; service materializes to daemon flag value
+	SandboxID          string // navaris-side sandbox UUID; service layer fills this in. Provider uses it as the boost-channel identity (vs. BackendRef which is the FC vmID / Incus container name).
+	Metadata           map[string]any
 }
 
 type ExecRequest struct {
