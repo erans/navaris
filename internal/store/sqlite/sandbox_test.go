@@ -160,3 +160,47 @@ func TestSandboxDuplicateName(t *testing.T) {
 		t.Errorf("expected ErrConflict, got %v", err)
 	}
 }
+
+func newTestSandboxFixture(projectID, name string) *domain.Sandbox {
+	return &domain.Sandbox{
+		SandboxID:   uuid.NewString(),
+		ProjectID:   projectID,
+		Name:        name,
+		State:       domain.SandboxPending,
+		Backend:     "incus",
+		NetworkMode: domain.NetworkIsolated,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+}
+
+func TestSandboxStore_EnableBoostChannel_Roundtrip(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.SandboxStore()
+	ctx := t.Context()
+	proj := createTestProject(t, s)
+
+	cases := []struct {
+		name    string
+		enabled bool
+	}{
+		{"enabled", true},
+		{"disabled", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sbx := newTestSandboxFixture(proj.ProjectID, tc.name)
+			sbx.EnableBoostChannel = tc.enabled
+			if err := ss.Create(ctx, sbx); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ss.Get(ctx, sbx.SandboxID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.EnableBoostChannel != tc.enabled {
+				t.Errorf("enable_boost_channel = %v; want %v", got.EnableBoostChannel, tc.enabled)
+			}
+		})
+	}
+}
