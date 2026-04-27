@@ -229,3 +229,30 @@ e2e-local:
 	fi
 	NAVARIS_E2E_LOCAL=1 NAVARIS_TOKEN=$${NAVARIS_TOKEN:-test-token} \
 		go test -tags integration -v -run 'TestBoost_E2E_Local|TestBoost_E2E_Incus_CPU' ./test/integration/
+
+# integration-env-firecracker-headroom is the same as integration-env-firecracker
+# but starts navarisd with --firecracker-mem-headroom-mult=2.0, enabling memory
+# GROW boosts (defaults to 1.0 in the regular CI compose). Use this when running
+# the local-only e2e tests that need headroom.
+.PHONY: integration-env-firecracker-headroom
+integration-env-firecracker-headroom:
+	NAVARIS_HOST_PORT=$${NAVARIS_HOST_PORT:-18080} docker compose \
+		-f docker-compose.integration-firecracker.yml \
+		-f docker-compose.integration-firecracker.local-headroom.yml \
+		--profile dev up -d --build navarisd-dev
+	@echo ""
+	@echo "Navaris API (Firecracker, headroom 2.0): http://localhost:$${NAVARIS_HOST_PORT:-18080}"
+	@echo "Token:                                    test-token"
+	@echo ""
+	@echo "Run the local-only e2e tests:"
+	@echo "  make e2e-local NAVARIS_API_URL=http://localhost:$${NAVARIS_HOST_PORT:-18080} NAVARIS_BASE_IMAGE=alpine-3.21"
+	@echo ""
+	@echo "Tear down:"
+	@echo "  make integration-env-firecracker-headroom-down"
+
+.PHONY: integration-env-firecracker-headroom-down
+integration-env-firecracker-headroom-down:
+	NAVARIS_HOST_PORT=$${NAVARIS_HOST_PORT:-18080} docker compose \
+		-f docker-compose.integration-firecracker.yml \
+		-f docker-compose.integration-firecracker.local-headroom.yml \
+		--profile dev down -v
