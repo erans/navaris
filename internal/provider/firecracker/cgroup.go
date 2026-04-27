@@ -11,6 +11,25 @@ import (
 	"syscall"
 )
 
+// effectiveCPULimit returns the cpu_limit to use for cgroup quota
+// computation, with backfill for legacy sandboxes whose vminfo.json was
+// written before this spec. Pre-spec records may have LimitCPU=0; we
+// fall back to CeilingCPU, then VcpuCount, then 1 (a safe non-zero
+// floor — quota=0 in cgroup terms means "no CPU at all", which would
+// hard-throttle the VM the moment we write it).
+func (p *Provider) effectiveCPULimit(info *VMInfo) int64 {
+	if info.LimitCPU > 0 {
+		return info.LimitCPU
+	}
+	if info.CeilingCPU > 0 {
+		return info.CeilingCPU
+	}
+	if info.VcpuCount > 0 {
+		return info.VcpuCount
+	}
+	return 1
+}
+
 // cpuPeriod is the CFS scheduling period used for all FC sandboxes.
 // 100ms is the kernel default; quota is computed as LimitCPU * cpuPeriod.
 const cpuPeriod int64 = 100_000

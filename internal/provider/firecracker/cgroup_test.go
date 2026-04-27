@@ -246,3 +246,30 @@ func TestRemoveCgroup_Jailer_NoOp(t *testing.T) {
 		t.Errorf("removeCgroup with jailer should be no-op, got: %v", err)
 	}
 }
+
+// TestEffectiveCPULimit_Backfill guards against legacy vminfo.json records
+// (written before this spec) where LimitCPU is unset (zero). Without the
+// backfill, the cgroup quota would be computed as 0 * period = 0, which
+// hard-throttles the VM to no CPU at all at boot — a 100% regression for
+// any sandbox that survived a daemon upgrade.
+func TestEffectiveCPULimit_Backfill(t *testing.T) {
+	p := &Provider{}
+	cases := []struct {
+		name string
+		info *VMInfo
+		want int64
+	}{
+		{"LimitCPU set", &VMInfo{LimitCPU: 4, CeilingCPU: 8, VcpuCount: 8}, 4},
+		{"only CeilingCPU set (legacy fallback)", &VMInfo{CeilingCPU: 4, VcpuCount: 4}, 4},
+		{"only VcpuCount set (deeper legacy)", &VMInfo{VcpuCount: 2}, 2},
+		{"all zero (safety floor)", &VMInfo{}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := p.effectiveCPULimit(tc.info)
+			if got != tc.want {
+				t.Errorf("effectiveCPULimit = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

@@ -271,6 +271,38 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	info.PID = pid
 	info.TapDevice = tapName
 	info.SubnetIdx = subnetIdx
+
+	// Per-VM CPU cgroup setup. In jailer mode the jailer has already created
+	// the cgroup and placed the FC PID in it; we only need to write the CPU
+	// quota to the jailer-managed cgroup directory. In non-jailer mode we
+	// create the cgroup, place the PID, and write the quota ourselves.
+	// Best-effort: failures (DinD without cgroup write permission, missing cpu
+	// controller) leave info.CgroupActive=false; the sandbox still starts but
+	// live CPU resize returns ResizeReasonCgroupUnavailable.
+	// Reset CgroupActive: stale "true" from a prior boot must not survive
+	// a current-boot failure. Only the explicit success branches below
+	// flip it back to true.
+	info.CgroupActive = false
+	if p.config.EnableJailer {
+		// The jailer creates firecracker/<vm-id> before exec'ing FC.
+		// machine.Start returns only after FC is up, so the cgroup exists.
+		dir := p.cgroupCPUDir(vmID)
+		quota := p.effectiveCPULimit(info) * cpuPeriod
+		if err := p.writeCPUMax(dir, quota, cpuPeriod); err != nil {
+			slog.Warn("firecracker: jailer cgroup CPU quota write failed; live CPU resize disabled for this VM",
+				"vm", vmID, "err", err)
+		} else {
+			info.CgroupActive = true
+		}
+	} else if pid > 0 {
+		if err := p.setupCgroup(pid, vmID, p.effectiveCPULimit(info)); err != nil {
+			slog.Warn("firecracker: cgroup setup failed; live CPU resize disabled for this VM",
+				"vm", vmID, "err", err)
+		} else {
+			info.CgroupActive = true
+		}
+	}
+
 	info.Write(infoPath)
 
 	// Register in memory.
@@ -402,6 +434,38 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	info.SubnetIdx = subnetIdx
 	info.RestoreFromSnapshot = false // Clear the flag.
 	info.RestoreSubnetIdx = 0
+
+	// Per-VM CPU cgroup setup. In jailer mode the jailer has already created
+	// the cgroup and placed the FC PID in it; we only need to write the CPU
+	// quota to the jailer-managed cgroup directory. In non-jailer mode we
+	// create the cgroup, place the PID, and write the quota ourselves.
+	// Best-effort: failures (DinD without cgroup write permission, missing cpu
+	// controller) leave info.CgroupActive=false; the sandbox still starts but
+	// live CPU resize returns ResizeReasonCgroupUnavailable.
+	// Reset CgroupActive: stale "true" from a prior boot must not survive
+	// a current-boot failure. Only the explicit success branches below
+	// flip it back to true.
+	info.CgroupActive = false
+	if p.config.EnableJailer {
+		// The jailer creates firecracker/<vm-id> before exec'ing FC.
+		// machine.Start returns only after FC is up, so the cgroup exists.
+		dir := p.cgroupCPUDir(vmID)
+		quota := p.effectiveCPULimit(info) * cpuPeriod
+		if err := p.writeCPUMax(dir, quota, cpuPeriod); err != nil {
+			slog.Warn("firecracker: jailer cgroup CPU quota write failed; live CPU resize disabled for this VM",
+				"vm", vmID, "err", err)
+		} else {
+			info.CgroupActive = true
+		}
+	} else if pid > 0 {
+		if err := p.setupCgroup(pid, vmID, p.effectiveCPULimit(info)); err != nil {
+			slog.Warn("firecracker: cgroup setup failed; live CPU resize disabled for this VM",
+				"vm", vmID, "err", err)
+		} else {
+			info.CgroupActive = true
+		}
+	}
+
 	if err := info.Write(infoPath); err != nil {
 		slog.Warn("firecracker: failed to write vminfo after snapshot restore", "vm", vmID, "error", err)
 	}
