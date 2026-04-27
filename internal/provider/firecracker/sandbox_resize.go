@@ -13,19 +13,22 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 )
 
-// UpdateResources applies new memory limit to a running Firecracker VM by
-// inflating or deflating the balloon device. CPU live-resize is not
-// supported by the pinned firecracker-go-sdk@v1.0.0 (no PatchMachineConfiguration);
-// any CPU change request returns ProviderResizeError(cpu_resize_unsupported_by_backend).
+// UpdateResources applies new CPU and/or memory limits live to a running
+// Firecracker VM. CPU is enforced via cgroup CPU bandwidth (cpu.max v2 /
+// cfs_quota_us v1) on the per-VM cgroup created at boot; memory is enforced
+// via the virtio-balloon device.
+//
+// Atomicity: the implementation validates BOTH CPU and memory bounds first,
+// then applies them in order (CPU → memory). If memory application fails
+// after CPU has already been written to cgroup, we attempt to revert the
+// cgroup write to the prior LimitCPU. We persist vminfo.json only after
+// every requested mutation has succeeded. The service layer's SQLite
+// rollback assumption (no provider-side mutation on error) is therefore
+// honored unless the cgroup revert itself fails — a rare double-fault we
+// log and surface so the operator can reconcile by hand.
 func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, req domain.UpdateResourcesRequest) error {
-	if req.CPULimit != nil {
-		return &domain.ProviderResizeError{
-			Reason: domain.ResizeReasonCPUUnsupportedByBackend,
-			Detail: "Firecracker provider in this build does not support live vCPU resize",
-		}
-	}
-	if req.MemoryLimitMB == nil {
-		return nil // nothing to do
+	if req.CPULimit == nil && req.MemoryLimitMB == nil {
+		return nil
 	}
 
 	p.vmMu.RLock()
@@ -35,28 +38,123 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		return fmt.Errorf("firecracker: vm %q not found: %w", ref.Ref, domain.ErrNotFound)
 	}
 
-	newLimit := int64(*req.MemoryLimitMB)
-	ceiling := info.CeilingMemMib
-	if ceiling == 0 {
-		// Pre-headroom sandbox (created before Task 8): treat MemSizeMib as the ceiling.
-		ceiling = info.MemSizeMib
+	// Validate first — fail fast before mutating anything.
+	if req.CPULimit != nil {
+		newCPU := int64(*req.CPULimit)
+		ceiling := info.CeilingCPU
+		if ceiling == 0 {
+			// Pre-headroom sandbox (created before the spec): boot vCPU count
+			// IS the ceiling — there's no extra headroom.
+			ceiling = info.VcpuCount
+		}
+		if newCPU > ceiling {
+			return &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonExceedsCeiling,
+				Detail: fmt.Sprintf("cpu_limit %d over ceiling %d", newCPU, ceiling),
+			}
+		}
+		if !info.CgroupActive {
+			return &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonCgroupUnavailable,
+				Detail: "boot-time cgroup setup did not succeed for this VM; restart it to enable live CPU resize",
+			}
+		}
 	}
-	if newLimit > ceiling {
-		return &domain.ProviderResizeError{
-			Reason: domain.ResizeReasonExceedsCeiling,
-			Detail: fmt.Sprintf("memory_limit_mb %d > ceiling %d", newLimit, ceiling),
+	var memCeiling, newMem int64
+	if req.MemoryLimitMB != nil {
+		newMem = int64(*req.MemoryLimitMB)
+		memCeiling = info.CeilingMemMib
+		if memCeiling == 0 {
+			memCeiling = info.MemSizeMib
+		}
+		if newMem > memCeiling {
+			return &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonExceedsCeiling,
+				Detail: fmt.Sprintf("memory_limit_mb %d > ceiling %d", newMem, memCeiling),
+			}
 		}
 	}
 
-	balloonAmount := ceiling - newLimit
-	if err := p.patchBalloon(ctx, ref.Ref, balloonAmount); err != nil {
-		return fmt.Errorf("firecracker: patch balloon: %w", err)
+	// Apply CPU first (cgroup write is local + fast). On success, capture
+	// the prior LimitCPU so we can revert if memory application fails. Use
+	// effectiveCPULimit so legacy vminfo.json records (LimitCPU == 0) revert
+	// to a sane non-zero quota instead of "no CPU at all".
+	priorCPU := p.effectiveCPULimit(info)
+	priorMem := info.LimitMemMib
+	if priorMem == 0 {
+		priorMem = info.MemSizeMib
+	}
+	priorBalloon := memCeiling - priorMem
+	if memCeiling == 0 {
+		priorBalloon = 0
 	}
 
+	cpuApplied := false
+	if req.CPULimit != nil {
+		newCPU := int64(*req.CPULimit)
+		quota := newCPU * cpuPeriod
+		if err := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), quota, cpuPeriod); err != nil {
+			return &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonCgroupWriteFailed,
+				Detail: err.Error(),
+			}
+		}
+		cpuApplied = true
+	}
+
+	// Apply memory (balloon — slower, may fail mid-operation).
+	if req.MemoryLimitMB != nil {
+		balloonAmount := memCeiling - newMem
+		if err := p.patchBalloon(ctx, ref.Ref, balloonAmount); err != nil {
+			// Best-effort revert of CPU so the operator's view of the running
+			// VM matches the SQLite state the service layer is about to roll
+			// back to. If revert fails, log and surface a multi-failure error
+			// so the operator can reconcile by hand.
+			if cpuApplied {
+				revertQuota := priorCPU * cpuPeriod
+				if revertErr := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); revertErr != nil {
+					return fmt.Errorf("firecracker: patch balloon: %w; cgroup revert ALSO failed: %v (vm cpu/mem are inconsistent — operator must reconcile)", err, revertErr)
+				}
+			}
+			return fmt.Errorf("firecracker: patch balloon: %w", err)
+		}
+	}
+
+	// Both branches succeeded — commit to in-memory state and disk. If the
+	// vminfo.json write fails, attempt to revert: undo in-memory updates
+	// and revert the running VM to the prior limits, so the service layer's
+	// SQLite rollback leaves the system in a consistent state.
 	p.vmMu.Lock()
-	info.LimitMemMib = newLimit
+	if req.CPULimit != nil {
+		info.LimitCPU = int64(*req.CPULimit)
+	}
+	if req.MemoryLimitMB != nil {
+		info.LimitMemMib = newMem
+	}
 	p.vmMu.Unlock()
 	if err := info.Write(p.vmInfoPath(ref.Ref)); err != nil {
+		// Revert in-memory state.
+		p.vmMu.Lock()
+		if req.CPULimit != nil {
+			info.LimitCPU = priorCPU
+		}
+		if req.MemoryLimitMB != nil {
+			info.LimitMemMib = priorMem
+		}
+		p.vmMu.Unlock()
+		// Best-effort revert of the running VM. Log multi-failure if either
+		// revert step itself fails — the operator needs to reconcile.
+		if cpuApplied {
+			revertQuota := priorCPU * cpuPeriod
+			if rerr := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); rerr != nil {
+				return fmt.Errorf("firecracker: persist vminfo after resize: %w; cgroup revert ALSO failed: %v", err, rerr)
+			}
+		}
+		if req.MemoryLimitMB != nil {
+			if rerr := p.patchBalloon(ctx, ref.Ref, priorBalloon); rerr != nil {
+				return fmt.Errorf("firecracker: persist vminfo after resize: %w; balloon revert ALSO failed: %v", err, rerr)
+			}
+		}
 		return fmt.Errorf("firecracker: persist vminfo after resize: %w", err)
 	}
 	return nil

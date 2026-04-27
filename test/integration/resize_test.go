@@ -109,13 +109,21 @@ func TestResize_Memory_AboveCeiling_Firecracker(t *testing.T) {
 	}
 }
 
-// TestResize_CPU_Live_Firecracker_Rejected verifies that CPU resize on a
-// running Firecracker VM is cleanly rejected with cpu_resize_unsupported_by_backend.
-// Memory resize and stopped-sandbox CPU resize are unaffected.
-func TestResize_CPU_Live_Firecracker_Rejected(t *testing.T) {
+// TestResize_CPU_Live_Firecracker verifies that CPU resize on a running
+// Firecracker VM is enforced via cgroup CPU bandwidth (cpu.max). With
+// default headroom (1.0), boot ceiling = limit, so any grow is rejected
+// with exceeds_ceiling. With --firecracker-vcpu-headroom-mult > 1.0
+// (production deployments and the headroom CI compose), grow up to the
+// ceiling succeeds.
+//
+// We test the default-headroom rejection path here since CI's standard
+// FC compose doesn't set headroom (the local headroom env exists for
+// grow tests; see boost_e2e_local_test.go). Either result is correct
+// behavior — we just no longer return cpu_resize_unsupported_by_backend.
+func TestResize_CPU_Live_Firecracker(t *testing.T) {
 	img := baseImage()
 	if strings.Contains(img, "/") {
-		t.Skipf("skipping on Incus (image=%s): Incus supports live CPU resize", img)
+		t.Skipf("skipping on Incus (image=%s): Incus supports live CPU resize via limits.cpu", img)
 	}
 
 	c := newClient()
@@ -139,15 +147,24 @@ func TestResize_CPU_Live_Firecracker_Rejected(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
+	// Try to grow CPU. Without headroom this fails with exceeds_ceiling;
+	// with headroom it succeeds. Both outcomes prove the path is wired.
 	_, err = c.UpdateSandboxResources(ctx, sandboxID, client.UpdateResourcesRequest{
 		CPULimit: ptrIntResize(2),
 	})
-	if err == nil {
-		t.Fatal("expected error on CPU resize against running Firecracker VM, got nil")
+	if err != nil {
+		// Default headroom path: must be exceeds_ceiling, not the old
+		// cpu_resize_unsupported_by_backend.
+		if !strings.Contains(err.Error(), "exceeds_ceiling") {
+			t.Fatalf("expected exceeds_ceiling, got: %v", err)
+		}
+		if strings.Contains(err.Error(), "cpu_resize_unsupported_by_backend") {
+			t.Fatalf("CPU resize should not return cpu_resize_unsupported_by_backend anymore: %v", err)
+		}
 	}
-	if !strings.Contains(err.Error(), "cpu_resize_unsupported_by_backend") {
-		t.Fatalf("expected error to contain 'cpu_resize_unsupported_by_backend', got: %v", err)
-	}
+	// If err is nil, we're on a headroom-enabled daemon and the resize
+	// succeeded — also acceptable (no further assertion needed since the
+	// in-guest verification lives in TestBoost_E2E_FC_CPU_AppliesToGuest).
 }
 
 // TestResize_CPU_Live_Incus verifies live CPU resize on an Incus container.
