@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+
+	"github.com/navaris/navaris/internal/provider"
 )
 
 func (p *Provider) startBoostListener(ctx context.Context, vmID string) error {
@@ -62,7 +64,7 @@ func (p *Provider) stopBoostListener(vmID string) {
 	_ = os.Remove(bl.udsPath)
 }
 
-func (bl *boostListener) acceptLoop(ctx context.Context, handler boostServer) {
+func (bl *boostListener) acceptLoop(ctx context.Context, handler provider.BoostServer) {
 	for {
 		conn, err := bl.listener.Accept()
 		if err != nil {

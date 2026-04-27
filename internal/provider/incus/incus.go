@@ -5,13 +5,13 @@ package incus
 import (
 	"context"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
 	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -61,12 +61,6 @@ func (c *Config) defaults() {
 	}
 }
 
-// boostServer is the interface the boost-channel handler must implement.
-// Serve is called once per accepted connection.
-type boostServer interface {
-	Serve(ctx context.Context, conn net.Conn, sandboxID string)
-}
-
 // IncusProvider implements domain.Provider backed by an Incus instance server.
 type IncusProvider struct {
 	client incusclient.InstanceServer
@@ -76,7 +70,7 @@ type IncusProvider struct {
 	portMu   sync.Mutex
 	nextPort int
 
-	boostHandler   boostServer
+	boostHandler   provider.BoostServer
 	boostListeners map[string]*incusBoostListener // keyed by Incus container name (BackendRef)
 	boostMu        sync.Mutex
 }
@@ -136,7 +130,7 @@ func New(cfg Config) (*IncusProvider, error) {
 
 // SetBoostHandler registers h as the handler for incoming boost connections.
 // Must be called before any sandbox is created with EnableBoostChannel=true.
-func (p *IncusProvider) SetBoostHandler(h boostServer) {
+func (p *IncusProvider) SetBoostHandler(h provider.BoostServer) {
 	p.boostHandler = h
 }
 

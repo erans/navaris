@@ -60,6 +60,8 @@ type config struct {
 	mcpPath                     string
 	mcpMaxTimeout               time.Duration
 	boostMaxDuration            time.Duration
+	boostChannelEnabled         bool
+	boostChannelDir             string
 }
 
 func main() {
@@ -105,6 +107,10 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.mcpMaxTimeout, "mcp-max-timeout", 10*time.Minute, "cap on per-tool timeout_seconds")
 	flag.DurationVar(&cfg.boostMaxDuration, "boost-max-duration", time.Hour,
 		"maximum duration for a single boost (1m..24h)")
+	flag.BoolVar(&cfg.boostChannelEnabled, "boost-channel-enabled", true,
+		"enable the in-sandbox boost channel by default for new sandboxes")
+	flag.StringVar(&cfg.boostChannelDir, "boost-channel-dir", "/var/lib/navaris/boost-channels",
+		"host directory for per-sandbox Incus boost-channel UDS files")
 	flag.Parse()
 	return cfg
 }
@@ -232,6 +238,9 @@ func run(cfg config) error {
 
 	// Provider registry — enable all configured backends.
 	reg := provider.NewRegistry()
+	// builtProviders collects every successfully constructed provider so that
+	// SetBoostHandler can be called on them after the handler is built.
+	var builtProviders []domain.Provider
 
 	if cfg.incusSocket != "" {
 		p, err := newIncusProvider(cfg)
@@ -239,6 +248,7 @@ func run(cfg config) error {
 			return fmt.Errorf("incus provider: %w", err)
 		}
 		reg.Register("incus", p)
+		builtProviders = append(builtProviders, p)
 		logger.Info("incus provider enabled", "socket", cfg.incusSocket)
 	}
 
@@ -251,6 +261,7 @@ func run(cfg config) error {
 				return fmt.Errorf("firecracker provider: %w", err)
 			}
 			reg.Register("firecracker", p)
+			builtProviders = append(builtProviders, p)
 			logger.Info("firecracker provider enabled")
 		}
 	}
@@ -291,7 +302,7 @@ func run(cfg config) error {
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), prov, bus, disp, backendName, false,
+		store.SessionStore(), prov, bus, disp, backendName, cfg.boostChannelEnabled,
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),
@@ -310,6 +321,21 @@ func run(cfg config) error {
 		service.RealClock{}, cfg.boostMaxDuration,
 	)
 	sbxSvc.SetBoostService(boostSvc)
+
+	// Construct the in-sandbox boost channel handler and inject it into every
+	// provider that supports it. The handler depends on boostSvc (which depends
+	// on sbxSvc/prov), so providers are registered first above, and we wire the
+	// handler here via a type assertion to a local interface.
+	rateLim := api.NewRateLimiterDefault()
+	boostHandler := api.NewBoostHTTPHandler(boostSvc, store.SandboxStore(), rateLim)
+	type boostHandlerSetter interface {
+		SetBoostHandler(provider.BoostServer)
+	}
+	for _, p := range builtProviders {
+		if s, ok := p.(boostHandlerSetter); ok {
+			s.SetBoostHandler(boostHandler)
+		}
+	}
 
 	if err := boostSvc.Recover(context.Background()); err != nil {
 		slog.Error("boost recover", "error", err)

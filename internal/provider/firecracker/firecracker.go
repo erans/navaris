@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/provider/firecracker/jailer"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
 	"github.com/navaris/navaris/internal/storage"
@@ -113,14 +114,6 @@ func (c *Config) validateDefaults() error {
 	return nil
 }
 
-// boostServer is the interface the per-VM boost listener uses to dispatch
-// accepted connections. *api.BoostHTTPHandler satisfies this interface via
-// duck-typing; the interface lives here (in the tagged firecracker package)
-// so the firecracker provider never needs to import internal/api.
-type boostServer interface {
-	Serve(ctx context.Context, conn net.Conn, sandboxID string)
-}
-
 // boostListener holds the state for a per-VM boost channel listener.
 // Methods are implemented in boost_listener.go.
 type boostListener struct {
@@ -145,7 +138,7 @@ type Provider struct {
 	cgroupVersion string
 	storage       *storage.Registry
 
-	boostHandler   boostServer
+	boostHandler   provider.BoostServer
 	boostListeners map[string]*boostListener // keyed by vmID
 	boostMu        sync.Mutex
 }
@@ -344,7 +337,7 @@ func (p *Provider) allocateCID() uint32 {
 // SetBoostHandler registers the handler that will serve per-connection boost
 // HTTP requests. Must be called before any sandbox is started. If not called,
 // boost listeners are not started (boostHandler == nil guard in startBoostListener).
-func (p *Provider) SetBoostHandler(h boostServer) {
+func (p *Provider) SetBoostHandler(h provider.BoostServer) {
 	p.boostHandler = h
 }
 

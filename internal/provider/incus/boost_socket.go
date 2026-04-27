@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+
+	"github.com/navaris/navaris/internal/provider"
 )
 
 // incusBoostListener mirrors the Firecracker per-VM listener: each container
@@ -105,7 +107,7 @@ func (p *IncusProvider) stopBoostChannel(name string) {
 	}
 }
 
-func (bl *incusBoostListener) acceptLoop(ctx context.Context, handler boostServer) {
+func (bl *incusBoostListener) acceptLoop(ctx context.Context, handler provider.BoostServer) {
 	for {
 		conn, err := bl.listener.Accept()
 		if err != nil {
