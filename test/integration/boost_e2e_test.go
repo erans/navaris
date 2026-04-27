@@ -12,7 +12,126 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
-func ptrIntE2E(v int) *int { return &v }
+// TestBoost_E2E_FC_BoostFromInside_VisibleInGuest creates a Firecracker
+// sandbox with the in-sandbox boost channel enabled, then has guest code
+// request a boost (POST /boost on /var/run/navaris-guest.sock via curl)
+// and verifies — from inside the same sandbox — that the boost actually
+// took effect: MemAvailable in /proc/meminfo drops as the balloon inflates.
+//
+// This is the end-to-end proof that spec #3 (in-sandbox boost channel)
+// composes correctly with spec #2 (live boost via balloon): the request
+// goes guest → UDS → vsock → host listener → BoostHTTPHandler → BoostService
+// → UpdateResources → balloon inflate, all in one round-trip, and the
+// resulting resource change is observable from the same guest that
+// requested it.
+//
+// Externally we also verify the boost shows up with source="in_sandbox",
+// which is the bit consumers (UI, event subscribers) use to distinguish
+// guest-initiated boosts from operator-initiated ones.
+//
+// Skipped on Incus for the same reason as the rest of this file: the test
+// image lacks lxcfs so /proc/meminfo would report host RAM. The Incus
+// boost-channel integration tests in boost_channel_test.go cover the
+// channel-binding path on Incus without needing in-guest verification.
+func TestBoost_E2E_FC_BoostFromInside_VisibleInGuest(t *testing.T) {
+	img := baseImage()
+	if strings.Contains(img, "/") {
+		t.Skipf("skipping on Incus (image=%s): /proc/meminfo doesn't reflect cgroup limits without lxcfs", img)
+	}
+
+	c := newClient()
+	ctx := context.Background()
+	proj := createTestProject(t, c)
+
+	mem := 512
+	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
+		ProjectID:          proj.ProjectID,
+		Name:               "boost-e2e-fromInside",
+		ImageID:            img,
+		MemoryLimitMB:      &mem,
+		EnableBoostChannel: ptrBoolE2E(true),
+	}, waitOpts())
+	if err != nil {
+		t.Fatalf("CreateSandboxAndWait: %v", err)
+	}
+	if op.State != client.OpSucceeded {
+		t.Fatalf("create op state=%s error=%s", op.State, op.ErrorText)
+	}
+	sandboxID := op.ResourceID
+	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
+
+	memBeforeKB := readMemAvailableKB(t, c, sandboxID)
+	t.Logf("MemAvailable before in-sandbox boost request: %d kB (~%d MiB)", memBeforeKB, memBeforeKB/1024)
+
+	// Guest issues the boost request directly via the in-sandbox UDS — same
+	// path real guest code would take.
+	curl, err := c.Exec(ctx, sandboxID, client.ExecRequest{
+		Command: []string{"sh", "-c",
+			`curl --unix-socket /var/run/navaris-guest.sock -sS -X POST http://_/boost ` +
+				`-H 'Content-Type: application/json' ` +
+				`-d '{"memory_limit_mb":320,"duration_seconds":30}'`},
+	})
+	if err != nil {
+		t.Fatalf("exec curl POST /boost: %v", err)
+	}
+	if curl.ExitCode != 0 {
+		t.Fatalf("guest curl exit %d: stderr=%s stdout=%s", curl.ExitCode, curl.Stderr, curl.Stdout)
+	}
+	if !strings.Contains(curl.Stdout, `"boost_id"`) {
+		t.Fatalf("guest curl response missing boost_id: %s", curl.Stdout)
+	}
+
+	// Verify externally: source must be "in_sandbox" (the whole point of the
+	// channel — the daemon distinguishes who asked).
+	b, err := c.GetBoost(ctx, sandboxID)
+	if err != nil {
+		t.Fatalf("GetBoost: %v", err)
+	}
+	if b.Source != "in_sandbox" {
+		t.Errorf("boost source = %q, want in_sandbox", b.Source)
+	}
+
+	// Balloon inflate is asynchronous.
+	time.Sleep(4 * time.Second)
+
+	memDuringKB := readMemAvailableKB(t, c, sandboxID)
+	t.Logf("MemAvailable during in-sandbox boost: %d kB (~%d MiB)", memDuringKB, memDuringKB/1024)
+
+	const minDropKB = 100 * 1024
+	if memBeforeKB-memDuringKB < minDropKB {
+		t.Errorf("expected MemAvailable to drop by at least %d kB after in-sandbox boost; before=%d kB, during=%d kB (delta=%d kB)",
+			minDropKB, memBeforeKB, memDuringKB, memBeforeKB-memDuringKB)
+	}
+
+	// Cancel via the same in-sandbox channel so we exercise the DELETE path too.
+	cancelCurl, err := c.Exec(ctx, sandboxID, client.ExecRequest{
+		Command: []string{"sh", "-c",
+			`curl --unix-socket /var/run/navaris-guest.sock -sS -X DELETE -o /dev/null -w '%{http_code}' http://_/boost`},
+	})
+	if err != nil {
+		t.Fatalf("exec curl DELETE /boost: %v", err)
+	}
+	if cancelCurl.ExitCode != 0 {
+		t.Fatalf("guest curl DELETE exit %d: stderr=%s", cancelCurl.ExitCode, cancelCurl.Stderr)
+	}
+	if !strings.Contains(cancelCurl.Stdout, "204") {
+		t.Errorf("expected 204 from in-sandbox cancel, got %q", cancelCurl.Stdout)
+	}
+
+	time.Sleep(4 * time.Second)
+
+	memAfterKB := readMemAvailableKB(t, c, sandboxID)
+	t.Logf("MemAvailable after in-sandbox cancel: %d kB (~%d MiB)", memAfterKB, memAfterKB/1024)
+
+	const recoveryFloorKB = 50 * 1024
+	if memBeforeKB-memAfterKB > recoveryFloorKB {
+		t.Errorf("MemAvailable did not recover after in-sandbox cancel; before=%d kB, after=%d kB (deficit=%d kB)",
+			memBeforeKB, memAfterKB, memBeforeKB-memAfterKB)
+	}
+}
+
+func ptrBoolE2E(v bool) *bool { return &v }
+func ptrIntE2E(v int) *int    { return &v }
 
 // readMemAvailableKB reads MemAvailable (kB) from /proc/meminfo inside the
 // sandbox. Used by the FC boost test to verify that the balloon actually
