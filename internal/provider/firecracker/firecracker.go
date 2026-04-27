@@ -35,6 +35,12 @@ type Config struct {
 	HostInterface  string
 	SnapshotDir    string
 	EnableJailer   bool
+
+	// CgroupRoot is the host directory under which the daemon creates a
+	// per-VM cgroup for non-jailer sandboxes (e.g. "/sys/fs/cgroup/navaris-fc").
+	// Unused when EnableJailer is true (the jailer creates its own cgroup
+	// tree). Empty defaults to "/sys/fs/cgroup/navaris-fc".
+	CgroupRoot string
 	// Storage is required: it owns CoW cloning of rootfs files. Pass a
 	// Registry whose roots include ImageDir, ChrootBase, and SnapshotDir.
 	Storage *storage.Registry
@@ -66,6 +72,9 @@ type Config struct {
 func (c *Config) defaults() {
 	if c.ChrootBase == "" {
 		c.ChrootBase = "/srv/firecracker"
+	}
+	if c.CgroupRoot == "" {
+		c.CgroupRoot = "/sys/fs/cgroup/navaris-fc"
 	}
 	if c.VsockCIDBase == 0 {
 		c.VsockCIDBase = 100
