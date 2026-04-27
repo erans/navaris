@@ -80,6 +80,7 @@ func (s *Server) startBoost(w http.ResponseWriter, r *http.Request) {
 		CPULimit:        req.CPULimit,
 		MemoryLimitMB:   req.MemoryLimitMB,
 		DurationSeconds: req.DurationSeconds,
+		Source:          "external",
 	})
 	if err != nil {
 		respondError(w, err)

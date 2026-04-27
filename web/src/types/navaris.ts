@@ -41,6 +41,7 @@ export interface ActiveBoost {
   state: "active" | "revert_failed";
   revert_attempts?: number;
   last_error?: string;
+  source?: "external" | "in_sandbox";
 }
 
 export interface Sandbox {

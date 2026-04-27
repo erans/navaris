@@ -142,15 +142,16 @@ type UpdateProjectRequest struct {
 
 // CreateSandboxRequest is the request body for creating a sandbox from an image.
 type CreateSandboxRequest struct {
-	ProjectID     string         `json:"project_id"`
-	Name          string         `json:"name"`
-	ImageID       string         `json:"image_id,omitempty"`
-	Backend       string         `json:"backend,omitempty"`
-	CPULimit      *int           `json:"cpu_limit,omitempty"`
-	MemoryLimitMB *int           `json:"memory_limit_mb,omitempty"`
-	NetworkMode   string         `json:"network_mode,omitempty"`
-	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
+	ProjectID          string         `json:"project_id"`
+	Name               string         `json:"name"`
+	ImageID            string         `json:"image_id,omitempty"`
+	Backend            string         `json:"backend,omitempty"`
+	CPULimit           *int           `json:"cpu_limit,omitempty"`
+	MemoryLimitMB      *int           `json:"memory_limit_mb,omitempty"`
+	NetworkMode        string         `json:"network_mode,omitempty"`
+	EnableBoostChannel *bool          `json:"enable_boost_channel,omitempty"`
+	ExpiresAt          *time.Time     `json:"expires_at,omitempty"`
+	Metadata           map[string]any `json:"metadata,omitempty"`
 }
 
 // CreateSandboxFromSnapshotRequest is the request body for creating a sandbox from a snapshot.

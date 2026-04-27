@@ -15,12 +15,13 @@ import (
 )
 
 type CreateSandboxOpts struct {
-	Backend       string
-	CPULimit      *int
-	MemoryLimitMB *int
-	NetworkMode   domain.NetworkMode
-	ExpiresAt     *time.Time
-	Metadata      map[string]any
+	Backend            string
+	CPULimit           *int
+	MemoryLimitMB      *int
+	NetworkMode        domain.NetworkMode
+	EnableBoostChannel *bool // nil = use daemon default
+	ExpiresAt          *time.Time
+	Metadata           map[string]any
 }
 
 // resolveBackend picks the backend for a new sandbox.
@@ -39,17 +40,18 @@ func (s *SandboxService) resolveBackend(explicit, imageRef string) string {
 }
 
 type SandboxService struct {
-	sandboxes      domain.SandboxStore
-	snapshots      domain.SnapshotStore
-	ops            domain.OperationStore
-	ports          domain.PortBindingStore
-	sessions       domain.SessionStore
-	sessionSvc     *SessionService
-	provider       domain.Provider
-	events         domain.EventBus
-	workers        *worker.Dispatcher
-	defaultBackend string
-	boostSvc       *BoostService
+	sandboxes           domain.SandboxStore
+	snapshots           domain.SnapshotStore
+	ops                 domain.OperationStore
+	ports               domain.PortBindingStore
+	sessions            domain.SessionStore
+	sessionSvc          *SessionService
+	provider            domain.Provider
+	events              domain.EventBus
+	workers             *worker.Dispatcher
+	defaultBackend      string
+	defaultBoostChannel bool
+	boostSvc            *BoostService
 }
 
 // SetSessionService injects the SessionService after construction.
@@ -77,17 +79,19 @@ func NewSandboxService(
 	events domain.EventBus,
 	workers *worker.Dispatcher,
 	defaultBackend string,
+	defaultBoostChannel bool,
 ) *SandboxService {
 	svc := &SandboxService{
-		sandboxes:      sandboxes,
-		snapshots:      snapshots,
-		ops:            ops,
-		ports:          ports,
-		sessions:       sessions,
-		provider:       provider,
-		events:         events,
-		workers:        workers,
-		defaultBackend: defaultBackend,
+		sandboxes:           sandboxes,
+		snapshots:           snapshots,
+		ops:                 ops,
+		ports:               ports,
+		sessions:            sessions,
+		provider:            provider,
+		events:              events,
+		workers:             workers,
+		defaultBackend:      defaultBackend,
+		defaultBoostChannel: defaultBoostChannel,
 	}
 	svc.registerHandlers()
 	return svc
@@ -120,20 +124,26 @@ func (s *SandboxService) Create(ctx context.Context, projectID, name, imageID st
 		networkMode = domain.NetworkIsolated
 	}
 
+	enableBoostChannel := s.defaultBoostChannel
+	if opts.EnableBoostChannel != nil {
+		enableBoostChannel = *opts.EnableBoostChannel
+	}
+
 	sbx := &domain.Sandbox{
-		SandboxID:     uuid.NewString(),
-		ProjectID:     projectID,
-		Name:          name,
-		State:         domain.SandboxPending,
-		Backend:       backend,
-		SourceImageID: imageID,
-		NetworkMode:   networkMode,
-		CPULimit:      opts.CPULimit,
-		MemoryLimitMB: opts.MemoryLimitMB,
-		ExpiresAt:     opts.ExpiresAt,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		Metadata:      opts.Metadata,
+		SandboxID:          uuid.NewString(),
+		ProjectID:          projectID,
+		Name:               name,
+		State:              domain.SandboxPending,
+		Backend:            backend,
+		SourceImageID:      imageID,
+		NetworkMode:        networkMode,
+		CPULimit:           opts.CPULimit,
+		MemoryLimitMB:      opts.MemoryLimitMB,
+		ExpiresAt:          opts.ExpiresAt,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		Metadata:           opts.Metadata,
+		EnableBoostChannel: enableBoostChannel,
 	}
 	if err := s.sandboxes.Create(ctx, sbx); err != nil {
 		span.RecordError(err)
@@ -193,20 +203,26 @@ func (s *SandboxService) CreateFromSnapshot(ctx context.Context, projectID, name
 		networkMode = domain.NetworkIsolated
 	}
 
+	enableBoostChannel := s.defaultBoostChannel
+	if opts.EnableBoostChannel != nil {
+		enableBoostChannel = *opts.EnableBoostChannel
+	}
+
 	sbx := &domain.Sandbox{
-		SandboxID:        uuid.NewString(),
-		ProjectID:        projectID,
-		Name:             name,
-		State:            domain.SandboxPending,
-		Backend:          backend,
-		ParentSnapshotID: snapshotID,
-		NetworkMode:      networkMode,
-		CPULimit:         opts.CPULimit,
-		MemoryLimitMB:    opts.MemoryLimitMB,
-		ExpiresAt:        opts.ExpiresAt,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		Metadata:         opts.Metadata,
+		SandboxID:          uuid.NewString(),
+		ProjectID:          projectID,
+		Name:               name,
+		State:              domain.SandboxPending,
+		Backend:            backend,
+		ParentSnapshotID:   snapshotID,
+		NetworkMode:        networkMode,
+		CPULimit:           opts.CPULimit,
+		MemoryLimitMB:      opts.MemoryLimitMB,
+		ExpiresAt:          opts.ExpiresAt,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		Metadata:           opts.Metadata,
+		EnableBoostChannel: enableBoostChannel,
 	}
 	if err := s.sandboxes.Create(ctx, sbx); err != nil {
 		span.RecordError(err)
@@ -534,12 +550,14 @@ func (s *SandboxService) handleCreate(ctx context.Context, op *domain.Operation)
 	s.publishStateChange(ctx, sbx)
 
 	createReq := domain.CreateSandboxRequest{
-		Name:          sbx.Name,
-		ImageRef:      sbx.SourceImageID,
-		CPULimit:      sbx.CPULimit,
-		MemoryLimitMB: sbx.MemoryLimitMB,
-		NetworkMode:   sbx.NetworkMode,
-		Backend:       sbx.Backend,
+		Name:               sbx.Name,
+		ImageRef:           sbx.SourceImageID,
+		CPULimit:           sbx.CPULimit,
+		MemoryLimitMB:      sbx.MemoryLimitMB,
+		NetworkMode:        sbx.NetworkMode,
+		Backend:            sbx.Backend,
+		EnableBoostChannel: &sbx.EnableBoostChannel,
+		SandboxID:          sbx.SandboxID,
 	}
 
 	var ref domain.BackendRef

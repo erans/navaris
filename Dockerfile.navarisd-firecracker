@@ -57,8 +57,9 @@ RUN cp vmlinux /vmlinux
 # ---- Stage 3: Build Alpine rootfs ext4 image ----
 FROM alpine:3.21 AS rootfs
 
-# Install OpenRC (init system), e2fsprogs (mke2fs), and fuse3.
-RUN apk add --no-cache openrc e2fsprogs fuse3
+# Install OpenRC (init system), e2fsprogs (mke2fs), fuse3, and curl
+# (the in-sandbox boost-channel integration tests POST via curl --unix-socket).
+RUN apk add --no-cache openrc e2fsprogs fuse3 curl
 
 # Copy the agent binary.
 COPY --from=build /navaris-agent /usr/local/bin/navaris-agent
@@ -89,7 +90,7 @@ RUN mkdir /staging && \
 FROM debian:12-slim AS rootfs-debian
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        systemd systemd-sysv e2fsprogs fuse3 \
+        systemd systemd-sysv e2fsprogs fuse3 curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy the agent binary.

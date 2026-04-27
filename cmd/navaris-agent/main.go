@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"strconv"
@@ -28,6 +29,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("agent: listen vsock port %d: %v", port, err)
 	}
+
+	go func() {
+		if err := agent.RunBoostProxy(context.Background(), "/var/run/navaris-guest.sock", 1025); err != nil {
+			log.Printf("agent: boost proxy: %v", err)
+		}
+	}()
 
 	log.Printf("agent: listening on vsock port %d", port)
 	agent.NewServer(ln).Serve()

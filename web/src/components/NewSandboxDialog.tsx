@@ -55,6 +55,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
   const [cpuLimit, setCpuLimit] = useState<string>("");
   const [memoryLimitMB, setMemoryLimitMB] = useState<string>("");
   const [networkMode, setNetworkMode] = useState<NetworkMode>("isolated");
+  const [enableBoostChannel, setEnableBoostChannel] = useState<boolean>(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -184,6 +185,7 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
           memoryParsed >= 64
             ? memoryParsed
             : undefined,
+        enable_boost_channel: enableBoostChannel,
       };
       const op = await createSandbox(req);
       writeLastProject(projectId);
@@ -404,6 +406,15 @@ export default function NewSandboxDialog({ onClose }: NewSandboxDialogProps) {
             </label>
           </div>
         </fieldset>
+
+        <label className="mb-4 flex items-center gap-2 text-sm text-[var(--fg-primary)]">
+          <input
+            type="checkbox"
+            checked={enableBoostChannel}
+            onChange={(e) => setEnableBoostChannel(e.currentTarget.checked)}
+          />
+          <span>Allow in-sandbox boost requests</span>
+        </label>
 
         {error !== null && (
           <p

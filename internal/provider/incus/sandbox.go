@@ -5,6 +5,7 @@ package incus
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -53,6 +54,15 @@ func (p *IncusProvider) CreateSandbox(ctx context.Context, req domain.CreateSand
 	}
 	if err := op.WaitContext(ctx); err != nil {
 		return domain.BackendRef{}, fmt.Errorf("incus create instance wait: %w", err)
+	}
+
+	enableChan := req.EnableBoostChannel != nil && *req.EnableBoostChannel
+	if enableChan {
+		if req.SandboxID == "" {
+			slog.Warn("incus: EnableBoostChannel set but SandboxID empty; skipping boost channel start", "container", name)
+		} else if err := p.startBoostChannel(ctx, name, req.SandboxID); err != nil {
+			slog.Warn("incus: start boost channel failed", "container", name, "err", err)
+		}
 	}
 
 	return domain.BackendRef{Backend: backendName, Ref: name}, nil
@@ -123,6 +133,8 @@ func (p *IncusProvider) StopSandbox(ctx context.Context, ref domain.BackendRef, 
 func (p *IncusProvider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (retErr error) {
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DestroySandbox")
 	defer func() { endSpan(retErr) }()
+
+	p.stopBoostChannel(ref.Ref)
 
 	op, err := p.client.DeleteInstance(ref.Ref)
 	if err != nil {

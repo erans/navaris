@@ -11,6 +11,7 @@ import (
 	incusclient "github.com/lxc/incus/v6/client"
 	incusapi "github.com/lxc/incus/v6/shared/api"
 	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/provider"
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
@@ -39,6 +40,10 @@ type Config struct {
 	// configured Incus pool's driver is not CoW-capable. When false (default),
 	// such pools produce a warning log only.
 	StrictPoolCoW bool
+
+	// BoostChannelDir is the host directory where per-sandbox boost-channel UDS
+	// files live. Empty disables the in-sandbox boost channel for Incus sandboxes.
+	BoostChannelDir string
 }
 
 func (c *Config) defaults() {
@@ -64,6 +69,10 @@ type IncusProvider struct {
 	// portMu guards nextPort to avoid races when allocating host ports.
 	portMu   sync.Mutex
 	nextPort int
+
+	boostHandler   provider.BoostServer
+	boostListeners map[string]*incusBoostListener // keyed by Incus container name (BackendRef)
+	boostMu        sync.Mutex
 }
 
 // Verify interface compliance at compile time.
@@ -91,9 +100,10 @@ func New(cfg Config) (*IncusProvider, error) {
 	}
 
 	p := &IncusProvider{
-		client:   client,
-		config:   cfg,
-		nextPort: cfg.PortRangeMin,
+		client:         client,
+		config:         cfg,
+		nextPort:       cfg.PortRangeMin,
+		boostListeners: make(map[string]*incusBoostListener),
 	}
 
 	telemetry.RegisterSandboxCountGauge(backendName, func() map[string]int64 {
@@ -116,6 +126,12 @@ func New(cfg Config) (*IncusProvider, error) {
 	})
 
 	return p, nil
+}
+
+// SetBoostHandler registers h as the handler for incoming boost connections.
+// Must be called before any sandbox is created with EnableBoostChannel=true.
+func (p *IncusProvider) SetBoostHandler(h provider.BoostServer) {
+	p.boostHandler = h
 }
 
 // Health reports whether the Incus daemon is reachable and responsive.

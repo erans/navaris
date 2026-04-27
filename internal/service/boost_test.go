@@ -513,3 +513,63 @@ func TestBoostRecover_RevertFailedLeftAlone(t *testing.T) {
 		t.Fatal("revert_failed boost should not auto-revert on Recover")
 	}
 }
+
+func TestBoostStart_EmitsSource(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	ch, cancel, err := env.events.Subscribe(t.Context(), domain.EventFilter{
+		Types: []domain.EventType{domain.EventBoostStarted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	cpu := 4
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+		Source: "in_sandbox",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.Data["source"] != "in_sandbox" {
+			t.Errorf("source = %v, want in_sandbox", ev.Data["source"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("EventBoostStarted not received")
+	}
+}
+
+func TestBoostStart_DefaultSourceExternal(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx", domain.SandboxRunning, "mock")
+
+	ch, cancel, err := env.events.Subscribe(t.Context(), domain.EventFilter{
+		Types: []domain.EventType{domain.EventBoostStarted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	cpu := 4
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 60,
+		// no Source set
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.Data["source"] != "external" {
+			t.Errorf("source = %v, want external (default)", ev.Data["source"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("EventBoostStarted not received")
+	}
+}

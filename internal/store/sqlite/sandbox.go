@@ -28,14 +28,14 @@ func (ss *sandboxStore) Create(ctx context.Context, sbx *domain.Sandbox) error {
 	_, err = ss.writeDB.ExecContext(ctx, `INSERT INTO sandboxes
 		(sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		 source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
-		 cpu_limit, memory_limit_mb, network_mode, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 cpu_limit, memory_limit_mb, network_mode, metadata, enable_boost_channel)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sbx.SandboxID, sbx.ProjectID, sbx.Name, string(sbx.State), sbx.Backend,
 		nullString(sbx.BackendRef), nullString(sbx.HostID),
 		nullString(sbx.SourceImageID), nullString(sbx.ParentSnapshotID),
 		sbx.CreatedAt.Format(time.RFC3339Nano), sbx.UpdatedAt.Format(time.RFC3339Nano),
 		nullTime(sbx.ExpiresAt), nullInt(sbx.CPULimit), nullInt(sbx.MemoryLimitMB),
-		string(sbx.NetworkMode), meta)
+		string(sbx.NetworkMode), meta, boolToInt(sbx.EnableBoostChannel))
 	return mapError(err)
 }
 
@@ -43,7 +43,7 @@ func (ss *sandboxStore) Get(ctx context.Context, id string) (*domain.Sandbox, er
 	row := ss.readDB.QueryRowContext(ctx, `SELECT
 		sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
-		cpu_limit, memory_limit_mb, network_mode, metadata
+		cpu_limit, memory_limit_mb, network_mode, metadata, enable_boost_channel
 		FROM sandboxes WHERE sandbox_id = ?`, id)
 	return scanSandbox(row)
 }
@@ -51,7 +51,7 @@ func (ss *sandboxStore) Get(ctx context.Context, id string) (*domain.Sandbox, er
 func (ss *sandboxStore) List(ctx context.Context, f domain.SandboxFilter) ([]*domain.Sandbox, error) {
 	query := `SELECT sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
-		cpu_limit, memory_limit_mb, network_mode, metadata FROM sandboxes WHERE 1=1`
+		cpu_limit, memory_limit_mb, network_mode, metadata, enable_boost_channel FROM sandboxes WHERE 1=1`
 	var args []any
 	if f.ProjectID != nil {
 		query += " AND project_id = ?"
@@ -91,13 +91,13 @@ func (ss *sandboxStore) Update(ctx context.Context, sbx *domain.Sandbox) error {
 		name = ?, state = ?, backend_ref = ?, host_id = ?,
 		source_image_id = ?, parent_snapshot_id = ?,
 		updated_at = ?, expires_at = ?, cpu_limit = ?, memory_limit_mb = ?,
-		network_mode = ?, metadata = ?
+		network_mode = ?, metadata = ?, enable_boost_channel = ?
 		WHERE sandbox_id = ?`,
 		sbx.Name, string(sbx.State), nullString(sbx.BackendRef), nullString(sbx.HostID),
 		nullString(sbx.SourceImageID), nullString(sbx.ParentSnapshotID),
 		sbx.UpdatedAt.Format(time.RFC3339Nano), nullTime(sbx.ExpiresAt),
 		nullInt(sbx.CPULimit), nullInt(sbx.MemoryLimitMB),
-		string(sbx.NetworkMode), meta, sbx.SandboxID)
+		string(sbx.NetworkMode), meta, boolToInt(sbx.EnableBoostChannel), sbx.SandboxID)
 	if err != nil {
 		return mapError(err)
 	}
@@ -115,7 +115,7 @@ func (ss *sandboxStore) Delete(ctx context.Context, id string) error {
 func (ss *sandboxStore) ListExpired(ctx context.Context, now time.Time) ([]*domain.Sandbox, error) {
 	rows, err := ss.readDB.QueryContext(ctx, `SELECT sandbox_id, project_id, name, state, backend, backend_ref, host_id,
 		source_image_id, parent_snapshot_id, created_at, updated_at, expires_at,
-		cpu_limit, memory_limit_mb, network_mode, metadata
+		cpu_limit, memory_limit_mb, network_mode, metadata, enable_boost_channel
 		FROM sandboxes WHERE expires_at IS NOT NULL AND expires_at <= ? AND state != ?`,
 		now.Format(time.RFC3339Nano), string(domain.SandboxDestroyed))
 	if err != nil {
@@ -138,16 +138,19 @@ func scanSandbox(row *sql.Row) (*domain.Sandbox, error) {
 	var state, networkMode, createdAt, updatedAt string
 	var backendRef, hostID, sourceImageID, parentSnapshotID, expiresAt, meta sql.NullString
 	var cpuLimit, memoryLimit sql.NullInt64
+	var enableBoostChannel int
 
 	err := row.Scan(&sbx.SandboxID, &sbx.ProjectID, &sbx.Name, &state, &sbx.Backend,
 		&backendRef, &hostID, &sourceImageID, &parentSnapshotID,
-		&createdAt, &updatedAt, &expiresAt, &cpuLimit, &memoryLimit, &networkMode, &meta)
+		&createdAt, &updatedAt, &expiresAt, &cpuLimit, &memoryLimit, &networkMode, &meta,
+		&enableBoostChannel)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("sandbox: %w", domain.ErrNotFound)
 		}
 		return nil, mapError(err)
 	}
+	sbx.EnableBoostChannel = enableBoostChannel == 1
 	return populateSandbox(&sbx, state, networkMode, createdAt, updatedAt, backendRef, hostID,
 		sourceImageID, parentSnapshotID, expiresAt, cpuLimit, memoryLimit, meta), nil
 }
@@ -157,13 +160,16 @@ func scanSandboxRow(rows *sql.Rows) (*domain.Sandbox, error) {
 	var state, networkMode, createdAt, updatedAt string
 	var backendRef, hostID, sourceImageID, parentSnapshotID, expiresAt, meta sql.NullString
 	var cpuLimit, memoryLimit sql.NullInt64
+	var enableBoostChannel int
 
 	err := rows.Scan(&sbx.SandboxID, &sbx.ProjectID, &sbx.Name, &state, &sbx.Backend,
 		&backendRef, &hostID, &sourceImageID, &parentSnapshotID,
-		&createdAt, &updatedAt, &expiresAt, &cpuLimit, &memoryLimit, &networkMode, &meta)
+		&createdAt, &updatedAt, &expiresAt, &cpuLimit, &memoryLimit, &networkMode, &meta,
+		&enableBoostChannel)
 	if err != nil {
 		return nil, err
 	}
+	sbx.EnableBoostChannel = enableBoostChannel == 1
 	return populateSandbox(&sbx, state, networkMode, createdAt, updatedAt, backendRef, hostID,
 		sourceImageID, parentSnapshotID, expiresAt, cpuLimit, memoryLimit, meta), nil
 }
@@ -226,4 +232,11 @@ func nullInt(v *int) sql.NullInt64 {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: int64(*v), Valid: true}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -9,7 +9,8 @@ import (
 
 func newIncusProvider(cfg config) (domain.Provider, error) {
 	return incus.New(incus.Config{
-		Socket:        cfg.incusSocket,
-		StrictPoolCoW: cfg.incusStrictPoolCoW,
+		Socket:          cfg.incusSocket,
+		StrictPoolCoW:   cfg.incusStrictPoolCoW,
+		BoostChannelDir: cfg.boostChannelDir,
 	})
 }

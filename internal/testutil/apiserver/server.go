@@ -72,7 +72,7 @@ func New(t *testing.T, opts ...Option) (string, *worker.Dispatcher, *provider.Mo
 	projSvc := service.NewProjectService(store.ProjectStore())
 	sbxSvc := service.NewSandboxService(
 		store.SandboxStore(), store.SnapshotStore(), store.OperationStore(), store.PortBindingStore(),
-		store.SessionStore(), mock, bus, disp, "mock",
+		store.SessionStore(), mock, bus, disp, "mock", false,
 	)
 	snapSvc := service.NewSnapshotService(
 		store.SnapshotStore(), store.SandboxStore(), store.OperationStore(),

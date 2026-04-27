@@ -49,6 +49,7 @@ type StartBoostOpts struct {
 	CPULimit        *int
 	MemoryLimitMB   *int
 	DurationSeconds int
+	Source          string // "external" (operator API) or "in_sandbox" (boost channel); empty defaults to "external"
 }
 
 // Get returns the active or revert_failed boost for a sandbox, or
@@ -60,6 +61,10 @@ func (s *BoostService) Get(ctx context.Context, sandboxID string) (*domain.Boost
 func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.Boost, error) {
 	if opts.DurationSeconds <= 0 {
 		return nil, fmt.Errorf("duration_seconds must be > 0: %w", domain.ErrInvalidArgument)
+	}
+	source := opts.Source
+	if source == "" {
+		source = "external"
 	}
 	dur := time.Duration(opts.DurationSeconds) * time.Second
 	if dur > s.maxDuration {
@@ -145,6 +150,7 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 			"boosted_cpu_limit":       boost.BoostedCPULimit,
 			"boosted_memory_limit_mb": boost.BoostedMemoryLimitMB,
 			"expires_at":              boost.ExpiresAt.Format(time.RFC3339Nano),
+			"source":                  source,
 		},
 	})
 
@@ -212,6 +218,7 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 				"sandbox_id": boost.SandboxID,
 				"attempts":   attempts,
 				"last_error": applyErr.Error(),
+				"source":     "external",
 			},
 		})
 		return
@@ -237,6 +244,7 @@ func (s *BoostService) emitExpired(ctx context.Context, b *domain.Boost, cause s
 			"cause":                    cause,
 			"reverted_cpu_limit":       cpu,
 			"reverted_memory_limit_mb": mem,
+			"source":                   "external",
 		},
 	})
 }

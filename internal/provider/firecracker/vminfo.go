@@ -46,6 +46,9 @@ type VMInfo struct {
 	// CeilingMemMib is the boot-time mem_size_mib (== MemSizeMib).
 	// Bounds the maximum memory_limit_mb a runtime resize can grant.
 	CeilingMemMib int64 `json:"ceiling_mem_mib,omitempty"`
+
+	EnableBoostChannel bool   `json:"enable_boost_channel,omitempty"`
+	SandboxID          string `json:"sandbox_id,omitempty"` // navaris-side sandbox UUID; distinct from VMInfo.ID (the FC vmID). Persisted in vminfo.json so recover() can rebind boost listeners after daemon restart.
 }
 
 func (v *VMInfo) Write(path string) error {

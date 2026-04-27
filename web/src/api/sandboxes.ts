@@ -55,6 +55,7 @@ export interface CreateSandboxRequest {
   cpu_limit?: number;
   memory_limit_mb?: number;
   network_mode: NetworkMode;
+  enable_boost_channel?: boolean;
 }
 
 export async function createSandbox(
