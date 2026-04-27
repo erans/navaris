@@ -49,13 +49,17 @@ export async function apiFetch<T = unknown>(
 
   if (!res.ok) {
     if (isJSON) {
-      const body = (await res.json().catch(() => null)) as
-        | { code?: string; message?: string }
+      // The daemon emits {"error":{"code":N,"message":"..."}} for errors.
+      // Some older endpoints emit {code,message} at top level; tolerate both.
+      const raw = (await res.json().catch(() => null)) as
+        | { code?: string | number; message?: string; error?: { code?: string | number; message?: string } }
         | null;
+      const code = raw?.error?.code ?? raw?.code;
+      const message = raw?.error?.message ?? raw?.message;
       throw new ApiError(
         res.status,
-        body?.code ?? `http_${res.status}`,
-        body?.message ?? (res.statusText || "request failed"),
+        typeof code === "string" ? code : `http_${res.status}`,
+        message ?? (res.statusText || "request failed"),
       );
     }
     throw new ApiError(res.status, `http_${res.status}`, res.statusText || "request failed");

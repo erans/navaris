@@ -147,3 +147,71 @@ func TestPatchResources_BoundsViolation_400(t *testing.T) {
 		t.Fatalf("response body %q does not mention cpu_limit", body)
 	}
 }
+
+func TestPatchResources_CgroupUnavailable_503(t *testing.T) {
+	env := newTestEnv(t)
+	projID := ensureProject(t, env)
+	sbx := seedSandbox(t, env, projID, "sbx-cgroup-503", domain.SandboxRunning, "mock")
+
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, _ domain.UpdateResourcesRequest) error {
+		return &domain.ProviderResizeError{
+			Reason: domain.ResizeReasonCgroupUnavailable,
+			Detail: "private-cgroup-path/sys/fs/cgroup/scrub-me",
+		}
+	}
+
+	rec := doRequest(t, env.handler, http.MethodPatch,
+		"/v1/sandboxes/"+sbx.SandboxID+"/resources",
+		map[string]any{"cpu_limit": 2})
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	// The reason must survive into the body so callers can distinguish this
+	// non-transient failure from a generic overload-style 503.
+	body := rec.Body.String()
+	if !strings.Contains(body, domain.ResizeReasonCgroupUnavailable) {
+		t.Errorf("body %q missing reason %q", body, domain.ResizeReasonCgroupUnavailable)
+	}
+	// Detail can include host paths or raw I/O strings — must not appear
+	// in the response body for 5xx (defense-in-depth against backend errors
+	// that leak internal state).
+	if strings.Contains(body, "private-cgroup-path") {
+		t.Errorf("body leaks Detail %q: %s", "private-cgroup-path", body)
+	}
+	// Retry-After:1 would advertise transient retry; cgroup-unavailable is
+	// not transient (only restart fixes it). It must not be set here.
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After = %q, want empty for non-transient resize failure", got)
+	}
+}
+
+func TestPatchResources_CgroupWriteFailed_500(t *testing.T) {
+	env := newTestEnv(t)
+	projID := ensureProject(t, env)
+	sbx := seedSandbox(t, env, projID, "sbx-cgroup-500", domain.SandboxRunning, "mock")
+
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, _ domain.UpdateResourcesRequest) error {
+		return &domain.ProviderResizeError{
+			Reason: domain.ResizeReasonCgroupWriteFailed,
+			Detail: "open /sys/fs/cgroup/secret/cpu.max: input/output error",
+		}
+	}
+
+	rec := doRequest(t, env.handler, http.MethodPatch,
+		"/v1/sandboxes/"+sbx.SandboxID+"/resources",
+		map[string]any{"cpu_limit": 2})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, domain.ResizeReasonCgroupWriteFailed) {
+		t.Errorf("body %q missing reason %q", body, domain.ResizeReasonCgroupWriteFailed)
+	}
+	// Detail must be scrubbed on 5xx (defense-in-depth against backend
+	// errors that leak host paths or raw I/O strings).
+	if strings.Contains(body, "input/output error") || strings.Contains(body, "/sys/fs/cgroup/secret") {
+		t.Errorf("body leaks Detail: %s", body)
+	}
+}
