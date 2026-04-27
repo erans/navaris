@@ -34,6 +34,8 @@ services:
       # has demonstrably routed clones through ReflinkBackend.
       - --storage-mode=reflink
       - --log-level=debug
+      - --firecracker-vcpu-headroom-mult=2.0
+      - --firecracker-mem-headroom-mult=2.0
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "--header",
              "Authorization: Bearer test-token",

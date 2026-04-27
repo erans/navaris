@@ -18,6 +18,8 @@ services:
       - --enable-jailer=false
       - --auth-token=test-token
       - --log-level=debug
+      - --firecracker-vcpu-headroom-mult=2.0
+      - --firecracker-mem-headroom-mult=2.0
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "--header",
              "Authorization: Bearer test-token",
