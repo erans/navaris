@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -139,5 +140,46 @@ func TestBoostStore_ListAll(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("ListAll = %d rows, want 2", len(all))
+	}
+}
+
+func TestBoostStore_SourceRoundtrip(t *testing.T) {
+	s := newTestStore(t)
+	bs := s.BoostStore()
+	ctx := t.Context()
+
+	proj := createTestProject(t, s)
+
+	cases := []struct {
+		name   string
+		source string
+		want   string // empty → store should default to "external"
+	}{
+		{"external", "external", "external"},
+		{"in_sandbox", "in_sandbox", "in_sandbox"},
+		{"empty defaults to external", "", "external"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sbx := createTestSandbox(t, s, proj.ProjectID, fmt.Sprintf("sbx-src-%d", i))
+			b := &domain.Boost{
+				BoostID:   fmt.Sprintf("b-src-%d", i),
+				SandboxID: sbx.SandboxID,
+				StartedAt: time.Now().UTC(),
+				ExpiresAt: time.Now().UTC().Add(time.Minute),
+				State:     domain.BoostActive,
+				Source:    tc.source,
+			}
+			if err := bs.Upsert(ctx, b); err != nil {
+				t.Fatal(err)
+			}
+			got, err := bs.Get(ctx, sbx.SandboxID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Source != tc.want {
+				t.Errorf("Source = %q, want %q", got.Source, tc.want)
+			}
+		})
 	}
 }

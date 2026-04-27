@@ -381,6 +381,14 @@ function BoostSection({
             <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">Expires</div>
             <div className="mt-1 text-sm text-[var(--fg-primary)]">{active.expires_at}</div>
           </div>
+          {active.source && (
+            <div>
+              <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--fg-muted)]">Source</div>
+              <div className="mt-1 text-sm text-[var(--fg-primary)]">
+                {active.source === "in_sandbox" ? "in-sandbox" : "external"}
+              </div>
+            </div>
+          )}
         </div>
         {active.state === "revert_failed" && (
           <p role="alert" className="mb-3 text-xs text-[var(--status-failed)]">
