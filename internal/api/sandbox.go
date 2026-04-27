@@ -10,40 +10,43 @@ import (
 )
 
 type createSandboxRequest struct {
-	ProjectID     string         `json:"project_id"`
-	Name          string         `json:"name"`
-	ImageID       string         `json:"image_id"`
-	SnapshotID    string         `json:"snapshot_id"`
-	CPULimit      *int           `json:"cpu_limit"`
-	MemoryLimitMB *int           `json:"memory_limit_mb"`
-	NetworkMode   string         `json:"network_mode"`
-	ExpiresAt     *time.Time     `json:"expires_at"`
-	Metadata      map[string]any `json:"metadata"`
-	Backend       string         `json:"backend"`
+	ProjectID          string         `json:"project_id"`
+	Name               string         `json:"name"`
+	ImageID            string         `json:"image_id"`
+	SnapshotID         string         `json:"snapshot_id"`
+	CPULimit           *int           `json:"cpu_limit"`
+	MemoryLimitMB      *int           `json:"memory_limit_mb"`
+	NetworkMode        string         `json:"network_mode"`
+	EnableBoostChannel *bool          `json:"enable_boost_channel"`
+	ExpiresAt          *time.Time     `json:"expires_at"`
+	Metadata           map[string]any `json:"metadata"`
+	Backend            string         `json:"backend"`
 }
 
 type createSandboxFromSnapshotRequest struct {
-	ProjectID     string         `json:"project_id"`
-	Name          string         `json:"name"`
-	SnapshotID    string         `json:"snapshot_id"`
-	CPULimit      *int           `json:"cpu_limit"`
-	MemoryLimitMB *int           `json:"memory_limit_mb"`
-	NetworkMode   string         `json:"network_mode"`
-	ExpiresAt     *time.Time     `json:"expires_at"`
-	Metadata      map[string]any `json:"metadata"`
-	Backend       string         `json:"backend"`
+	ProjectID          string         `json:"project_id"`
+	Name               string         `json:"name"`
+	SnapshotID         string         `json:"snapshot_id"`
+	CPULimit           *int           `json:"cpu_limit"`
+	MemoryLimitMB      *int           `json:"memory_limit_mb"`
+	NetworkMode        string         `json:"network_mode"`
+	EnableBoostChannel *bool          `json:"enable_boost_channel"`
+	ExpiresAt          *time.Time     `json:"expires_at"`
+	Metadata           map[string]any `json:"metadata"`
+	Backend            string         `json:"backend"`
 }
 
 type createSandboxFromImageRequest struct {
-	ProjectID     string         `json:"project_id"`
-	Name          string         `json:"name"`
-	ImageID       string         `json:"image_id"`
-	CPULimit      *int           `json:"cpu_limit"`
-	MemoryLimitMB *int           `json:"memory_limit_mb"`
-	NetworkMode   string         `json:"network_mode"`
-	ExpiresAt     *time.Time     `json:"expires_at"`
-	Metadata      map[string]any `json:"metadata"`
-	Backend       string         `json:"backend"`
+	ProjectID          string         `json:"project_id"`
+	Name               string         `json:"name"`
+	ImageID            string         `json:"image_id"`
+	CPULimit           *int           `json:"cpu_limit"`
+	MemoryLimitMB      *int           `json:"memory_limit_mb"`
+	NetworkMode        string         `json:"network_mode"`
+	EnableBoostChannel *bool          `json:"enable_boost_channel"`
+	ExpiresAt          *time.Time     `json:"expires_at"`
+	Metadata           map[string]any `json:"metadata"`
+	Backend            string         `json:"backend"`
 }
 
 type stopSandboxRequest struct {
@@ -78,12 +81,13 @@ func (s *Server) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := service.CreateSandboxOpts{
-		CPULimit:      req.CPULimit,
-		MemoryLimitMB: req.MemoryLimitMB,
-		NetworkMode:   domain.NetworkMode(req.NetworkMode),
-		ExpiresAt:     req.ExpiresAt,
-		Metadata:      req.Metadata,
-		Backend:       req.Backend,
+		CPULimit:           req.CPULimit,
+		MemoryLimitMB:      req.MemoryLimitMB,
+		NetworkMode:        domain.NetworkMode(req.NetworkMode),
+		EnableBoostChannel: req.EnableBoostChannel,
+		ExpiresAt:          req.ExpiresAt,
+		Metadata:           req.Metadata,
+		Backend:            req.Backend,
 	}
 
 	var op *domain.Operation
@@ -118,12 +122,13 @@ func (s *Server) createSandboxFromSnapshot(w http.ResponseWriter, r *http.Reques
 	}
 
 	opts := service.CreateSandboxOpts{
-		CPULimit:      req.CPULimit,
-		MemoryLimitMB: req.MemoryLimitMB,
-		NetworkMode:   domain.NetworkMode(req.NetworkMode),
-		ExpiresAt:     req.ExpiresAt,
-		Metadata:      req.Metadata,
-		Backend:       req.Backend,
+		CPULimit:           req.CPULimit,
+		MemoryLimitMB:      req.MemoryLimitMB,
+		NetworkMode:        domain.NetworkMode(req.NetworkMode),
+		EnableBoostChannel: req.EnableBoostChannel,
+		ExpiresAt:          req.ExpiresAt,
+		Metadata:           req.Metadata,
+		Backend:            req.Backend,
 	}
 
 	op, err := s.cfg.Sandboxes.CreateFromSnapshot(r.Context(), req.ProjectID, req.Name, req.SnapshotID, opts)
@@ -146,12 +151,13 @@ func (s *Server) createSandboxFromImage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	opts := service.CreateSandboxOpts{
-		CPULimit:      req.CPULimit,
-		MemoryLimitMB: req.MemoryLimitMB,
-		NetworkMode:   domain.NetworkMode(req.NetworkMode),
-		ExpiresAt:     req.ExpiresAt,
-		Metadata:      req.Metadata,
-		Backend:       req.Backend,
+		CPULimit:           req.CPULimit,
+		MemoryLimitMB:      req.MemoryLimitMB,
+		NetworkMode:        domain.NetworkMode(req.NetworkMode),
+		EnableBoostChannel: req.EnableBoostChannel,
+		ExpiresAt:          req.ExpiresAt,
+		Metadata:           req.Metadata,
+		Backend:            req.Backend,
 	}
 
 	op, err := s.cfg.Sandboxes.Create(r.Context(), req.ProjectID, req.Name, req.ImageID, opts)
