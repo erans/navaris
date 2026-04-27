@@ -3,12 +3,14 @@
 package firecracker
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // effectiveCPULimit returns the cpu_limit to use for cgroup quota
@@ -220,13 +222,33 @@ func (p *Provider) setupCgroup(pid int, vmID string, limitCPU int64) error {
 // removeCgroup deletes the per-VM cgroup directory. Idempotent: missing
 // directories are not an error. Jailer mode is a no-op (jailer cleans up
 // its own cgroup tree on FC exit).
+//
+// Retries on EBUSY/ENOTEMPTY (the kernel rejects rmdir while pids are
+// still in cgroup.procs). DestroySandbox force-stops the VM with SIGKILL
+// but doesn't wait for the kernel to fully reap the process; without a
+// retry the cgroup directory leaks on every destroy. Waits up to ~500ms
+// total which is comfortably more than typical FC exit time.
 func (p *Provider) removeCgroup(vmID string) error {
 	if p.config.EnableJailer {
 		return nil
 	}
 	dir := p.cgroupCPUDir(vmID)
-	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove cgroup dir %s: %w", dir, err)
+	const maxAttempts = 10
+	const retryDelay = 50 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := os.Remove(dir)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		lastErr = err
+		// EBUSY / ENOTEMPTY: the kernel still has pids in cgroup.procs.
+		// Wait a bit for FC to be reaped, then try again.
+		if !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.ENOTEMPTY) {
+			// Some other error (permission, etc.) — no point retrying.
+			return fmt.Errorf("remove cgroup dir %s: %w", dir, err)
+		}
+		time.Sleep(retryDelay)
 	}
-	return nil
+	return fmt.Errorf("remove cgroup dir %s: still busy after %d attempts: %w", dir, maxAttempts, lastErr)
 }

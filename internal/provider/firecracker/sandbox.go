@@ -612,6 +612,14 @@ func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (r
 		return fmt.Errorf("firecracker destroy %s: %w", vmID, err)
 	}
 
+	// Remove the per-VM CPU cgroup. Best-effort: a leftover cgroup is
+	// harmless and self-cleans on host reboot, but every churn would
+	// otherwise leak a directory under CgroupRoot. Idempotent — a missing
+	// cgroup (e.g., setupCgroup never succeeded) is not an error.
+	if err := p.removeCgroup(vmID); err != nil {
+		slog.Warn("firecracker: remove cgroup", "vm", vmID, "err", err)
+	}
+
 	p.vmMu.Lock()
 	delete(p.vms, vmID)
 	p.vmMu.Unlock()
