@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,24 @@ func (c *Config) validateDefaults() error {
 	return nil
 }
 
+// boostServer is the interface the per-VM boost listener uses to dispatch
+// accepted connections. *api.BoostHTTPHandler satisfies this interface via
+// duck-typing; the interface lives here (in the tagged firecracker package)
+// so the firecracker provider never needs to import internal/api.
+type boostServer interface {
+	Serve(ctx context.Context, conn net.Conn, sandboxID string)
+}
+
+// boostListener holds the state for a per-VM boost channel listener.
+// Methods are implemented in boost_listener.go.
+type boostListener struct {
+	vmID      string
+	sandboxID string
+	udsPath   string
+	listener  net.Listener
+	cancel    context.CancelFunc
+}
+
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
 	config        Config
@@ -125,6 +144,10 @@ type Provider struct {
 	hostIface     string
 	cgroupVersion string
 	storage       *storage.Registry
+
+	boostHandler   boostServer
+	boostListeners map[string]*boostListener // keyed by vmID
+	boostMu        sync.Mutex
 }
 
 // New creates a Firecracker provider and recovers any orphaned VMs.
@@ -174,14 +197,15 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	p := &Provider{
-		config:        cfg,
-		subnets:       network.NewAllocator(),
-		uids:          jailer.NewUIDAllocator(10000),
-		portAlloc:     network.NewPortAllocator(),
-		cidNext:       cfg.VsockCIDBase,
-		vms:           make(map[string]*VMInfo),
-		hostIface:     hostIface,
-		cgroupVersion: detectCgroupVersion(),
+		config:         cfg,
+		subnets:        network.NewAllocator(),
+		uids:           jailer.NewUIDAllocator(10000),
+		portAlloc:      network.NewPortAllocator(),
+		cidNext:        cfg.VsockCIDBase,
+		vms:            make(map[string]*VMInfo),
+		hostIface:      hostIface,
+		cgroupVersion:  detectCgroupVersion(),
+		boostListeners: make(map[string]*boostListener),
 	}
 	p.storage = cfg.Storage
 
@@ -315,6 +339,13 @@ func (p *Provider) allocateCID() uint32 {
 	cid := p.cidNext
 	p.cidNext++
 	return cid
+}
+
+// SetBoostHandler registers the handler that will serve per-connection boost
+// HTTP requests. Must be called before any sandbox is started. If not called,
+// boost listeners are not started (boostHandler == nil guard in startBoostListener).
+func (p *Provider) SetBoostHandler(h boostServer) {
+	p.boostHandler = h
 }
 
 // Health checks if the Firecracker binary is accessible.

@@ -117,6 +117,10 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 		CeilingCPU:    rl.CeilingCPU,
 		CeilingMemMib: rl.CeilingMemMib,
 	}
+	if req.EnableBoostChannel != nil {
+		info.EnableBoostChannel = *req.EnableBoostChannel
+	}
+	info.SandboxID = req.SandboxID
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
@@ -274,6 +278,14 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 	p.vms[vmID] = info
 	p.vmMu.Unlock()
 
+	// Start per-VM boost channel listener (no-op if boostHandler is nil or
+	// boost channel is not enabled for this sandbox).
+	if info.EnableBoostChannel {
+		if err := p.startBoostListener(context.Background(), vmID); err != nil {
+			slog.Warn("firecracker: start boost listener failed", "vm", vmID, "err", err)
+		}
+	}
+
 	// Add masquerade for published mode.
 	if info.NetworkMode == string(domain.NetworkPublished) {
 		guestIP := p.subnets.GuestIP(subnetIdx).String()
@@ -399,6 +411,13 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	p.vms[vmID] = info
 	p.vmMu.Unlock()
 
+	// Start per-VM boost channel listener for snapshot-restored VMs.
+	if info.EnableBoostChannel {
+		if err := p.startBoostListener(context.Background(), vmID); err != nil {
+			slog.Warn("firecracker: start boost listener failed (snapshot restore)", "vm", vmID, "err", err)
+		}
+	}
+
 	// Add masquerade for published mode.
 	if info.NetworkMode == string(domain.NetworkPublished) {
 		guestIP := p.subnets.GuestIP(subnetIdx).String()
@@ -424,6 +443,11 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 	defer func() { endSpan(retErr) }()
 
 	vmID := ref.Ref
+
+	// Stop the boost listener before killing the VM process so the UDS is
+	// unlinked and no new connections arrive during shutdown.
+	p.stopBoostListener(vmID)
+
 	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
@@ -498,6 +522,10 @@ stopped:
 func (p *Provider) DestroySandbox(ctx context.Context, ref domain.BackendRef) (retErr error) {
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "DestroySandbox")
 	defer func() { endSpan(retErr) }()
+
+	// Stop the boost listener before tearing down the VM so the UDS is
+	// unlinked cleanly and no new connections are accepted during teardown.
+	p.stopBoostListener(ref.Ref)
 
 	// Stop first if running. Ignore "not found" errors (already stopped/cleaned).
 	if err := p.StopSandbox(ctx, ref, true); err != nil && !os.IsNotExist(errors.Unwrap(err)) {
