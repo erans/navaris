@@ -339,3 +339,101 @@ func TestBoost_E2E_Incus_CPU_VisibleInGuest(t *testing.T) {
 		t.Errorf("nproc after cancel = %d, want 1", got)
 	}
 }
+
+// TestBoost_E2E_FC_CPU_AppliesToGuest creates a Firecracker sandbox with
+// cpu_limit=1 and uses the boost API to grow to cpu_limit=2 within the
+// boot ceiling, then reads /sys/fs/cgroup/cpu.max from inside the guest
+// to verify the change. Cancel reverts to cpu_limit=1.
+//
+// Requires --firecracker-vcpu-headroom-mult > 1.0 on the daemon so the
+// boot ceiling is at least 2; otherwise the boost is rejected with
+// exceeds_ceiling and the test skips. CI's standard FC compose uses
+// headroom 2.0 (set in PR #17 and used by this test).
+//
+// Skipped on Incus.
+func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
+	img := baseImage()
+	if strings.Contains(img, "/") {
+		t.Skipf("skipping on Incus (image=%s)", img)
+	}
+
+	c := newClient()
+	ctx := context.Background()
+	proj := createTestProject(t, c)
+
+	cpu := 1
+	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
+		ProjectID: proj.ProjectID,
+		Name:      "boost-e2e-cpu",
+		ImageID:   img,
+		CPULimit:  &cpu,
+	}, waitOpts())
+	if err != nil {
+		t.Fatalf("CreateSandboxAndWait: %v", err)
+	}
+	if op.State != client.OpSucceeded {
+		t.Fatalf("create op state=%s error=%s", op.State, op.ErrorText)
+	}
+	sandboxID := op.ResourceID
+	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
+
+	beforeQuota, ok := readGuestCPUQuota(t, c, sandboxID)
+	if !ok {
+		t.Skip("cpu.max not readable from guest; daemon may lack cgroup write permission in this env")
+	}
+	t.Logf("cpu.max quota before boost: %d", beforeQuota)
+	if beforeQuota != 100_000 {
+		t.Fatalf("baseline quota = %d, want 100000 (cpu_limit=1)", beforeQuota)
+	}
+
+	if _, err := c.StartBoost(ctx, sandboxID, client.StartBoostRequest{
+		CPULimit:        ptrIntE2E(2),
+		DurationSeconds: 30,
+	}); err != nil {
+		if strings.Contains(err.Error(), "exceeds_ceiling") {
+			t.Skipf("CPU boost rejected for exceeding ceiling — daemon may need --firecracker-vcpu-headroom-mult>1.0; got: %v", err)
+		}
+		t.Fatalf("StartBoost: %v", err)
+	}
+
+	duringQuota, _ := readGuestCPUQuota(t, c, sandboxID)
+	t.Logf("cpu.max quota during boost: %d", duringQuota)
+	if duringQuota != 200_000 {
+		t.Errorf("quota during boost = %d, want 200000 (cpu_limit=2)", duringQuota)
+	}
+
+	if err := c.CancelBoost(ctx, sandboxID); err != nil {
+		t.Fatalf("CancelBoost: %v", err)
+	}
+
+	afterQuota, _ := readGuestCPUQuota(t, c, sandboxID)
+	t.Logf("cpu.max quota after cancel: %d", afterQuota)
+	if afterQuota != 100_000 {
+		t.Errorf("quota after cancel = %d, want 100000 (reverted)", afterQuota)
+	}
+}
+
+// readGuestCPUQuota reads the CFS quota microseconds from inside the
+// sandbox via /sys/fs/cgroup/cpu.max (v2) or /sys/fs/cgroup/cpu/cpu.cfs_quota_us (v1).
+// Returns (quota, true) on success; (0, false) when cgroupfs isn't readable.
+func readGuestCPUQuota(t *testing.T, c *client.Client, sandboxID string) (int, bool) {
+	t.Helper()
+	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
+		Command: []string{"sh", "-c", "cat /sys/fs/cgroup/cpu.max 2>/dev/null || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us"},
+	})
+	if err != nil {
+		t.Fatalf("exec read cpu.max: %v", err)
+	}
+	if exec.ExitCode != 0 {
+		return 0, false
+	}
+	parts := strings.Fields(strings.TrimSpace(exec.Stdout))
+	if len(parts) == 0 || parts[0] == "max" {
+		return 0, false
+	}
+	q, err := strconv.Atoi(parts[0])
+	if err != nil {
+		t.Fatalf("parse quota %q: %v", parts[0], err)
+	}
+	return q, true
+}
