@@ -345,16 +345,26 @@ func TestBoost_E2E_Incus_CPU_VisibleInGuest(t *testing.T) {
 // boot ceiling, then verifies via in-guest workload timing that the host
 // cgroup CPU bandwidth limit changed. Cancel reverts to cpu_limit=1.
 //
-// The test measures the wall-clock ratio of two parallel CPU-bound
-// workloads (sha256sum on /dev/zero) vs one serial workload, in three
-// phases:
-//   - Phase A (boot, limit=1): parallel/serial >= 1.5 — throttled
-//   - Phase B (boost, limit=2): parallel/serial <= 1.3 — unthrottled
-//   - Phase C (cancel, limit=1): parallel/serial >= 1.5 — reverted
+// The test compares single-thread serial workload time across three phases:
+//
+//   - Phase A (boot, cgroup limit=1): baseline serial time t_A.
+//   - Phase B (boosted, cgroup limit=2): t_B should be ~0.5 * t_A —
+//     doubling the cgroup quota doubles the throughput available to the
+//     FC process, which directly halves a CPU-bound workload's wall time.
+//     Asserted as t_A / t_B >= 1.5 (50% improvement at minimum).
+//   - Phase C (cancelled, cgroup limit=1): t_C should be ~t_A. Asserted
+//     as t_A / t_C in [0.7, 1.4].
+//
+// Why single-thread instead of a parallel/serial ratio: FC's vmm threads
+// consume non-trivial host CPU during guest workloads, so even at
+// limit==ceiling the per-vCPU effective throughput stays bounded and a
+// parallel/serial ratio doesn't drop to 1.0 (CI evidence: vmm uses ~1 host
+// CPU; at ceiling=2, two vCPUs share the remaining 1 CPU). Single-thread
+// throughput across phases is a clean signal: if the cgroup quota changes,
+// the throughput available to the FC process changes proportionally.
 //
 // Reading /sys/fs/cgroup/cpu.max from inside the guest does not work
-// because the host cgroup is invisible to the guest kernel; workload
-// timing is the only in-guest way to observe the host throttle.
+// because the host cgroup is invisible to the guest kernel.
 //
 // Requires --firecracker-vcpu-headroom-mult > 1.0 on the daemon so the
 // boot ceiling is at least 2; otherwise the boost is rejected with
@@ -390,25 +400,12 @@ func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
 
 	bytes := calibrateWorkload(t, c, sandboxID)
 
-	measure := func(label string) float64 {
-		t.Helper()
-		tSerial := runWorkload(t, c, sandboxID, bytes)
-		tParallel := runWorkloadParallel(t, c, sandboxID, bytes, 2)
-		ratio := float64(tParallel) / float64(tSerial)
-		t.Logf("%s: serial=%s parallel=%s ratio=%.2f",
-			label, tSerial, tParallel, ratio)
-		return ratio
-	}
+	// Phase A: baseline serial time at boot-time cgroup limit=1.
+	tA := runWorkload(t, c, sandboxID, bytes)
+	t.Logf("phase A (boot, limit=1): serial=%s", tA)
 
-	const minThrottled = 1.5
-	const maxUnthrottled = 1.3
-
-	// Phase A: boot-time enforcement (cpu_limit=1, ceiling=2 → throttled).
-	if r := measure("phase A (boot, limit=1)"); r < minThrottled {
-		t.Fatalf("phase A ratio = %.2f, want >= %.2f (boot-time cgroup not enforced)", r, minThrottled)
-	}
-
-	// Phase B: boost to limit=2 (== ceiling → unthrottled).
+	// Phase B: boost to limit=2. Single-thread workload should run ~2x
+	// faster because the cgroup quota doubled.
 	if _, err := c.StartBoost(ctx, sandboxID, client.StartBoostRequest{
 		CPULimit:        ptrIntE2E(2),
 		DurationSeconds: 120,
@@ -419,16 +416,29 @@ func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
 		t.Fatalf("StartBoost: %v", err)
 	}
 
-	if r := measure("phase B (boost, limit=2)"); r > maxUnthrottled {
-		t.Fatalf("phase B ratio = %.2f, want <= %.2f (boost did not lift cgroup throttle)", r, maxUnthrottled)
+	tB := runWorkload(t, c, sandboxID, bytes)
+	growRatio := float64(tA) / float64(tB)
+	t.Logf("phase B (boost, limit=2): serial=%s, t_A/t_B=%.2f", tB, growRatio)
+
+	const minGrowRatio = 1.5
+	if growRatio < minGrowRatio {
+		t.Fatalf("phase B grow ratio = %.2f, want >= %.2f (boost did not lift cgroup throttle: t_A=%s, t_B=%s)",
+			growRatio, minGrowRatio, tA, tB)
 	}
 
-	// Phase C: cancel and verify revert.
+	// Phase C: cancel and verify revert. Single-thread time should return
+	// to ~t_A.
 	if err := c.CancelBoost(ctx, sandboxID); err != nil {
 		t.Fatalf("CancelBoost: %v", err)
 	}
 
-	if r := measure("phase C (cancel, limit=1)"); r < minThrottled {
-		t.Fatalf("phase C ratio = %.2f, want >= %.2f (cancel did not restore cgroup throttle)", r, minThrottled)
+	tC := runWorkload(t, c, sandboxID, bytes)
+	revertRatio := float64(tA) / float64(tC)
+	t.Logf("phase C (cancel, limit=1): serial=%s, t_A/t_C=%.2f", tC, revertRatio)
+
+	const revertMin, revertMax = 0.7, 1.4
+	if revertRatio < revertMin || revertRatio > revertMax {
+		t.Fatalf("phase C revert ratio = %.2f, want in [%.2f, %.2f] (cancel did not restore cgroup throttle: t_A=%s, t_C=%s)",
+			revertRatio, revertMin, revertMax, tA, tC)
 	}
 }
