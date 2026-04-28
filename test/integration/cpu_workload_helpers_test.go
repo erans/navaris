@@ -75,6 +75,11 @@ func calibrateAwk(t *testing.T, c *client.Client, sandboxID string) int64 {
 		t.Skipf("calibration sample %s > 15s; runner anomalously slow, ratio signal unreliable", calDur)
 	}
 	const targetNs int64 = 3 * int64(time.Second)
+	// No floor at calN: n < calN happens iff cal > targetNs (slow runner),
+	// in which case capping n to calN would inflate each measurement from
+	// the 3s target to ~cal seconds — exactly when CI time budget is tight.
+	// The < 500ms skip threshold above already guards against fast-runner
+	// sub-second workloads (where n > calN by construction).
 	n := int64(float64(calN) * float64(targetNs) / float64(cal))
 	t.Logf("calibrate: chose n=%d for ~3s single-thread", n)
 	return n
