@@ -69,16 +69,13 @@ func calibrateAwk(t *testing.T, c *client.Client, sandboxID string) int64 {
 	calDur := time.Duration(cal)
 	t.Logf("calibrate: n=%d took %s", calN, calDur)
 	if calDur < 500*time.Millisecond {
-		t.Skipf("calibration sample %s < 500ms; runner anomalously fast or under-load, ratio signal unreliable", calDur)
+		t.Skipf("calibration sample %s < 500ms; runner anomalously fast (host nearly idle), ratio signal unreliable", calDur)
 	}
 	if calDur > 15*time.Second {
 		t.Skipf("calibration sample %s > 15s; runner anomalously slow, ratio signal unreliable", calDur)
 	}
 	const targetNs int64 = 3 * int64(time.Second)
 	n := int64(float64(calN) * float64(targetNs) / float64(cal))
-	if n < calN {
-		n = calN // floor at calibration N so we never measure on a sub-second workload
-	}
 	t.Logf("calibrate: chose n=%d for ~3s single-thread", n)
 	return n
 }
