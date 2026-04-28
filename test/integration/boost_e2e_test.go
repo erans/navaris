@@ -396,7 +396,7 @@ func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
 		tParallel := runWorkloadParallel(t, c, sandboxID, bytes, 2)
 		ratio := float64(tParallel) / float64(tSerial)
 		t.Logf("%s: serial=%s parallel=%s ratio=%.2f",
-			label, time.Duration(tSerial), time.Duration(tParallel), ratio)
+			label, tSerial, tParallel, ratio)
 		return ratio
 	}
 

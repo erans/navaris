@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,34 +13,39 @@ import (
 )
 
 // runWorkload runs `head -c <bytes> /dev/zero | sha256sum > /dev/null`
-// once inside the sandbox and returns elapsed wall time in nanoseconds,
-// measured by the guest's own `date +%s%N` immediately before and after
-// the command. Excludes the c.Exec round-trip cost.
+// once inside the sandbox and returns elapsed wall time.
+//
+// Wall time is measured on the test (Go) side, not via `date` inside the
+// guest: busybox `date` in the alpine rootfs ignores the `%N` (nanosecond)
+// format specifier and returns only seconds, which is far too coarse for a
+// 3s workload. The Exec round-trip on the local Docker network adds <50ms
+// and is identical for serial and parallel runs, so it cancels out of the
+// ratio used by the throttle assertions.
 //
 // sha256sum on /dev/zero is unambiguously CPU-bound: the hash is stateful
 // across the byte stream, so no interpreter or shell optimisation can skip
-// the work. (An earlier awk-based implementation produced 4ns elapsed in
-// CI — busybox awk evidently dead-code-eliminates BEGIN blocks with no
-// observable output.)
-func runWorkload(t *testing.T, c *client.Client, sandboxID string, bytes int64) int64 {
+// the work.
+func runWorkload(t *testing.T, c *client.Client, sandboxID string, bytes int64) time.Duration {
 	t.Helper()
-	cmd := fmt.Sprintf("T0=$(date +%%s%%N); head -c %d /dev/zero | sha256sum > /dev/null; T1=$(date +%%s%%N); echo $((T1 - T0))", bytes)
+	cmd := fmt.Sprintf("head -c %d /dev/zero | sha256sum > /dev/null", bytes)
+	start := time.Now()
 	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
 		Command: []string{"sh", "-c", cmd},
 	})
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("runWorkload: exec: %v", err)
 	}
 	if exec.ExitCode != 0 {
 		t.Fatalf("runWorkload: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
 	}
-	return parseElapsedNs(t, exec.Stdout)
+	return elapsed
 }
 
-// runWorkloadParallel spawns k copies of the same workload in the background
-// via busybox sh, waits for all of them, and returns aggregate wall time
-// in nanoseconds (the time from spawning the first to the last finishing).
-func runWorkloadParallel(t *testing.T, c *client.Client, sandboxID string, bytes int64, k int) int64 {
+// runWorkloadParallel spawns k copies of the same workload in the
+// background via busybox sh, waits for all of them, and returns
+// elapsed wall time.
+func runWorkloadParallel(t *testing.T, c *client.Client, sandboxID string, bytes int64, k int) time.Duration {
 	t.Helper()
 	if k < 1 {
 		t.Fatalf("runWorkloadParallel: k=%d must be >= 1", k)
@@ -50,17 +54,19 @@ func runWorkloadParallel(t *testing.T, c *client.Client, sandboxID string, bytes
 	for i := 0; i < k; i++ {
 		spawn.WriteString(fmt.Sprintf("(head -c %d /dev/zero | sha256sum > /dev/null) & ", bytes))
 	}
-	cmd := fmt.Sprintf("T0=$(date +%%s%%N); %swait; T1=$(date +%%s%%N); echo $((T1 - T0))", spawn.String())
+	cmd := spawn.String() + "wait"
+	start := time.Now()
 	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
 		Command: []string{"sh", "-c", cmd},
 	})
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("runWorkloadParallel: exec: %v", err)
 	}
 	if exec.ExitCode != 0 {
 		t.Fatalf("runWorkloadParallel: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
 	}
-	return parseElapsedNs(t, exec.Stdout)
+	return elapsed
 }
 
 // calibrateWorkload runs one short workload inside the guest and computes
@@ -72,36 +78,20 @@ func calibrateWorkload(t *testing.T, c *client.Client, sandboxID string) int64 {
 	t.Helper()
 	const calBytes int64 = 64 * 1024 * 1024 // 64 MiB
 	cal := runWorkload(t, c, sandboxID, calBytes)
-	calDur := time.Duration(cal)
-	t.Logf("calibrate: bytes=%d took %s", calBytes, calDur)
-	if calDur < 100*time.Millisecond {
-		t.Skipf("calibration sample %s < 100ms; runner anomalously fast (host nearly idle), ratio signal unreliable", calDur)
+	t.Logf("calibrate: bytes=%d took %s", calBytes, cal)
+	if cal < 100*time.Millisecond {
+		t.Skipf("calibration sample %s < 100ms; runner anomalously fast (host nearly idle), ratio signal unreliable", cal)
 	}
-	if calDur > 15*time.Second {
-		t.Skipf("calibration sample %s > 15s; runner anomalously slow, ratio signal unreliable", calDur)
+	if cal > 15*time.Second {
+		t.Skipf("calibration sample %s > 15s; runner anomalously slow, ratio signal unreliable", cal)
 	}
-	const targetNs int64 = 3 * int64(time.Second)
-	// No floor at calBytes: bytes < calBytes happens iff cal > targetNs
+	const target = 3 * time.Second
+	// No floor at calBytes: bytes < calBytes happens iff cal > target
 	// (slow runner), in which case capping bytes to calBytes would inflate
-	// each measurement from the 3s target to ~cal seconds — exactly when
-	// CI time budget is tight. The < 100ms skip threshold above already
-	// guards against fast-runner sub-second workloads.
-	bytes := int64(float64(calBytes) * float64(targetNs) / float64(cal))
+	// each measurement from the 3s target to ~cal — exactly when CI time
+	// budget is tight. The < 100ms skip threshold above already guards
+	// against fast-runner sub-second workloads.
+	bytes := int64(float64(calBytes) * float64(target) / float64(cal))
 	t.Logf("calibrate: chose bytes=%d for ~3s single-thread", bytes)
 	return bytes
-}
-
-// parseElapsedNs parses the stdout of a wall-time-printing shell command
-// (one line, integer nanoseconds).
-func parseElapsedNs(t *testing.T, stdout string) int64 {
-	t.Helper()
-	s := strings.TrimSpace(stdout)
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		t.Fatalf("parseElapsedNs: bad output %q: %v", s, err)
-	}
-	if v <= 0 {
-		t.Fatalf("parseElapsedNs: non-positive elapsed %d", v)
-	}
-	return v
 }

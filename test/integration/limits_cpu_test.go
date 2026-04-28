@@ -6,7 +6,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 )
@@ -60,7 +59,7 @@ func TestSandbox_HonorsRequestedCPULimit(t *testing.T) {
 	ratio := float64(tParallel) / float64(tSerial)
 
 	t.Logf("cpu_limit=1, ceiling=2: serial=%s parallel=%s ratio=%.2f",
-		time.Duration(tSerial), time.Duration(tParallel), ratio)
+		tSerial, tParallel, ratio)
 
 	const minThrottledRatio = 1.5
 	if ratio < minThrottledRatio {
