@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,8 +18,8 @@ import (
 // guest: busybox `date` in the alpine rootfs ignores the `%N` (nanosecond)
 // format specifier and returns only seconds, which is far too coarse for a
 // 3s workload. The Exec round-trip on the local Docker network adds <50ms
-// and is identical for serial and parallel runs, so it cancels out of the
-// ratio used by the throttle assertions.
+// and is identical across calls, so it cancels out of the cross-phase
+// comparison used by the throttle assertion.
 //
 // sha256sum on /dev/zero is unambiguously CPU-bound: the hash is stateful
 // across the byte stream, so no interpreter or shell optimisation can skip
@@ -38,33 +37,6 @@ func runWorkload(t *testing.T, c *client.Client, sandboxID string, bytes int64) 
 	}
 	if exec.ExitCode != 0 {
 		t.Fatalf("runWorkload: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
-	}
-	return elapsed
-}
-
-// runWorkloadParallel spawns k copies of the same workload in the
-// background via busybox sh, waits for all of them, and returns
-// elapsed wall time.
-func runWorkloadParallel(t *testing.T, c *client.Client, sandboxID string, bytes int64, k int) time.Duration {
-	t.Helper()
-	if k < 1 {
-		t.Fatalf("runWorkloadParallel: k=%d must be >= 1", k)
-	}
-	var spawn strings.Builder
-	for i := 0; i < k; i++ {
-		spawn.WriteString(fmt.Sprintf("(head -c %d /dev/zero | sha256sum > /dev/null) & ", bytes))
-	}
-	cmd := spawn.String() + "wait"
-	start := time.Now()
-	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
-		Command: []string{"sh", "-c", cmd},
-	})
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("runWorkloadParallel: exec: %v", err)
-	}
-	if exec.ExitCode != 0 {
-		t.Fatalf("runWorkloadParallel: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
 	}
 	return elapsed
 }
