@@ -13,76 +13,82 @@ import (
 	"github.com/navaris/navaris/pkg/client"
 )
 
-// runAwk runs `awk 'BEGIN{s=0;for(i=0;i<n;i++)s+=i}'` once inside the
-// sandbox and returns elapsed wall time in nanoseconds, measured by the
-// guest's own `date +%s%N` immediately before and after the awk command.
-// Excludes the c.Exec round-trip cost.
-func runAwk(t *testing.T, c *client.Client, sandboxID string, n int64) int64 {
+// runWorkload runs `head -c <bytes> /dev/zero | sha256sum > /dev/null`
+// once inside the sandbox and returns elapsed wall time in nanoseconds,
+// measured by the guest's own `date +%s%N` immediately before and after
+// the command. Excludes the c.Exec round-trip cost.
+//
+// sha256sum on /dev/zero is unambiguously CPU-bound: the hash is stateful
+// across the byte stream, so no interpreter or shell optimisation can skip
+// the work. (An earlier awk-based implementation produced 4ns elapsed in
+// CI — busybox awk evidently dead-code-eliminates BEGIN blocks with no
+// observable output.)
+func runWorkload(t *testing.T, c *client.Client, sandboxID string, bytes int64) int64 {
 	t.Helper()
-	cmd := fmt.Sprintf("T0=$(date +%%s%%N); awk -v n=%d 'BEGIN{s=0;for(i=0;i<n;i++)s+=i}'; T1=$(date +%%s%%N); echo $((T1 - T0))", n)
+	cmd := fmt.Sprintf("T0=$(date +%%s%%N); head -c %d /dev/zero | sha256sum > /dev/null; T1=$(date +%%s%%N); echo $((T1 - T0))", bytes)
 	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
 		Command: []string{"sh", "-c", cmd},
 	})
 	if err != nil {
-		t.Fatalf("runAwk: exec: %v", err)
+		t.Fatalf("runWorkload: exec: %v", err)
 	}
 	if exec.ExitCode != 0 {
-		t.Fatalf("runAwk: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
+		t.Fatalf("runWorkload: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
 	}
 	return parseElapsedNs(t, exec.Stdout)
 }
 
-// runAwkParallel spawns k copies of the same awk in the background via
-// busybox sh, waits for all of them, and returns aggregate wall time
+// runWorkloadParallel spawns k copies of the same workload in the background
+// via busybox sh, waits for all of them, and returns aggregate wall time
 // in nanoseconds (the time from spawning the first to the last finishing).
-func runAwkParallel(t *testing.T, c *client.Client, sandboxID string, n int64, k int) int64 {
+func runWorkloadParallel(t *testing.T, c *client.Client, sandboxID string, bytes int64, k int) int64 {
 	t.Helper()
 	if k < 1 {
-		t.Fatalf("runAwkParallel: k=%d must be >= 1", k)
+		t.Fatalf("runWorkloadParallel: k=%d must be >= 1", k)
 	}
 	var spawn strings.Builder
 	for i := 0; i < k; i++ {
-		spawn.WriteString(fmt.Sprintf("awk -v n=%d 'BEGIN{s=0;for(i=0;i<n;i++)s+=i}' & ", n))
+		spawn.WriteString(fmt.Sprintf("(head -c %d /dev/zero | sha256sum > /dev/null) & ", bytes))
 	}
 	cmd := fmt.Sprintf("T0=$(date +%%s%%N); %swait; T1=$(date +%%s%%N); echo $((T1 - T0))", spawn.String())
 	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
 		Command: []string{"sh", "-c", cmd},
 	})
 	if err != nil {
-		t.Fatalf("runAwkParallel: exec: %v", err)
+		t.Fatalf("runWorkloadParallel: exec: %v", err)
 	}
 	if exec.ExitCode != 0 {
-		t.Fatalf("runAwkParallel: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
+		t.Fatalf("runWorkloadParallel: exit=%d stderr=%s", exec.ExitCode, exec.Stderr)
 	}
 	return parseElapsedNs(t, exec.Stdout)
 }
 
-// calibrateAwk runs one short awk inside the guest and computes an n
-// that targets ~3s of single-threaded wall time. Skips the test (via
-// t.Skipf) when the calibration sample is < 0.5s or > 15s — these
-// bracket "runner so fast/slow that the differential signal isn't
-// reliable". Returns the calibrated iteration count.
-func calibrateAwk(t *testing.T, c *client.Client, sandboxID string) int64 {
+// calibrateWorkload runs one short workload inside the guest and computes
+// a byte count that targets ~3s of single-threaded wall time. Skips the
+// test (via t.Skipf) when the calibration sample is < 100ms or > 15s —
+// these bracket "runner so fast/slow that the differential signal isn't
+// reliable". Returns the calibrated byte count.
+func calibrateWorkload(t *testing.T, c *client.Client, sandboxID string) int64 {
 	t.Helper()
-	const calN = 10_000_000
-	cal := runAwk(t, c, sandboxID, calN)
+	const calBytes int64 = 64 * 1024 * 1024 // 64 MiB
+	cal := runWorkload(t, c, sandboxID, calBytes)
 	calDur := time.Duration(cal)
-	t.Logf("calibrate: n=%d took %s", calN, calDur)
-	if calDur < 500*time.Millisecond {
-		t.Skipf("calibration sample %s < 500ms; runner anomalously fast (host nearly idle), ratio signal unreliable", calDur)
+	t.Logf("calibrate: bytes=%d took %s", calBytes, calDur)
+	if calDur < 100*time.Millisecond {
+		t.Skipf("calibration sample %s < 100ms; runner anomalously fast (host nearly idle), ratio signal unreliable", calDur)
 	}
 	if calDur > 15*time.Second {
 		t.Skipf("calibration sample %s > 15s; runner anomalously slow, ratio signal unreliable", calDur)
 	}
 	const targetNs int64 = 3 * int64(time.Second)
-	// No floor at calN: n < calN happens iff cal > targetNs (slow runner),
-	// in which case capping n to calN would inflate each measurement from
-	// the 3s target to ~cal seconds — exactly when CI time budget is tight.
-	// The < 500ms skip threshold above already guards against fast-runner
-	// sub-second workloads (where n > calN by construction).
-	n := int64(float64(calN) * float64(targetNs) / float64(cal))
-	t.Logf("calibrate: chose n=%d for ~3s single-thread", n)
-	return n
+	// No floor at calBytes: bytes < calBytes happens iff cal > targetNs
+	// (slow runner), in which case capping bytes to calBytes would inflate
+	// each measurement from the 3s target to ~cal seconds — exactly when
+	// CI time budget is tight. The < 100ms skip threshold above already
+	// guards against fast-runner sub-second workloads.
+	bytes := int64(float64(calBytes) * float64(targetNs) / float64(cal))
+	t.Logf("calibrate: chose bytes=%d for ~3s single-thread", bytes)
+	return bytes
 }
 
 // parseElapsedNs parses the stdout of a wall-time-printing shell command

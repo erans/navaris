@@ -345,8 +345,9 @@ func TestBoost_E2E_Incus_CPU_VisibleInGuest(t *testing.T) {
 // boot ceiling, then verifies via in-guest workload timing that the host
 // cgroup CPU bandwidth limit changed. Cancel reverts to cpu_limit=1.
 //
-// The test measures the wall-clock ratio of two parallel CPU-bound awk
-// loops vs one serial awk in three phases:
+// The test measures the wall-clock ratio of two parallel CPU-bound
+// workloads (sha256sum on /dev/zero) vs one serial workload, in three
+// phases:
 //   - Phase A (boot, limit=1): parallel/serial >= 1.5 — throttled
 //   - Phase B (boost, limit=2): parallel/serial <= 1.3 — unthrottled
 //   - Phase C (cancel, limit=1): parallel/serial >= 1.5 — reverted
@@ -387,12 +388,12 @@ func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
-	n := calibrateAwk(t, c, sandboxID)
+	bytes := calibrateWorkload(t, c, sandboxID)
 
 	measure := func(label string) float64 {
 		t.Helper()
-		tSerial := runAwk(t, c, sandboxID, n)
-		tParallel := runAwkParallel(t, c, sandboxID, n, 2)
+		tSerial := runWorkload(t, c, sandboxID, bytes)
+		tParallel := runWorkloadParallel(t, c, sandboxID, bytes, 2)
 		ratio := float64(tParallel) / float64(tSerial)
 		t.Logf("%s: serial=%s parallel=%s ratio=%.2f",
 			label, time.Duration(tSerial), time.Duration(tParallel), ratio)
