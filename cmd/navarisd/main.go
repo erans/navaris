@@ -41,6 +41,7 @@ type config struct {
 	firecrackerDefaultMemoryMB  int
 	firecrackerVcpuHeadroomMult float64
 	firecrackerMemHeadroomMult  float64
+	firecrackerCgroupRoot       string
 	kernelPath                  string
 	imageDir                    string
 	chrootBase                  string
@@ -94,6 +95,7 @@ func parseFlags() config {
 	flag.IntVar(&cfg.firecrackerDefaultMemoryMB, "firecracker-default-memory-mb", 256, "default memory (MB, treated as MiB inside Firecracker) when MemoryLimitMB is unset")
 	flag.Float64Var(&cfg.firecrackerVcpuHeadroomMult, "firecracker-vcpu-headroom-mult", 1.0, "boot-time vCPU headroom multiplier on Firecracker (>=1.0); default 1.0 (no headroom, boot at exact limit); set >1.0 to enable grow-resize within the boot-time ceiling")
 	flag.Float64Var(&cfg.firecrackerMemHeadroomMult, "firecracker-mem-headroom-mult", 1.0, "boot-time memory headroom multiplier on Firecracker (>=1.0); default 1.0 (no headroom, boot at exact limit); set >1.0 to allow GROW-resize within the boot-time ceiling")
+	flag.StringVar(&cfg.firecrackerCgroupRoot, "firecracker-cgroup-root", "/sys/fs/cgroup/navaris-fc", "host directory for per-VM CPU cgroups in non-jailer mode (cgroup CPU bandwidth limits live here; ignored when --enable-jailer is set)")
 	flag.StringVar(&cfg.storageMode, "storage-mode", "auto", "CoW backend selection: auto | copy | reflink (btrfs-subvol/zfs reserved, not wired in v1)")
 	flag.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP collector endpoint (e.g. localhost:4317); empty disables telemetry")
 	flag.StringVar(&cfg.otlpProtocol, "otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")

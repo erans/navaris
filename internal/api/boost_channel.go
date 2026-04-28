@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -166,8 +167,18 @@ func writeResp(conn net.Conn, status int, extraHeaders map[string]string, body [
 }
 
 // writeServiceError maps a service-layer error to an HTTP response.
+//
+// Mirrors response.go::respondError for ProviderResizeError: 4xx surfaces
+// the full error including Detail, but 5xx scrubs Detail to avoid leaking
+// backend host paths / raw I/O strings into the (sandbox-visible) channel.
+// The stable Reason still goes through so guest code can branch on it.
 func writeServiceError(conn net.Conn, err error) {
 	status := mapErrorCode(err)
-	body, _ := json.Marshal(map[string]string{"error": err.Error()})
+	msg := err.Error()
+	var prErr *domain.ProviderResizeError
+	if errors.As(err, &prErr) && status >= 500 {
+		msg = prErr.Reason
+	}
+	body, _ := json.Marshal(map[string]string{"error": msg})
 	writeResp(conn, status, nil, body)
 }

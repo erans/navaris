@@ -49,6 +49,16 @@ type VMInfo struct {
 
 	EnableBoostChannel bool   `json:"enable_boost_channel,omitempty"`
 	SandboxID          string `json:"sandbox_id,omitempty"` // navaris-side sandbox UUID; distinct from VMInfo.ID (the FC vmID). Persisted in vminfo.json so recover() can rebind boost listeners after daemon restart.
+
+	// CgroupActive is true if the per-VM CPU cgroup was successfully created
+	// at boot (or jailer applied CgroupArgs). When false, live CPU resize
+	// returns ResizeReasonCgroupUnavailable — most commonly because the
+	// daemon ran in a constrained environment (docker-in-docker without
+	// cgroup write permission). Pre-spec sandboxes have this field absent
+	// in vminfo.json, which deserializes as false; such sandboxes function
+	// normally except they cannot live-resize CPU until they are restarted
+	// with a daemon that includes this code.
+	CgroupActive bool `json:"cgroup_active,omitempty"`
 }
 
 func (v *VMInfo) Write(path string) error {

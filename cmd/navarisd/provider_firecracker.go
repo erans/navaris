@@ -24,6 +24,7 @@ func newFirecrackerProvider(cfg config) (domain.Provider, error) {
 		DefaultMemoryMib: cfg.firecrackerDefaultMemoryMB,
 		VcpuHeadroomMult: cfg.firecrackerVcpuHeadroomMult,
 		MemHeadroomMult:  cfg.firecrackerMemHeadroomMult,
+		CgroupRoot:       cfg.firecrackerCgroupRoot,
 	})
 }
 

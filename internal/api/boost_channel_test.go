@@ -200,3 +200,78 @@ func TestBoostChannel_PostBoost_429_AfterBurst(t *testing.T) {
 		t.Errorf("429 missing Retry-After: %s", resp)
 	}
 }
+
+// TestWriteServiceError_ResizeError_5xxScrubsDetail unit-tests the in-sandbox
+// boost channel's error path for ProviderResizeError responses. The 5xx
+// branch must redact backend-supplied Detail (which can include host paths
+// or raw I/O strings) while preserving the stable Reason for guest code to
+// branch on. 4xx must keep the full message including Detail (it's part of
+// the actionable feedback).
+func TestWriteServiceError_ResizeError_5xxScrubsDetail(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus string // first line prefix
+		wantInBody string
+		notInBody  string
+	}{
+		{
+			name: "503 cgroup_unavailable scrubs detail",
+			err: &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonCgroupUnavailable,
+				Detail: "secret-host-path/sys/fs/cgroup/foo",
+			},
+			wantStatus: "HTTP/1.1 503",
+			wantInBody: domain.ResizeReasonCgroupUnavailable,
+			notInBody:  "secret-host-path",
+		},
+		{
+			name: "500 cgroup_write_failed scrubs detail",
+			err: &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonCgroupWriteFailed,
+				Detail: "open /sys/fs/cgroup/x/cpu.max: input/output error",
+			},
+			wantStatus: "HTTP/1.1 500",
+			wantInBody: domain.ResizeReasonCgroupWriteFailed,
+			notInBody:  "input/output error",
+		},
+		{
+			name: "409 exceeds_ceiling keeps detail",
+			err: &domain.ProviderResizeError{
+				Reason: domain.ResizeReasonExceedsCeiling,
+				Detail: "cpu_limit 8 over ceiling 4",
+			},
+			wantStatus: "HTTP/1.1 409",
+			wantInBody: "cpu_limit 8 over ceiling 4", // 4xx keeps the actionable detail
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cli, srv := pipeConn()
+			done := make(chan struct{})
+			go func() {
+				writeServiceError(srv, tc.err)
+				srv.Close()
+				close(done)
+			}()
+
+			cli.SetReadDeadline(time.Now().Add(time.Second))
+			buf := make([]byte, 4096)
+			n, _ := cli.Read(buf)
+			cli.Close()
+			<-done
+
+			resp := string(buf[:n])
+			if !strings.HasPrefix(resp, tc.wantStatus) {
+				t.Fatalf("status line: %q", strings.SplitN(resp, "\r\n", 2)[0])
+			}
+			if !strings.Contains(resp, tc.wantInBody) {
+				t.Errorf("body missing %q: %s", tc.wantInBody, resp)
+			}
+			if tc.notInBody != "" && strings.Contains(resp, tc.notInBody) {
+				t.Errorf("body must not contain %q (Detail leak): %s", tc.notInBody, resp)
+			}
+		})
+	}
+}

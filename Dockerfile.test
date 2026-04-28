@@ -9,4 +9,4 @@ RUN CGO_ENABLED=0 go test -tags integration -c -o /integration.test ./test/integ
 FROM debian:bookworm-slim
 COPY --from=build /navaris /usr/local/bin/navaris
 COPY --from=build /integration.test /integration.test
-ENTRYPOINT ["/integration.test", "-test.v", "-test.timeout", "10m", "-test.count=1"]
+ENTRYPOINT ["/integration.test", "-test.v", "-test.timeout", "15m", "-test.count=1"]

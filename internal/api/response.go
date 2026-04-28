@@ -41,6 +41,33 @@ func respondError(w http.ResponseWriter, err error) {
 	code := mapErrorCode(err)
 	resp := errorResponse{}
 	resp.Error.Code = code
+
+	// ProviderResizeError carries a machine-readable Reason that callers
+	// (UI, CLI, MCP) need to distinguish — e.g. retry vs reconfigure vs
+	// fail-over to a different host. The generic 5xx branches below would
+	// strip that detail and emit Retry-After:1 (suggesting a transient
+	// overload), neither of which is correct for resize failures: the
+	// caller needs the reason, and the failure is not retry-in-1-second.
+	//
+	// On 5xx responses we still scrub Detail (it can include backend host
+	// paths or I/O errors not safe to expose) and log the full message
+	// server-side. 4xx responses surface the full Error() since callers
+	// asked for the action and benefit from the actionable detail.
+	var prErr *domain.ProviderResizeError
+	if errors.As(err, &prErr) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		switch {
+		case code >= 500:
+			resp.Error.Message = prErr.Reason
+			slog.Error("api provider resize error", "status", code, "error", err.Error())
+		default:
+			resp.Error.Message = prErr.Error()
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
 	switch {
 	case code == http.StatusServiceUnavailable:
 		resp.Error.Message = "service temporarily unavailable"
@@ -86,7 +113,14 @@ func mapErrorCode(err error) int {
 	}
 	var prErr *domain.ProviderResizeError
 	if errors.As(err, &prErr) {
-		return http.StatusConflict
+		switch prErr.Reason {
+		case domain.ResizeReasonCgroupUnavailable:
+			return http.StatusServiceUnavailable
+		case domain.ResizeReasonCgroupWriteFailed:
+			return http.StatusInternalServerError
+		default:
+			return http.StatusConflict
+		}
 	}
 	return http.StatusInternalServerError
 }

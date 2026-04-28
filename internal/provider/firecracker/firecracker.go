@@ -35,6 +35,12 @@ type Config struct {
 	HostInterface  string
 	SnapshotDir    string
 	EnableJailer   bool
+
+	// CgroupRoot is the host directory under which the daemon creates a
+	// per-VM cgroup for non-jailer sandboxes (e.g. "/sys/fs/cgroup/navaris-fc").
+	// Unused when EnableJailer is true (the jailer creates its own cgroup
+	// tree). Empty defaults to "/sys/fs/cgroup/navaris-fc".
+	CgroupRoot string
 	// Storage is required: it owns CoW cloning of rootfs files. Pass a
 	// Registry whose roots include ImageDir, ChrootBase, and SnapshotDir.
 	Storage *storage.Registry
@@ -66,6 +72,9 @@ type Config struct {
 func (c *Config) defaults() {
 	if c.ChrootBase == "" {
 		c.ChrootBase = "/srv/firecracker"
+	}
+	if c.CgroupRoot == "" {
+		c.CgroupRoot = "/sys/fs/cgroup/navaris-fc"
 	}
 	if c.VsockCIDBase == 0 {
 		c.VsockCIDBase = 100
@@ -111,6 +120,27 @@ func (c *Config) validateDefaults() error {
 	if c.MemHeadroomMult < 1.0 {
 		return fmt.Errorf("firecracker-mem-headroom-mult=%g must be >= 1.0", c.MemHeadroomMult)
 	}
+	// CgroupRoot is interpreted as a v2-style unified-hierarchy path
+	// (under /sys/fs/cgroup/...). On v1 hosts we automatically rebase to
+	// the cpu controller mount (/sys/fs/cgroup/cpu/...). Operators with
+	// non-default cgroup mounts (e.g. /mnt/cgroup) must conform to that
+	// structure or run on a v2-only host. Reject anything else loudly at
+	// startup rather than silently building paths under /sys/fs/cgroup/cpu/
+	// that don't match the operator's intent.
+	//
+	// Skipped under jailer mode — the jailer manages cgroup creation, so
+	// CgroupRoot is unused and a stale value (e.g. left over from
+	// non-jailer config) shouldn't fail jailer startup.
+	//
+	// Known limitations not validated here:
+	//   - On cgroup v1 hosts that mount the cpu controller at cpu,cpuacct
+	//     or some non-/sys/fs/cgroup/cpu/ path, the v1 rebasing in
+	//     cgroup.go will derive the wrong directory and verifyCgroupFS
+	//     will fail at sandbox start. Treat that case as v1-not-supported
+	//     for non-default mounts; cgroup v2 is the supported configuration.
+	if !c.EnableJailer && c.CgroupRoot != "" && c.CgroupRoot != "/sys/fs/cgroup" && !strings.HasPrefix(c.CgroupRoot, "/sys/fs/cgroup/") {
+		return fmt.Errorf("firecracker-cgroup-root=%q must be /sys/fs/cgroup or under /sys/fs/cgroup/ (operator-specified non-default mounts are not supported in this release)", c.CgroupRoot)
+	}
 	return nil
 }
 
@@ -136,7 +166,12 @@ type Provider struct {
 	vmMu          sync.RWMutex
 	hostIface     string
 	cgroupVersion string
-	storage       *storage.Registry
+	// cgroupSkipFSCheck disables the cgroupfs magic-number validation in
+	// setupCgroup. Tests-only — production code never sets this. Without
+	// it, every cgroup-helper unit test would need a real cgroup mount
+	// (root, host-only, not portable to CI).
+	cgroupSkipFSCheck bool
+	storage           *storage.Registry
 
 	boostHandler   provider.BoostServer
 	boostListeners map[string]*boostListener // keyed by vmID

@@ -79,3 +79,59 @@ func TestValidateDefaults_HeadroomMultipliers(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateDefaults_CgroupRoot(t *testing.T) {
+	cases := []struct {
+		name        string
+		root        string
+		wantErrPart string
+	}{
+		{"empty ok (defaults applied later)", "", ""},
+		{"under unified hierarchy ok", "/sys/fs/cgroup/navaris-fc", ""},
+		{"nested under unified hierarchy ok", "/sys/fs/cgroup/team/navaris-fc", ""},
+		{"unified root itself ok", "/sys/fs/cgroup", ""},
+		{"non-/sys/fs/cgroup rejected", "/mnt/cgroups/navaris", "cgroup-root"},
+		{"tmp path rejected", "/tmp/nav", "cgroup-root"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{
+				DefaultVcpuCount: 1,
+				DefaultMemoryMib: 256,
+				VcpuHeadroomMult: 1.0,
+				MemHeadroomMult:  1.0,
+				CgroupRoot:       tc.root,
+			}
+			err := c.validateDefaults()
+			if tc.wantErrPart == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrPart) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantErrPart)
+			}
+		})
+	}
+}
+
+// TestValidateDefaults_CgroupRoot_JailerSkipsValidation guards that an
+// invalid CgroupRoot does NOT fail jailer-mode startup, since CgroupRoot
+// is unused under jailer (the jailer manages its own cgroup tree).
+func TestValidateDefaults_CgroupRoot_JailerSkipsValidation(t *testing.T) {
+	c := Config{
+		DefaultVcpuCount: 1,
+		DefaultMemoryMib: 256,
+		VcpuHeadroomMult: 1.0,
+		MemHeadroomMult:  1.0,
+		CgroupRoot:       "/mnt/old-non-jailer-config", // would be rejected without the jailer skip
+		EnableJailer:     true,
+	}
+	if err := c.validateDefaults(); err != nil {
+		t.Errorf("jailer mode must not validate CgroupRoot, got: %v", err)
+	}
+}
