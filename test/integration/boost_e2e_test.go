@@ -342,13 +342,34 @@ func TestBoost_E2E_Incus_CPU_VisibleInGuest(t *testing.T) {
 
 // TestBoost_E2E_FC_CPU_AppliesToGuest creates a Firecracker sandbox with
 // cpu_limit=1 and uses the boost API to grow to cpu_limit=2 within the
-// boot ceiling, then reads /sys/fs/cgroup/cpu.max from inside the guest
-// to verify the change. Cancel reverts to cpu_limit=1.
+// boot ceiling, then verifies via in-guest workload timing that the host
+// cgroup CPU bandwidth limit changed. Cancel reverts to cpu_limit=1.
+//
+// The test compares single-thread serial workload time across three phases:
+//
+//   - Phase A (boot, cgroup limit=1): baseline serial time t_A.
+//   - Phase B (boosted, cgroup limit=2): t_B should be ~0.5 * t_A —
+//     doubling the cgroup quota doubles the throughput available to the
+//     FC process, which directly halves a CPU-bound workload's wall time.
+//     Asserted as t_A / t_B >= 1.5 (50% improvement at minimum).
+//   - Phase C (cancelled, cgroup limit=1): t_C should be ~t_A. Asserted
+//     as t_A / t_C in [0.7, 1.4].
+//
+// Why single-thread instead of a parallel/serial ratio: FC's vmm threads
+// consume non-trivial host CPU during guest workloads, so even at
+// limit==ceiling the per-vCPU effective throughput stays bounded and a
+// parallel/serial ratio doesn't drop to 1.0 (CI evidence: vmm uses ~1 host
+// CPU; at ceiling=2, two vCPUs share the remaining 1 CPU). Single-thread
+// throughput across phases is a clean signal: if the cgroup quota changes,
+// the throughput available to the FC process changes proportionally.
+//
+// Reading /sys/fs/cgroup/cpu.max from inside the guest does not work
+// because the host cgroup is invisible to the guest kernel.
 //
 // Requires --firecracker-vcpu-headroom-mult > 1.0 on the daemon so the
 // boot ceiling is at least 2; otherwise the boost is rejected with
 // exceeds_ceiling and the test skips. CI's standard FC compose uses
-// headroom 2.0 (set in PR #17 and used by this test).
+// headroom 2.0.
 //
 // Skipped on Incus.
 func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
@@ -377,18 +398,17 @@ func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
-	beforeQuota, ok := readGuestCPUQuota(t, c, sandboxID)
-	if !ok {
-		t.Skip("cpu.max not readable from guest; daemon may lack cgroup write permission in this env")
-	}
-	t.Logf("cpu.max quota before boost: %d", beforeQuota)
-	if beforeQuota != 100_000 {
-		t.Fatalf("baseline quota = %d, want 100000 (cpu_limit=1)", beforeQuota)
-	}
+	bytes := calibrateWorkload(t, c, sandboxID)
 
+	// Phase A: baseline serial time at boot-time cgroup limit=1.
+	tA := runWorkload(t, c, sandboxID, bytes)
+	t.Logf("phase A (boot, limit=1): serial=%s", tA)
+
+	// Phase B: boost to limit=2. Single-thread workload should run ~2x
+	// faster because the cgroup quota doubled.
 	if _, err := c.StartBoost(ctx, sandboxID, client.StartBoostRequest{
 		CPULimit:        ptrIntE2E(2),
-		DurationSeconds: 30,
+		DurationSeconds: 120,
 	}); err != nil {
 		if strings.Contains(err.Error(), "exceeds_ceiling") {
 			t.Skipf("CPU boost rejected for exceeding ceiling — daemon may need --firecracker-vcpu-headroom-mult>1.0; got: %v", err)
@@ -396,44 +416,29 @@ func TestBoost_E2E_FC_CPU_AppliesToGuest(t *testing.T) {
 		t.Fatalf("StartBoost: %v", err)
 	}
 
-	duringQuota, _ := readGuestCPUQuota(t, c, sandboxID)
-	t.Logf("cpu.max quota during boost: %d", duringQuota)
-	if duringQuota != 200_000 {
-		t.Errorf("quota during boost = %d, want 200000 (cpu_limit=2)", duringQuota)
+	tB := runWorkload(t, c, sandboxID, bytes)
+	growRatio := float64(tA) / float64(tB)
+	t.Logf("phase B (boost, limit=2): serial=%s, t_A/t_B=%.2f", tB, growRatio)
+
+	const minGrowRatio = 1.5
+	if growRatio < minGrowRatio {
+		t.Fatalf("phase B grow ratio = %.2f, want >= %.2f (boost did not lift cgroup throttle: t_A=%s, t_B=%s)",
+			growRatio, minGrowRatio, tA, tB)
 	}
 
+	// Phase C: cancel and verify revert. Single-thread time should return
+	// to ~t_A.
 	if err := c.CancelBoost(ctx, sandboxID); err != nil {
 		t.Fatalf("CancelBoost: %v", err)
 	}
 
-	afterQuota, _ := readGuestCPUQuota(t, c, sandboxID)
-	t.Logf("cpu.max quota after cancel: %d", afterQuota)
-	if afterQuota != 100_000 {
-		t.Errorf("quota after cancel = %d, want 100000 (reverted)", afterQuota)
-	}
-}
+	tC := runWorkload(t, c, sandboxID, bytes)
+	revertRatio := float64(tA) / float64(tC)
+	t.Logf("phase C (cancel, limit=1): serial=%s, t_A/t_C=%.2f", tC, revertRatio)
 
-// readGuestCPUQuota reads the CFS quota microseconds from inside the
-// sandbox via /sys/fs/cgroup/cpu.max (v2) or /sys/fs/cgroup/cpu/cpu.cfs_quota_us (v1).
-// Returns (quota, true) on success; (0, false) when cgroupfs isn't readable.
-func readGuestCPUQuota(t *testing.T, c *client.Client, sandboxID string) (int, bool) {
-	t.Helper()
-	exec, err := c.Exec(context.Background(), sandboxID, client.ExecRequest{
-		Command: []string{"sh", "-c", "cat /sys/fs/cgroup/cpu.max 2>/dev/null || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us"},
-	})
-	if err != nil {
-		t.Fatalf("exec read cpu.max: %v", err)
+	const revertMin, revertMax = 0.7, 1.4
+	if revertRatio < revertMin || revertRatio > revertMax {
+		t.Fatalf("phase C revert ratio = %.2f, want in [%.2f, %.2f] (cancel did not restore cgroup throttle: t_A=%s, t_C=%s)",
+			revertRatio, revertMin, revertMax, tA, tC)
 	}
-	if exec.ExitCode != 0 {
-		return 0, false
-	}
-	parts := strings.Fields(strings.TrimSpace(exec.Stdout))
-	if len(parts) == 0 || parts[0] == "max" {
-		return 0, false
-	}
-	q, err := strconv.Atoi(parts[0])
-	if err != nil {
-		t.Fatalf("parse quota %q: %v", parts[0], err)
-	}
-	return q, true
 }
