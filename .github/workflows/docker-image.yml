@@ -1,0 +1,107 @@
+name: Publish Docker image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing git tag to build from (e.g. v0.1.0). Image will be pushed as erans/navaris:<tag> and erans/navaris:latest.'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: erans/navaris:${{ inputs.tag }}-amd64
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: erans/navaris:${{ inputs.tag }}-arm64
+
+  manifest:
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create multi-arch manifest for ${{ inputs.tag }}
+        env:
+          IMAGE_TAG: ${{ inputs.tag }}
+        run: |
+          docker buildx imagetools create \
+            -t "erans/navaris:${IMAGE_TAG}" \
+            "erans/navaris:${IMAGE_TAG}-amd64" \
+            "erans/navaris:${IMAGE_TAG}-arm64"
+
+      - name: Create multi-arch manifest for latest
+        env:
+          IMAGE_TAG: ${{ inputs.tag }}
+        run: |
+          docker buildx imagetools create \
+            -t "erans/navaris:latest" \
+            "erans/navaris:${IMAGE_TAG}-amd64" \
+            "erans/navaris:${IMAGE_TAG}-arm64"
