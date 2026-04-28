@@ -4,37 +4,43 @@ package integration
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/navaris/navaris/pkg/client"
 )
 
 // TestSandbox_HonorsRequestedCPULimit creates a Firecracker sandbox with
-// cpu_limit=2 and verifies that /sys/fs/cgroup/cpu.max inside the guest
-// reflects that limit. FC mounts cgroupfs by default, and the per-VM
-// cgroup is propagated as the guest's root cgroup.
+// cpu_limit=1 (and ceiling=2 via --firecracker-vcpu-headroom-mult=2.0
+// in the FC compose) and asserts that the host cgroup's CPU bandwidth
+// limit is enforced by measuring the wall-clock ratio of two parallel
+// CPU-bound awk loops vs one serial awk. With ceiling=2 and limit=1,
+// two threads share 1 host CPU, so the parallel run takes ~2x the serial
+// run; we assert the ratio >= 1.5 (theoretical 2.0, with margin for
+// scheduler noise).
 //
-// Skipped on Incus: limits.cpu enforcement inside docker-in-docker is
-// unreliable (the outer container's cpuset takes precedence). The Incus
-// CPU path uses limits.cpu cgroup writes too, but verifying it from
-// inside requires a non-DinD environment — see
-// TestBoost_E2E_Incus_CPU_VisibleInGuest in boost_e2e_local_test.go.
+// Reading /sys/fs/cgroup/cpu.max from inside the guest does not work:
+// the host cgroup is invisible to the guest kernel, which has its own
+// independent cgroup hierarchy. Workload-based detection is the only
+// in-guest way to observe the host throttle.
+//
+// Skipped on Incus: this test exercises the FC cgroup CPU bandwidth
+// path. Incus has its own (separate) cpu enforcement mechanism.
 func TestSandbox_HonorsRequestedCPULimit(t *testing.T) {
 	img := baseImage()
 	if strings.Contains(img, "/") {
-		t.Skipf("skipping on Incus (image=%s): cpuset enforcement unreliable in DinD", img)
+		t.Skipf("skipping on Incus (image=%s); FC-specific cgroup throttle test", img)
 	}
 
 	c := newClient()
 	ctx := context.Background()
 	proj := createTestProject(t, c)
 
-	cpu := 2
+	cpu := 1
 	op, err := c.CreateSandboxAndWait(ctx, client.CreateSandboxRequest{
 		ProjectID: proj.ProjectID,
-		Name:      "limits-cpu-2",
+		Name:      "limits-cpu-1",
 		ImageID:   img,
 		CPULimit:  &cpu,
 	}, waitOpts())
@@ -47,34 +53,18 @@ func TestSandbox_HonorsRequestedCPULimit(t *testing.T) {
 	sandboxID := op.ResourceID
 	t.Cleanup(func() { _, _ = c.DestroySandboxAndWait(context.Background(), sandboxID, waitOpts()) })
 
-	// Read the cgroup v2 cpu.max from inside the guest. Format: "<quota> <period>".
-	// Fall back to v1 cpu.cfs_quota_us on hosts running cgroup v1.
-	exec, err := c.Exec(ctx, sandboxID, client.ExecRequest{
-		Command: []string{"sh", "-c", "cat /sys/fs/cgroup/cpu.max 2>/dev/null || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us"},
-	})
-	if err != nil {
-		t.Fatalf("exec read cpu.max: %v", err)
-	}
-	if exec.ExitCode != 0 {
-		t.Skipf("cpu.max not readable from guest (exit=%d, stderr=%s); guest kernel may not mount cgroupfs", exec.ExitCode, exec.Stderr)
-	}
+	n := calibrateAwk(t, c, sandboxID)
 
-	raw := strings.TrimSpace(exec.Stdout)
-	t.Logf("guest cpu.max: %q", raw)
+	tSerial := runAwk(t, c, sandboxID, n)
+	tParallel := runAwkParallel(t, c, sandboxID, n, 2)
+	ratio := float64(tParallel) / float64(tSerial)
 
-	parts := strings.Fields(raw)
-	if len(parts) == 0 || parts[0] == "max" {
-		// "max" means unlimited — daemon may not have wired the cgroup setup
-		// (e.g. cgroup root permission denied in this environment). Skip
-		// rather than fail; the unit tests cover the wiring path.
-		t.Skipf("guest cpu.max reports %q; daemon may lack cgroup write permission in this env", raw)
-	}
-	quota, err := strconv.Atoi(parts[0])
-	if err != nil {
-		t.Fatalf("parse quota %q: %v", parts[0], err)
-	}
-	const expectedQuota = 2 * 100_000
-	if quota != expectedQuota {
-		t.Errorf("cpu.max quota = %d, want %d (cpu_limit=2 * period 100000)", quota, expectedQuota)
+	t.Logf("cpu_limit=1, ceiling=2: serial=%s parallel=%s ratio=%.2f",
+		time.Duration(tSerial), time.Duration(tParallel), ratio)
+
+	const minThrottledRatio = 1.5
+	if ratio < minThrottledRatio {
+		t.Fatalf("parallel/serial ratio = %.2f, want >= %.2f (cgroup CPU bandwidth not enforced)",
+			ratio, minThrottledRatio)
 	}
 }
