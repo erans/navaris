@@ -18,6 +18,7 @@ concurrency:
 jobs:
   build-amd64:
     runs-on: ubuntu-24.04
+    environment: build
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -47,6 +48,7 @@ jobs:
 
   build-arm64:
     runs-on: ubuntu-24.04-arm
+    environment: build
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -77,6 +79,7 @@ jobs:
   manifest:
     needs: [build-amd64, build-arm64]
     runs-on: ubuntu-24.04
+    environment: build
     timeout-minutes: 10
     steps:
       - name: Log in to Docker Hub
