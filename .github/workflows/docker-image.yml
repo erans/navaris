@@ -36,6 +36,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Build Firecracker base image (navarisd-firecracker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.navarisd-firecracker
+          platforms: linux/amd64
+          load: true
+          tags: navarisd-firecracker
+
       - name: Build and push amd64 image
         uses: docker/build-push-action@v6
         with:
@@ -65,6 +74,15 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Build Firecracker base image (navarisd-firecracker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.navarisd-firecracker
+          platforms: linux/arm64
+          load: true
+          tags: navarisd-firecracker
 
       - name: Build and push arm64 image
         uses: docker/build-push-action@v6
