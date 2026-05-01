@@ -92,6 +92,34 @@ navaris (CLI)  ──HTTP──▶  navarisd (daemon)  ──▶  Incus / Firecr
 
 For Firecracker, a lightweight guest agent (`navaris-agent`) runs inside each VM and communicates with the daemon over vsock for command execution and session management.
 
+## Quickstart with Docker
+
+The fastest way to try Navaris is the prebuilt all-in-one image on Docker Hub:
+
+```bash
+docker run --rm -it \
+  --privileged \
+  --device /dev/kvm \
+  -p 8080:8080 \
+  erans/navaris:latest
+```
+
+The image bundles both backends (Incus + Firecracker), the embedded Web UI, and a Firecracker-compatible kernel. Multi-arch — `linux/amd64` and `linux/arm64` are both published.
+
+Key flags:
+- `--privileged` is required for Incus (cgroup setup, network namespace mounts) and the Firecracker jailer.
+- `--device /dev/kvm` is required for Firecracker. Omit it if you only want to use Incus; Firecracker will be disabled at startup with a warning.
+- `-p 8080:8080` exposes the REST API and Web UI. Pair with `--auth-token` (set inside the container) when exposing the port beyond localhost.
+
+Pin to a specific release for reproducibility:
+
+```bash
+docker run --rm -it --privileged --device /dev/kvm -p 8080:8080 \
+  erans/navaris:v0.1.0
+```
+
+Available tags are listed at <https://hub.docker.com/r/erans/navaris/tags>. The image is built from the top-level [`Dockerfile`](Dockerfile) by the `Publish Docker image` GitHub Actions workflow on each tagged release.
+
 ## Building
 
 ### Prerequisites
