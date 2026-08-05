@@ -255,6 +255,13 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 			}
 		}
 
+		// F1: serialize the vminfo RMW against concurrent writers and StopSandbox.
+		fl, err := p.lockFor(vmID)
+		if err != nil {
+			return fmt.Errorf("firecracker restore vminfo %s: %w", vmID, err)
+		}
+		defer fl.mu.Unlock()
+
 		// Set restore flag in vminfo, preserving original subnet for network-correct restore.
 		infoPath := p.vmInfoPath(vmID)
 		info, err := ReadVMInfo(infoPath)

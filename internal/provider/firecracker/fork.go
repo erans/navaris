@@ -192,6 +192,13 @@ func (p *Provider) SpawnFromForkPoint(ctx context.Context, fpID string, req doma
 		CeilingCPU:          vcpu,
 		CeilingMemMib:       mem,
 	}
+	// F1: serialize the vminfo write against concurrent writers and StopSandbox.
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("forkpoint spawn write vminfo %s: %w", vmID, err)
+	}
+	defer fl.mu.Unlock()
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("forkpoint spawn write vminfo %s: %w", vmID, err)
