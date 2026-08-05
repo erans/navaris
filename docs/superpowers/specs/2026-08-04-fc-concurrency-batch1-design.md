@@ -180,8 +180,8 @@ Required deterministic coverage:
 - flipping `stopped` while a writer waits in the lookup-to-lock window is
   race-free and returns `ErrVMStopped`;
 - existing concurrent PublishPort and StopSandbox tests remain passing;
-- an audit test or verification grep confirms no existing-file writer writes a
-  stale `p.vms` pointer.
+- a verification grep plus reviewer audit confirms no existing-file writer
+  writes a stale `p.vms` pointer.
 
 ---
 
@@ -366,9 +366,9 @@ Required deterministic coverage:
 
 `TestBoostListener_AcceptsAndDispatches` has a pre-existing test race: the fake
 server appends to a slice from the listener goroutine while the test polls that
-slice. Replace the polling slice with channel-based completion or protect all
-access with a mutex. Production listener behavior is unchanged. This test-only
-fix is included so the full race gate can pass without an exception.
+slice. Replace the polling slice with channel-based completion. Production
+listener behavior is unchanged. This test-only fix is included so the full race
+gate can pass without an exception.
 
 ## Implementation sequence
 
@@ -398,7 +398,8 @@ Additionally:
 
 - audit every Firecracker `info.Write` site for fresh-state locking;
 - confirm only two long-lived `fcsdk.NewMachine` call sites remain;
-- confirm boost code contains no manual `delete(s.sbxLocks, ...)`.
+- confirm the only `delete(s.sbxLocks, ...)` is the reference-count-zero
+  deletion inside the registry release helper.
 
 ## Compatibility
 
