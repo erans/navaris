@@ -74,6 +74,7 @@ const (
 	ResizeReasonBackendRejected         = "backend_rejected"
 	ResizeReasonCgroupUnavailable       = "cgroup_unavailable"
 	ResizeReasonCgroupWriteFailed       = "cgroup_write_failed"
+	ResizeReasonVMStopped               = "vm_stopped" // F1: VM is mid-teardown; live resize cannot run
 )
 
 type ExecHandle struct {
