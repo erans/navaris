@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -110,16 +112,15 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		return nil, err
 	}
 
-	if prior, getErr := s.boosts.Get(ctx, opts.SandboxID); getErr == nil {
-		s.mu.Lock()
-		if timer, ok := s.timers[prior.BoostID]; ok {
-			timer.Stop()
-			delete(s.timers, prior.BoostID)
+	prior, getErr := s.boosts.Get(ctx, opts.SandboxID)
+	if getErr != nil {
+		if !errors.Is(getErr, domain.ErrNotFound) {
+			return nil, fmt.Errorf("get prior boost: %w", getErr)
 		}
-		s.mu.Unlock()
-		if err := s.boosts.Delete(ctx, prior.BoostID); err != nil {
-			return nil, fmt.Errorf("delete prior boost: %w", err)
-		}
+		prior = nil
+	}
+	if prior != nil {
+		s.stopTimer(prior.BoostID)
 	}
 
 	now := s.clock.Now().UTC()
@@ -136,6 +137,9 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		Source:                source,
 	}
 	if err := s.boosts.Upsert(ctx, boost); err != nil {
+		if prior != nil && prior.State == domain.BoostActive {
+			s.armRemaining(prior)
+		}
 		return nil, fmt.Errorf("persist boost: %w", err)
 	}
 
@@ -146,17 +150,30 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		ApplyLiveOnly: true,
 	})
 	if err != nil {
-		if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil {
-			return nil, fmt.Errorf("apply boost failed: %v; rollback also failed: %w", err, delErr)
+		applyErr := fmt.Errorf("apply boost: %w", err)
+		var rollbackErr error
+		if prior != nil {
+			if restoreErr := s.boosts.Upsert(ctx, prior); restoreErr != nil {
+				rollbackErr = fmt.Errorf("restore prior boost: %w", restoreErr)
+				s.armRetry(boost.BoostID)
+			} else if prior.State == domain.BoostActive {
+				s.armRemaining(prior)
+			}
+		} else {
+			if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil {
+				if !errors.Is(delErr, domain.ErrNotFound) {
+					rollbackErr = fmt.Errorf("delete failed boost: %w", delErr)
+					s.armRetry(boost.BoostID)
+				}
+			}
 		}
-		return nil, err
+		if rollbackErr != nil {
+			return nil, errors.Join(applyErr, rollbackErr)
+		}
+		return nil, applyErr
 	}
 
-	s.mu.Lock()
-	s.timers[boost.BoostID] = s.clock.AfterFunc(dur, func() {
-		s.expire(context.Background(), boost.BoostID)
-	})
-	s.mu.Unlock()
+	s.armRemaining(boost)
 
 	_ = s.events.Publish(ctx, domain.Event{
 		Type:      domain.EventBoostStarted,
@@ -199,6 +216,37 @@ func (s *BoostService) acquireSandbox(sandboxID string) func() {
 	}
 }
 
+func (s *BoostService) armExpiry(boostID string, delay time.Duration) {
+	if delay < 0 {
+		delay = 0
+	}
+	s.mu.Lock()
+	if timer, ok := s.timers[boostID]; ok {
+		timer.Stop()
+	}
+	s.timers[boostID] = s.clock.AfterFunc(delay, func() {
+		s.expire(context.Background(), boostID)
+	})
+	s.mu.Unlock()
+}
+
+func (s *BoostService) armRemaining(b *domain.Boost) {
+	s.armExpiry(b.BoostID, b.ExpiresAt.Sub(s.clock.Now().UTC()))
+}
+
+func (s *BoostService) armRetry(boostID string) {
+	s.armExpiry(boostID, boostBackoff[0])
+}
+
+func (s *BoostService) stopTimer(boostID string) {
+	s.mu.Lock()
+	if timer, ok := s.timers[boostID]; ok {
+		timer.Stop()
+		delete(s.timers, boostID)
+	}
+	s.mu.Unlock()
+}
+
 // boostBackoff is the per-attempt sleep between revert retries. The slice
 // length is the maximum number of attempts. If a provider error persists
 // past the last entry, the boost transitions to BoostRevertFailed.
@@ -213,9 +261,12 @@ var boostBackoff = []time.Duration{
 func (s *BoostService) expire(ctx context.Context, boostID string) {
 	candidate, err := s.boosts.GetByID(ctx, boostID)
 	if err != nil {
-		s.mu.Lock()
-		delete(s.timers, boostID)
-		s.mu.Unlock()
+		if errors.Is(err, domain.ErrNotFound) {
+			s.stopTimer(boostID)
+			return
+		}
+		s.armRetry(boostID)
+		slog.Warn("boost: transient boost lookup failed during expiry", "boost_id", boostID, "error", err)
 		return
 	}
 
@@ -224,22 +275,36 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 
 	boost, err := s.boosts.GetByID(ctx, boostID)
 	if err != nil {
-		s.mu.Lock()
-		delete(s.timers, boostID)
-		s.mu.Unlock()
+		if errors.Is(err, domain.ErrNotFound) {
+			s.stopTimer(boostID)
+			return
+		}
+		s.armRetry(boostID)
+		slog.Warn("boost: transient boost re-read failed during expiry", "boost_id", boostID, "error", err)
 		return
 	}
-	s.mu.Lock()
-	delete(s.timers, boostID)
-	s.mu.Unlock()
+	s.stopTimer(boostID)
 
 	sbx, err := s.sandboxes.Get(ctx, boost.SandboxID)
 	if err != nil {
-		_ = s.boosts.Delete(ctx, boostID)
+		if errors.Is(err, domain.ErrNotFound) {
+			if delErr := s.boosts.Delete(ctx, boostID); delErr != nil && !errors.Is(delErr, domain.ErrNotFound) {
+				s.armRetry(boostID)
+				slog.Warn("boost: delete after missing sandbox failed", "boost_id", boostID, "sandbox_id", boost.SandboxID, "error", delErr)
+				return
+			}
+			return
+		}
+		s.armRetry(boostID)
+		slog.Warn("boost: transient sandbox lookup failed during expiry", "boost_id", boostID, "sandbox_id", boost.SandboxID, "error", err)
 		return
 	}
 	if sbx.State != domain.SandboxRunning {
-		_ = s.boosts.Delete(ctx, boostID)
+		if delErr := s.boosts.Delete(ctx, boostID); delErr != nil && !errors.Is(delErr, domain.ErrNotFound) {
+			s.armRetry(boostID)
+			slog.Warn("boost: delete for non-running sandbox failed", "boost_id", boostID, "sandbox_id", boost.SandboxID, "error", delErr)
+			return
+		}
 		s.emitExpired(ctx, boost, "sandbox_not_running", sbx.CPULimit, sbx.MemoryLimitMB)
 		return
 	}
@@ -251,14 +316,24 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 		ApplyLiveOnly: true,
 	})
 	if applyErr == nil {
-		_ = s.boosts.Delete(ctx, boostID)
+		if delErr := s.boosts.Delete(ctx, boostID); delErr != nil && !errors.Is(delErr, domain.ErrNotFound) {
+			s.armRetry(boostID)
+			slog.Warn("boost: delete after successful revert failed", "boost_id", boostID, "sandbox_id", boost.SandboxID, "error", delErr)
+			return
+		}
 		s.emitExpired(ctx, boost, "expired", sbx.CPULimit, sbx.MemoryLimitMB)
 		return
 	}
 
 	attempts := boost.RevertAttempts + 1
 	if attempts > len(boostBackoff) {
-		_ = s.boosts.UpdateState(ctx, boostID, domain.BoostRevertFailed, attempts, applyErr.Error())
+		if err := s.boosts.UpdateState(ctx, boostID, domain.BoostRevertFailed, attempts, applyErr.Error()); err != nil {
+			if !errors.Is(err, domain.ErrNotFound) {
+				s.armRetry(boostID)
+				slog.Warn("boost: mark revert_failed failed", "boost_id", boostID, "sandbox_id", boost.SandboxID, "error", err)
+			}
+			return
+		}
 		_ = s.events.Publish(ctx, domain.Event{
 			Type:      domain.EventBoostRevertFailed,
 			Timestamp: s.clock.Now().UTC(),
@@ -271,12 +346,14 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 		return
 	}
 
-	_ = s.boosts.UpdateState(ctx, boostID, domain.BoostActive, attempts, applyErr.Error())
-	s.mu.Lock()
-	s.timers[boostID] = s.clock.AfterFunc(boostBackoff[attempts-1], func() {
-		s.expire(context.Background(), boostID)
-	})
-	s.mu.Unlock()
+	if err := s.boosts.UpdateState(ctx, boostID, domain.BoostActive, attempts, applyErr.Error()); err != nil {
+		if !errors.Is(err, domain.ErrNotFound) {
+			s.armRetry(boostID)
+			slog.Warn("boost: update retry state failed", "boost_id", boostID, "sandbox_id", boost.SandboxID, "error", err)
+		}
+		return
+	}
+	s.armExpiry(boostID, boostBackoff[attempts-1])
 }
 
 func (s *BoostService) emitExpired(ctx context.Context, b *domain.Boost, cause string, cpu, mem *int) {
@@ -314,20 +391,27 @@ func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	if timer, ok := s.timers[boost.BoostID]; ok {
-		timer.Stop()
-		delete(s.timers, boost.BoostID)
-	}
-	s.mu.Unlock()
+	s.stopTimer(boost.BoostID)
 
 	sbx, err := s.sandboxes.Get(ctx, sandboxID)
 	if err != nil {
-		_ = s.boosts.Delete(ctx, boost.BoostID)
+		if errors.Is(err, domain.ErrNotFound) {
+			if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil && !errors.Is(delErr, domain.ErrNotFound) {
+				s.armRetry(boost.BoostID)
+				return errors.Join(err, fmt.Errorf("delete boost after missing sandbox: %w", delErr))
+			}
+			return err
+		}
+		if boost.State == domain.BoostActive {
+			s.armRemaining(boost)
+		}
 		return err
 	}
 	if sbx.State != domain.SandboxRunning {
-		_ = s.boosts.Delete(ctx, boost.BoostID)
+		if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil && !errors.Is(delErr, domain.ErrNotFound) {
+			s.armRetry(boost.BoostID)
+			return fmt.Errorf("delete boost after cancel: %w", delErr)
+		}
 		s.emitExpired(ctx, boost, "cancelled", sbx.CPULimit, sbx.MemoryLimitMB)
 		return nil
 	}
@@ -339,12 +423,21 @@ func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
 		ApplyLiveOnly: true,
 	})
 	if applyErr != nil {
-		_ = s.boosts.UpdateState(ctx, boost.BoostID, domain.BoostRevertFailed,
+		stateErr := s.boosts.UpdateState(ctx, boost.BoostID, domain.BoostRevertFailed,
 			boost.RevertAttempts+1, applyErr.Error())
+		if stateErr != nil {
+			if !errors.Is(stateErr, domain.ErrNotFound) {
+				s.armRetry(boost.BoostID)
+				return errors.Join(applyErr, fmt.Errorf("update boost state: %w", stateErr))
+			}
+		}
 		return applyErr
 	}
 
-	_ = s.boosts.Delete(ctx, boost.BoostID)
+	if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil && !errors.Is(delErr, domain.ErrNotFound) {
+		s.armRetry(boost.BoostID)
+		return fmt.Errorf("delete boost after cancel: %w", delErr)
+	}
 	s.emitExpired(ctx, boost, "cancelled", sbx.CPULimit, sbx.MemoryLimitMB)
 	return nil
 }
@@ -375,12 +468,7 @@ func (s *BoostService) Recover(ctx context.Context) error {
 			go s.expire(context.Background(), boostID)
 			continue
 		}
-		remaining := b.ExpiresAt.Sub(now)
-		s.mu.Lock()
-		s.timers[boostID] = s.clock.AfterFunc(remaining, func() {
-			s.expire(context.Background(), boostID)
-		})
-		s.mu.Unlock()
+		s.armRemaining(b)
 	}
 	return nil
 }
@@ -401,13 +489,18 @@ func (s *BoostService) cancelOnLifecycle(ctx context.Context, sandboxID string) 
 func (s *BoostService) cancelOnLifecycleLocked(ctx context.Context, sandboxID string) {
 	boost, err := s.boosts.Get(ctx, sandboxID)
 	if err != nil {
+		if !errors.Is(err, domain.ErrNotFound) {
+			slog.Warn("boost: lifecycle boost lookup failed", "sandbox_id", sandboxID, "error", err)
+		}
 		return
 	}
-	s.mu.Lock()
-	if timer, ok := s.timers[boost.BoostID]; ok {
-		timer.Stop()
-		delete(s.timers, boost.BoostID)
+	if err := s.boosts.Delete(ctx, boost.BoostID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.stopTimer(boost.BoostID)
+			return
+		}
+		slog.Warn("boost: lifecycle boost delete failed", "boost_id", boost.BoostID, "sandbox_id", sandboxID, "error", err)
+		return
 	}
-	s.mu.Unlock()
-	_ = s.boosts.Delete(ctx, boost.BoostID)
+	s.stopTimer(boost.BoostID)
 }

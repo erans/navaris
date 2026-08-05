@@ -4,6 +4,7 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,10 @@ import (
 
 var resizeWriteCPUMax = func(p *Provider, dir string, quota, period int64) error {
 	return p.writeCPUMax(dir, quota, period)
+}
+
+var resizePatchBalloon = func(p *Provider, ctx context.Context, vmID string, amountMib int64) error {
+	return p.patchBalloon(ctx, vmID, amountMib)
 }
 
 // UpdateResources applies new CPU and/or memory limits live to a running
@@ -124,7 +129,7 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 	// Apply memory (balloon — slower, may fail mid-operation).
 	if req.MemoryLimitMB != nil {
 		balloonAmount := memCeiling - newMem
-		if err := p.patchBalloon(ctx, ref.Ref, balloonAmount); err != nil {
+		if err := resizePatchBalloon(p, ctx, ref.Ref, balloonAmount); err != nil {
 			// Best-effort revert of CPU so the operator's view of the running
 			// VM matches the SQLite state the service layer is about to roll
 			// back to. If revert fails, log and surface a multi-failure error
@@ -146,19 +151,22 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		info.LimitMemMib = newMem
 	}
 	if err := info.Write(p.vmInfoPath(ref.Ref)); err != nil {
-		// Disk and cache remain unchanged. Compensate the live changes.
+		// Disk and cache remain unchanged. Compensate the live changes. CPU and
+		// memory reverts are independent, so a CPU revert failure must not prevent
+		// the balloon revert attempt (and vice versa).
+		errs := []error{fmt.Errorf("firecracker: persist vminfo after resize: %w", err)}
 		if cpuApplied {
 			revertQuota := priorCPU * cpuPeriod
 			if rerr := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); rerr != nil {
-				return fmt.Errorf("firecracker: persist vminfo after resize: %w; cgroup revert ALSO failed: %v", err, rerr)
+				errs = append(errs, fmt.Errorf("firecracker: cgroup revert after resize persist failure: %w", rerr))
 			}
 		}
 		if req.MemoryLimitMB != nil {
-			if rerr := p.patchBalloon(ctx, ref.Ref, priorBalloon); rerr != nil {
-				return fmt.Errorf("firecracker: persist vminfo after resize: %w; balloon revert ALSO failed: %v", err, rerr)
+			if rerr := resizePatchBalloon(p, ctx, ref.Ref, priorBalloon); rerr != nil {
+				errs = append(errs, fmt.Errorf("firecracker: balloon revert after resize persist failure: %w", rerr))
 			}
 		}
-		return fmt.Errorf("firecracker: persist vminfo after resize: %w", err)
+		return errors.Join(errs...)
 	}
 
 	p.vmMu.Lock()

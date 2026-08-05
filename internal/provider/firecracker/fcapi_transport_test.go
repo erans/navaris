@@ -3,6 +3,8 @@
 package firecracker
 
 import (
+	"context"
+	"errors"
 	"net"
 	"net/http"
 	"testing"
@@ -30,6 +32,37 @@ func TestBuildIdleReapingTransport_SetsIdleConnTimeout(t *testing.T) {
 	}
 	if socketTransport.MaxIdleConnsPerHost != 1 {
 		t.Errorf("MaxIdleConnsPerHost = %d; want 1", socketTransport.MaxIdleConnsPerHost)
+	}
+}
+
+func TestBuildIdleReapingTransport_DialHonorsCancelledContext(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := dir + "/fc.sock"
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	tr := buildIdleReapingTransport(sockPath, 30*time.Second)
+	ht, ok := tr.(*httptransport.Runtime)
+	if !ok {
+		t.Fatalf("transport = %T; want *httptransport.Runtime", tr)
+	}
+	socketTransport, ok := ht.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("inner transport = %T; want *http.Transport", ht.Transport)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	conn, err := socketTransport.DialContext(ctx, "tcp", "ignored")
+	if conn != nil {
+		conn.Close()
+		t.Fatal("dial succeeded with cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("DialContext error = %v; want context.Canceled", err)
 	}
 }
 

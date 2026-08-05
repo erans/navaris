@@ -35,9 +35,10 @@ func transientFirecrackerClient(sockPath string, idleTimeout time.Duration) (*cl
 }
 
 func buildIdleReapingTransport(sockPath string, idleTimeout time.Duration) runtime.ClientTransport {
+	dialer := &net.Dialer{}
 	socketTransport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return net.DialUnix("unix", nil, &net.UnixAddr{Name: sockPath, Net: "unix"})
+			return dialer.DialContext(ctx, "unix", sockPath)
 		},
 		MaxIdleConns:        1,
 		MaxIdleConnsPerHost: 1,

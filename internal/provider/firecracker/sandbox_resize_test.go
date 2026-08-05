@@ -359,6 +359,77 @@ func TestUpdateResources_WaitsForPortMutationBeforeLiveApply(t *testing.T) {
 	}
 }
 
+func TestUpdateResources_PersistFailureAttemptsBothCompensations(t *testing.T) {
+	oldWrite := resizeWriteCPUMax
+	oldBalloon := resizePatchBalloon
+	oldOpenDir := vminfoOpenDir
+	defer func() {
+		resizeWriteCPUMax = oldWrite
+		resizePatchBalloon = oldBalloon
+		vminfoOpenDir = oldOpenDir
+	}()
+
+	persistErr := errors.New("persist failed")
+	cpuRevertErr := errors.New("cpu revert failed")
+	memRevertErr := errors.New("memory revert failed")
+	cpuForward, cpuRevert := 0, 0
+	memForward, memRevert := 0, 0
+	resizeWriteCPUMax = func(_ *Provider, _ string, quota, _ int64) error {
+		switch quota {
+		case 2 * cpuPeriod:
+			cpuForward++
+			return nil
+		case 1 * cpuPeriod:
+			cpuRevert++
+			return cpuRevertErr
+		default:
+			t.Fatalf("unexpected CPU quota %d", quota)
+			return nil
+		}
+	}
+	resizePatchBalloon = func(_ *Provider, _ context.Context, _ string, amountMib int64) error {
+		switch amountMib {
+		case 512:
+			memForward++
+			return nil
+		case 768:
+			memRevert++
+			return memRevertErr
+		default:
+			t.Fatalf("unexpected balloon amount %d", amountMib)
+			return nil
+		}
+	}
+
+	tmp := t.TempDir()
+	p := &Provider{
+		config:            Config{CgroupRoot: tmp, ChrootBase: tmp},
+		cgroupVersion:     "2",
+		cgroupSkipFSCheck: true,
+	}
+	seedResizeVM(t, p, &VMInfo{
+		ID: "vm-persist-comp", PID: os.Getpid(), LimitCPU: 1, CeilingCPU: 4,
+		CgroupActive: true, LimitMemMib: 256, CeilingMemMib: 1024, MemSizeMib: 1024,
+	})
+	vminfoOpenDir = func(string) (*os.File, error) { return nil, persistErr }
+
+	cpu, mem := 2, 512
+	err := p.UpdateResources(context.Background(),
+		domain.BackendRef{Backend: "firecracker", Ref: "vm-persist-comp"},
+		domain.UpdateResourcesRequest{CPULimit: &cpu, MemoryLimitMB: &mem})
+	if cpuForward != 1 || cpuRevert != 1 {
+		t.Fatalf("CPU apply/revert counters = %d/%d; want 1/1", cpuForward, cpuRevert)
+	}
+	if memForward != 1 || memRevert != 1 {
+		t.Fatalf("memory apply/revert counters = %d/%d; want 1/1", memForward, memRevert)
+	}
+	for _, want := range []error{persistErr, cpuRevertErr, memRevertErr} {
+		if !errors.Is(err, want) {
+			t.Fatalf("UpdateResources error = %v; want errors.Is(..., %v)", err, want)
+		}
+	}
+}
+
 func TestUpdateResources_SerializesLiveApplyAndCommit(t *testing.T) {
 	oldWrite := resizeWriteCPUMax
 	defer func() { resizeWriteCPUMax = oldWrite }()

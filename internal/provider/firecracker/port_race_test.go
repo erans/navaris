@@ -13,6 +13,117 @@ import (
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
 )
 
+func TestStartSandbox_AcquiresVMLockBeforeReading(t *testing.T) {
+	dir := t.TempDir()
+	p := &Provider{
+		config: Config{ChrootBase: dir, EnableJailer: false},
+		fileMu: map[string]*vmFileLock{},
+	}
+	vmID := "vm-start-lock"
+	seed := &VMInfo{ID: vmID, Ports: map[int]int{}}
+	if err := os.MkdirAll(p.vmDir(vmID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Write(p.vmInfoPath(vmID)); err != nil {
+		t.Fatal(err)
+	}
+
+	fl := &vmFileLock{}
+	fl.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			fl.mu.Unlock()
+		}
+	}()
+	p.vmMu.Lock()
+	p.fileMu[vmID] = fl
+	p.vmMu.Unlock()
+
+	events := make(chan string, 2)
+	readErr := errors.New("start read sentinel")
+	oldRead := startReadVMInfo
+	startReadVMInfo = func(string) (*VMInfo, error) {
+		events <- "read"
+		return nil, readErr
+	}
+	defer func() { startReadVMInfo = oldRead }()
+	p.lockForAfterFastCheckHook = func() { events <- "lock" }
+
+	done := make(chan error, 1)
+	go func() {
+		done <- p.StartSandbox(context.Background(), domain.BackendRef{Backend: backendName, Ref: vmID})
+	}()
+
+	first := recvResizeTest(t, "first StartSandbox ordering event", events)
+	if first != "lock" {
+		err := recvResizeTest(t, "StartSandbox completion", done)
+		if !errors.Is(err, readErr) {
+			t.Fatalf("StartSandbox error = %v; want read sentinel after first event %q", err, first)
+		}
+		t.Fatalf("StartSandbox read vminfo before acquiring VM lock; first event = %q", first)
+	}
+
+	fl.mu.Unlock()
+	locked = false
+	err := recvResizeTest(t, "StartSandbox completion", done)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("StartSandbox error = %v; want read sentinel", err)
+	}
+}
+
+func TestStopSandbox_FinalWriteFailureRetainsStateForRetry(t *testing.T) {
+	dir := t.TempDir()
+	p := &Provider{
+		config: Config{ChrootBase: dir, EnableJailer: false},
+		vms:    map[string]*VMInfo{},
+		fileMu: map[string]*vmFileLock{},
+	}
+	vmID := "vm-stop-retry"
+	seed := &VMInfo{ID: vmID, PID: 0, SubnetIdx: 0, Ports: map[int]int{}}
+	if err := os.MkdirAll(p.vmDir(vmID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Write(p.vmInfoPath(vmID)); err != nil {
+		t.Fatal(err)
+	}
+	fl := &vmFileLock{}
+	p.vmMu.Lock()
+	p.vms[vmID] = seed
+	p.fileMu[vmID] = fl
+	p.vmMu.Unlock()
+
+	writeErr := errors.New("final write failed")
+	oldOpenDir := vminfoOpenDir
+	vminfoOpenDir = func(string) (*os.File, error) { return nil, writeErr }
+	defer func() { vminfoOpenDir = oldOpenDir }()
+
+	err := p.StopSandbox(context.Background(), domain.BackendRef{Backend: backendName, Ref: vmID}, true)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("StopSandbox error = %v; want final write error", err)
+	}
+	p.vmMu.Lock()
+	cached := p.vms[vmID]
+	gotFL := p.fileMu[vmID]
+	p.vmMu.Unlock()
+	if cached == nil || gotFL != fl || !fl.stopped.Load() {
+		t.Fatalf("failed final commit discarded retry state: cached=%v gotFL=%p wantFL=%p stopped=%v",
+			cached != nil, gotFL, fl, fl.stopped.Load())
+	}
+
+	vminfoOpenDir = oldOpenDir
+	if err := p.StopSandbox(context.Background(), domain.BackendRef{Backend: backendName, Ref: vmID}, true); err != nil {
+		t.Fatalf("StopSandbox retry: %v", err)
+	}
+	p.vmMu.Lock()
+	_, vmsHas := p.vms[vmID]
+	_, fmHas := p.fileMu[vmID]
+	p.vmMu.Unlock()
+	if vmsHas || fmHas {
+		t.Fatalf("StopSandbox retry left entries: vms=%v fileMu=%v", vmsHas, fmHas)
+	}
+}
+
 // TestPublishPort_Concurrent_NoLostUpdate: N concurrent PublishPort calls
 // on one VM must produce exactly N distinct port mappings in vminfo.json.
 // Without lockFor, the unlocked read-modify-write loses updates (last
