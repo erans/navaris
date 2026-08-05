@@ -156,17 +156,18 @@ type boostListener struct {
 
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
-	config        Config
-	subnets       *network.Allocator
-	uids          *jailer.UIDAllocator
-	portAlloc     *network.PortAllocator
-	cidNext       uint32
-	cidMu         sync.Mutex
-	vms           map[string]*VMInfo
-	vmMu          sync.RWMutex
-	fileMu        map[string]*vmFileLock // F1: per-VM vminfo.json serialization; guarded by vmMu for lookup
-	hostIface     string
-	cgroupVersion string
+	config                    Config
+	subnets                   *network.Allocator
+	uids                      *jailer.UIDAllocator
+	portAlloc                 *network.PortAllocator
+	cidNext                   uint32
+	cidMu                     sync.Mutex
+	vms                       map[string]*VMInfo
+	vmMu                      sync.RWMutex
+	fileMu                    map[string]*vmFileLock // F1: per-VM vminfo.json serialization; guarded by vmMu for lookup
+	lockForAfterFastCheckHook func()                 // tests-only; nil in production
+	hostIface                 string
+	cgroupVersion             string
 	// cgroupSkipFSCheck disables the cgroupfs magic-number validation in
 	// setupCgroup. Tests-only — production code never sets this. Without
 	// it, every cgroup-helper unit test would need a real cgroup mount

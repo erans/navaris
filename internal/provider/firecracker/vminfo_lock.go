@@ -30,6 +30,9 @@ func (p *Provider) lockFor(vmID string) (*vmFileLock, error) {
 		return nil, fmt.Errorf("firecracker: vm %s is stopping: %w", vmID, domain.ErrVMStopped)
 	}
 	p.vmMu.Unlock()
+	if p.lockForAfterFastCheckHook != nil {
+		p.lockForAfterFastCheckHook()
+	}
 
 	fl.mu.Lock()
 	// Re-check after acquiring: StopSandbox may have flipped stopped between

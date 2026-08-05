@@ -91,7 +91,25 @@ func TestLockFor_RechecksStoppedAfterWaiting(t *testing.T) {
 	fl := &vmFileLock{}
 	p.fileMu["vm-gap"] = fl
 
-	// Force lockFor past its fast check and into the per-VM mutex wait.
+	afterFastCheck := make(chan struct{})
+	releaseHook := make(chan struct{})
+	hookErr := make(chan string, 1)
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseHook) })
+	}
+	p.lockForAfterFastCheckHook = func() {
+		if !p.vmMu.TryLock() {
+			hookErr <- "lockFor hook ran while vmMu was held"
+		} else {
+			p.vmMu.Unlock()
+			hookErr <- ""
+		}
+		close(afterFastCheck)
+		<-releaseHook
+	}
+
+	// Force lockFor past its fast check and up to the per-VM mutex wait.
 	fl.mu.Lock()
 	done := make(chan error, 1)
 	go func() {
@@ -102,10 +120,21 @@ func TestLockFor_RechecksStoppedAfterWaiting(t *testing.T) {
 		done <- err
 	}()
 
-	// Give the waiter time to complete the map lookup/fast check. The held
-	// per-VM mutex keeps it from completing before the sentinel transition.
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-afterFastCheck:
+	case <-time.After(time.Second):
+		release()
+		fl.mu.Unlock()
+		t.Fatal("lockFor did not reach the post-fast-check barrier")
+	}
+	if msg := <-hookErr; msg != "" {
+		release()
+		fl.mu.Unlock()
+		t.Fatal(msg)
+	}
+
 	fl.stopped.Store(true)
+	release()
 	fl.mu.Unlock()
 
 	select {
