@@ -1,3 +1,5 @@
+//go:build firecracker
+
 package firecracker
 
 import (
