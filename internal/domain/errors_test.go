@@ -20,3 +20,11 @@ func TestErrorsAreDistinct(t *testing.T) {
 		t.Fatal("ErrNotFound should not match ErrConflict")
 	}
 }
+
+func TestErrVMStopped_IsSentinel(t *testing.T) {
+	// Wrapped errors must still match via errors.Is (used by respondError).
+	wrapped := fmt.Errorf("firecracker publish port vm-x: %w", domain.ErrVMStopped)
+	if !errors.Is(wrapped, domain.ErrVMStopped) {
+		t.Fatalf("errors.Is(wrapped, ErrVMStopped) = false; want true")
+	}
+}

@@ -42,3 +42,9 @@ func TestMapErrorCode_InvalidArgument(t *testing.T) {
 		t.Errorf("wrapped ErrInvalidArgument → %d, want %d", got, http.StatusBadRequest)
 	}
 }
+
+func TestMapErrorCodeVMStopped(t *testing.T) {
+	if got := mapErrorCode(domain.ErrVMStopped); got != http.StatusConflict {
+		t.Errorf("mapErrorCode(ErrVMStopped) = %d; want %d", got, http.StatusConflict)
+	}
+}
