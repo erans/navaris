@@ -14,6 +14,10 @@ import (
 	"github.com/navaris/navaris/internal/domain"
 )
 
+var resizeWriteCPUMax = func(p *Provider, dir string, quota, period int64) error {
+	return p.writeCPUMax(dir, quota, period)
+}
+
 // UpdateResources applies new CPU and/or memory limits live to a running
 // Firecracker VM. CPU is enforced via cgroup CPU bandwidth (cpu.max v2 /
 // cfs_quota_us v1) on the per-VM cgroup created at boot; memory is enforced
@@ -32,11 +36,25 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		return nil
 	}
 
+	fl, err := p.lockFor(ref.Ref)
+	if err != nil {
+		return &domain.ProviderResizeError{
+			Reason: domain.ResizeReasonVMStopped,
+			Detail: err.Error(),
+		}
+	}
+	defer fl.mu.Unlock()
+
 	p.vmMu.RLock()
-	info, ok := p.vms[ref.Ref]
+	_, registered := p.vms[ref.Ref]
 	p.vmMu.RUnlock()
-	if !ok {
+	if !registered {
 		return fmt.Errorf("firecracker: vm %q not found: %w", ref.Ref, domain.ErrNotFound)
+	}
+
+	info, err := ReadVMInfo(p.vmInfoPath(ref.Ref))
+	if err != nil {
+		return fmt.Errorf("firecracker: read vminfo for resize %q: %w", ref.Ref, err)
 	}
 
 	// Validate first — fail fast before mutating anything.
@@ -94,7 +112,7 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 	if req.CPULimit != nil {
 		newCPU := int64(*req.CPULimit)
 		quota := newCPU * cpuPeriod
-		if err := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), quota, cpuPeriod); err != nil {
+		if err := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), quota, cpuPeriod); err != nil {
 			return &domain.ProviderResizeError{
 				Reason: domain.ResizeReasonCgroupWriteFailed,
 				Detail: err.Error(),
@@ -113,7 +131,7 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 			// so the operator can reconcile by hand.
 			if cpuApplied {
 				revertQuota := priorCPU * cpuPeriod
-				if revertErr := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); revertErr != nil {
+				if revertErr := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); revertErr != nil {
 					return fmt.Errorf("firecracker: patch balloon: %w; cgroup revert ALSO failed: %v (vm cpu/mem are inconsistent — operator must reconcile)", err, revertErr)
 				}
 			}
@@ -121,48 +139,17 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		}
 	}
 
-	// Both branches succeeded — commit to in-memory state and disk. If the
-	// vminfo.json write fails, attempt to revert: undo in-memory updates
-	// and revert the running VM to the prior limits, so the service layer's
-	// SQLite rollback leaves the system in a consistent state.
-	//
-	// F1: hold fl.mu (via lockFor) across the whole commit so the in-memory
-	// mutation and the vminfo.json write are atomic w.r.t. concurrent
-	// writers/StopSandbox. fl.mu is acquired before vmMu (lock ordering).
-	// If the VM is mid-teardown, return a ProviderResizeError so the service
-	// layer maps it to a 409 and skips retrying a dead VM.
-	fl, err := p.lockFor(ref.Ref)
-	if err != nil {
-		return &domain.ProviderResizeError{
-			Reason: domain.ResizeReasonVMStopped,
-			Detail: err.Error(),
-		}
-	}
-	defer fl.mu.Unlock()
-
-	p.vmMu.Lock()
 	if req.CPULimit != nil {
 		info.LimitCPU = int64(*req.CPULimit)
 	}
 	if req.MemoryLimitMB != nil {
 		info.LimitMemMib = newMem
 	}
-	p.vmMu.Unlock()
 	if err := info.Write(p.vmInfoPath(ref.Ref)); err != nil {
-		// Revert in-memory state.
-		p.vmMu.Lock()
-		if req.CPULimit != nil {
-			info.LimitCPU = priorCPU
-		}
-		if req.MemoryLimitMB != nil {
-			info.LimitMemMib = priorMem
-		}
-		p.vmMu.Unlock()
-		// Best-effort revert of the running VM. Log multi-failure if either
-		// revert step itself fails — the operator needs to reconcile.
+		// Disk and cache remain unchanged. Compensate the live changes.
 		if cpuApplied {
 			revertQuota := priorCPU * cpuPeriod
-			if rerr := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); rerr != nil {
+			if rerr := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); rerr != nil {
 				return fmt.Errorf("firecracker: persist vminfo after resize: %w; cgroup revert ALSO failed: %v", err, rerr)
 			}
 		}
@@ -173,6 +160,17 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		}
 		return fmt.Errorf("firecracker: persist vminfo after resize: %w", err)
 	}
+
+	p.vmMu.Lock()
+	if cached, ok := p.vms[ref.Ref]; ok {
+		if req.CPULimit != nil {
+			cached.LimitCPU = info.LimitCPU
+		}
+		if req.MemoryLimitMB != nil {
+			cached.LimitMemMib = info.LimitMemMib
+		}
+	}
+	p.vmMu.Unlock()
 	return nil
 }
 

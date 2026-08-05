@@ -18,6 +18,25 @@ var (
 	removeDNATFn = network.RemoveDNAT
 )
 
+func clonePorts(ports map[int]int) map[int]int {
+	if ports == nil {
+		return nil
+	}
+	clone := make(map[int]int, len(ports))
+	for host, target := range ports {
+		clone[host] = target
+	}
+	return clone
+}
+
+func (p *Provider) syncPortsCache(vmID string, ports map[int]int) {
+	p.vmMu.Lock()
+	if cached, ok := p.vms[vmID]; ok {
+		cached.Ports = clonePorts(ports)
+	}
+	p.vmMu.Unlock()
+}
+
 func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (_ domain.PublishedEndpoint, retErr error) {
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "PublishPort")
 	defer func() { endSpan(retErr) }()
@@ -72,6 +91,7 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 		p.portAlloc.Release(hostPort)
 		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port write vminfo %s: %w", vmID, err)
 	}
+	p.syncPortsCache(vmID, info.Ports)
 
 	return domain.PublishedEndpoint{
 		HostAddress:   "0.0.0.0",
@@ -113,6 +133,7 @@ func (p *Provider) UnpublishPort(ctx context.Context, ref domain.BackendRef, pub
 	if err := info.Write(infoPath); err != nil {
 		return fmt.Errorf("firecracker unpublish port write vminfo %s: %w", vmID, err)
 	}
+	p.syncPortsCache(vmID, info.Ports)
 
 	p.portAlloc.Release(publishedPort)
 	return nil
