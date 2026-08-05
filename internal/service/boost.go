@@ -20,8 +20,9 @@ type BoostService struct {
 	clock       Clock
 	maxDuration time.Duration
 
-	mu     sync.Mutex
-	timers map[string]Timer // keyed by boost_id
+	mu       sync.Mutex
+	timers   map[string]Timer       // keyed by boost_id
+	sbxLocks map[string]*sync.Mutex // F7: per-sandbox apply lock; guarded by mu for lookup
 }
 
 func NewBoostService(
@@ -40,6 +41,7 @@ func NewBoostService(
 		clock:       clock,
 		maxDuration: maxDuration,
 		timers:      make(map[string]Timer),
+		sbxLocks:    make(map[string]*sync.Mutex),
 	}
 }
 
@@ -156,6 +158,19 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 	})
 
 	return boost, nil
+}
+
+// lockSandbox returns the per-sandbox boost lock. Must be called while
+// holding s.mu (for the lookup); the returned mutex is acquired standalone
+// so slow UpdateResources calls don't hold s.mu. F7: serializes Start and
+// expire for the same sandbox across their UpdateResources apply.
+func (s *BoostService) lockSandbox(sandboxID string) *sync.Mutex {
+	m, ok := s.sbxLocks[sandboxID]
+	if !ok {
+		m = &sync.Mutex{}
+		s.sbxLocks[sandboxID] = m
+	}
+	return m
 }
 
 // boostBackoff is the per-attempt sleep between revert retries. The slice
