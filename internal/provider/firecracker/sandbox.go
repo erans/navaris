@@ -16,6 +16,7 @@ import (
 
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/provider/firecracker/network"
@@ -591,9 +592,20 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 			} else {
 				sockPath = filepath.Join(vmDir, "firecracker.sock")
 			}
-			machine, merr := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
+			fc, merr := transientFirecrackerClient(sockPath, 30*time.Second)
 			if merr == nil {
-				machine.Shutdown(ctx)
+				// SendCtrlAltDel via the low-level API. The SDK high-level
+				// CreateSyncAction wrapper (and thus machine.Shutdown) does NOT
+				// apply a per-request timeout, so neither do we. Preserve the
+				// existing error-swallowing behavior: the original
+				// machine.Shutdown(ctx) return was also discarded here (the
+				// deadline/SIGKILL loop below reconciles a non-responsive VM).
+				if _, err := fc.Operations.CreateSyncAction(operations.NewCreateSyncActionParamsWithContext(ctx).
+					WithInfo(&models.InstanceActionInfo{
+						ActionType: fcsdk.String(models.InstanceActionInfoActionTypeSendCtrlAltDel),
+					})); err != nil {
+					slog.Debug("firecracker: send CtrlAltDel failed", "vm", vmID, "error", err)
+				}
 			}
 			deadline := time.After(30 * time.Second)
 			for processAlive(info.PID) {

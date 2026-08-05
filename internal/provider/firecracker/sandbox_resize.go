@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
 	"github.com/navaris/navaris/internal/domain"
 )
 
@@ -193,16 +194,23 @@ func (p *Provider) patchBalloon(ctx context.Context, vmID string, amountMib int6
 	} else {
 		sockPath = p.socketPath(vmID)
 	}
-	machine, err := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
+	fc, err := transientFirecrackerClient(sockPath, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("attach to vm: %w", err)
 	}
 
 	const maxAttempts = 10
 	const retryDelay = 300 * time.Millisecond
+	// fcReqTimeout matches the SDK high-level client's default per-request
+	// timeout (defaultFirecrackerRequestTimeout = 500ms), which the previous
+	// machine.UpdateBalloon wrapper applied via context.WithTimeout.
+	const fcReqTimeout = 500 * time.Millisecond
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err := machine.UpdateBalloon(ctx, amountMib); err == nil {
+		params := operations.NewPatchBalloonParamsWithContext(ctx).
+			WithBody(&models.BalloonUpdate{AmountMib: &amountMib}).
+			WithTimeout(fcReqTimeout)
+		if _, err := fc.Operations.PatchBalloon(params); err == nil {
 			return nil
 		} else {
 			lastErr = err
