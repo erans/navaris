@@ -270,40 +270,84 @@ reach the per-process FD limit.
 - `Machine.StopVMM()` is **not** a fix — it stops the VMM (kills the VM),
   not just the transport.
 - The SDK exposes no `Machine.Close()`.
-- `NewMachine`'s opts run *after* the default `m.client = NewClient(...)`
-  is assigned (machine.go:386-387 → opts at 404), so an `Opt` can replace
-  `m.client` with one built on a custom transport.
+- **`Machine.client` is unexported** (`client *Client`), and the SDK's
+  `machine_test.go` is white-box (`package firecracker`, same import path).
+  Our navaris `package firecracker` is a *different package* (different
+  import path), so an `fcsdk.Opt` closure in our code **cannot** assign
+  `m.client`. The SDK's `NewClient(socketPath, logger, debug, opts...)`
+  builds the transport internally with no hook for a custom one;
+  `WithOpsClient` is for mocking, not transport injection. **Approach
+  (A) — inject a custom transport via an `Opt` — is infeasible.**
+- The SDK wrappers we use (`UpdateBalloon`, `CreateSnapshot`, `Shutdown`
+  → `CreateSyncAction`, `PauseVM`/`ResumeVM` → `PatchVM`) are 4-line thin
+  wrappers over the low-level generated operations, and the navaris call
+  sites pass **no opts**. `*client.Firecracker` exposes those operations
+  via an exported `Operations` field and has an exported `Transport`
+  field. So we can build a `*client.Firecracker` directly with our own
+  idle-reaping transport and call the low-level operations — same Firecracker
+  API surface, no HTTP re-implementation, no drift.
+
+### Pre-existing latent bug (out of scope, flagged)
+
+The three call sites use **different socket paths**: `sandbox.go:533`
+(graceful stop) uses `root/firecracker.sock`, while `sandbox_resize.go:176`
+and `snapshot.go:148` use `root/run/firecracker.socket`. The
+`transientClient` helper below takes `sockPath` as an argument rather
+than hardcoding one pattern, so it does not bake in this inconsistency.
+This inconsistency is a separate latent bug (the graceful-stop CtrlAltDel
+under jailer may be hitting the wrong socket and silently failing, since
+`if merr == nil { machine.Shutdown(ctx) }` swallows the error) and is
+**out of scope for this batch**; flagged for a future fix.
 
 ### Fix
 
-Inject a custom transport with `IdleConnTimeout` via an `Opt`.
+Build a transient `*client.Firecracker` per one-shot call with an
+idle-reaping transport; call the low-level operations directly. Each
+transient client's idle connection auto-reaps after `IdleConnTimeout`.
+No lifecycle to manage; independent of F1.
 
 ### New helper: `internal/provider/firecracker/fcapi_transport.go`
 
 ```go
-// withIdleReapingClient returns an fcsdk.Opt that replaces the Machine's
-// default client with one whose unix-socket transport reaps idle
-// connections after idleTimeout. Use for transient API-socket Machines
-// that issue one or two calls and then fall out of scope; prevents FD
-// retention between GC cycles. Do NOT use for long-lived Machines that
-// manage a VMM lifecycle.
-func withIdleReapingClient(socketPath string, idleTimeout time.Duration) fcsdk.Opt {
-    return func(m *fcsdk.Machine) {
-        m.client = fcsdk.NewClient(
-            buildIdleReapingTransport(socketPath, idleTimeout),
-            strfmt.Default,
-        )
+package firecracker
+
+import (
+    "context"
+    "net"
+    "net/http"
+    "time"
+
+    "github.com/go-openapi/runtime"
+    httptransport "github.com/go-openapi/runtime/client"
+    "github.com/firecracker-microvm/firecracker-go-sdk/client"
+    "github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+    "github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
+    "github.com/go-openapi/strfmt"
+)
+
+// transientFirecrackerClient builds a low-level *client.Firecracker bound to
+// a running VM's API socket with an idle-reaping transport. Caller issues
+// one or two operations then lets it fall out of scope; the idle unix
+// connection auto-reaps after idleTimeout, preventing FD retention between
+// GC cycles. Use for one-shot API-socket calls; do NOT use for the
+// long-lived Machine that manages a VMM lifecycle.
+func transientFirecrackerClient(sockPath string, idleTimeout time.Duration) (*client.Firecracker, error) {
+    if err := validateSockPath(sockPath); err != nil {
+        return nil, err
     }
+    fc := client.NewHTTPClient(strfmt.NewFormats())
+    fc.SetTransport(buildIdleReapingTransport(sockPath, idleTimeout))
+    return fc, nil
 }
 
-func buildIdleReapingTransport(socketPath string, idleTimeout time.Duration) runtime.ClientTransport {
+func buildIdleReapingTransport(sockPath string, idleTimeout time.Duration) runtime.ClientTransport {
     socketTransport := &http.Transport{
         DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-            return net.DialUnix("unix", nil, &net.UnixAddr{Name: socketPath, Net: "unix"})
+            return net.DialUnix("unix", nil, &net.UnixAddr{Name: sockPath, Net: "unix"})
         },
-        MaxIdleConns:       1,
+        MaxIdleConns:        1,
         MaxIdleConnsPerHost: 1,
-        IdleConnTimeout:    idleTimeout,
+        IdleConnTimeout:     idleTimeout,
     }
     transport := httptransport.New(client.DefaultHost, client.DefaultBasePath, client.DefaultSchemes)
     transport.Transport = socketTransport
@@ -315,53 +359,56 @@ func buildIdleReapingTransport(socketPath string, idleTimeout time.Duration) run
 RTT, short enough to reap quickly between calls). `MaxIdleConnsPerHost: 1`
 since there is exactly one host (the socket).
 
-### New call-site helper
+### Call-site changes (3 sites, 5 wrapper calls)
 
-```go
-// transientMachine returns a *fcsdk.Machine bound to a running VM's API
-// socket with an idle-reaping transport. Caller issues one or two requests
-// then lets it fall out of scope; the idle conn auto-closes after
-// idleTimeout.
-func (p *Provider) transientMachine(ctx context.Context, vmID string) (*fcsdk.Machine, error) {
-    vmDir := p.vmDir(vmID)
-    var sockPath string
-    if p.config.EnableJailer {
-        sockPath = filepath.Join(vmDir, "root", "firecracker.sock")
-    } else {
-        sockPath = filepath.Join(vmDir, "firecracker.sock")
-    }
-    return fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath},
-        withIdleReapingClient(sockPath, 30*time.Second))
-}
-```
+Each site replaces `fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})`
++ a thin SDK wrapper call with a `transientFirecrackerClient(sockPath, ...)`
++ the corresponding low-level operation. The helper takes `sockPath` as an
+argument (the three sites use different socket-path conventions — see
+"Pre-existing latent bug" above).
 
-### Call-site changes (3 sites)
-
-- `sandbox_resize.go:181` (`patchBalloon`): replace
-  `fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})` with
-  `p.transientMachine(ctx, ref.Ref)`.
-- `snapshot.go:149` (`createLiveSnapshot`): same.
-- `sandbox.go:536` (graceful-stop `Shutdown`): same. (This path's leak is
-  harmless — the VM dies right after — but using the helper uniformly is
-  cleaner and costs nothing.)
+- `sandbox_resize.go:176-191` (`patchBalloon`): replace
+  `fcsdk.NewMachine` + `machine.UpdateBalloon(ctx, amountMib)` with
+  `transientFirecrackerClient(sockPath, 30*time.Second)` +
+  `fc.Operations.PatchBalloon(operations.NewPatchBalloonParams().
+    WithContext(ctx).WithBody(&models.BalloonUpdate{AmountMib: &amountMib}))`.
+  The existing retry loop (up to 10 attempts on "not activated") is preserved.
+- `snapshot.go:148-210` (`createLiveSnapshot`): replace `fcsdk.NewMachine` +
+  `machine.PauseVM` / `machine.CreateSnapshot` / `machine.ResumeVM` with
+  `transientFirecrackerClient` + `fc.Operations.PatchVM(...)` (pause),
+  `fc.Operations.CreateSnapshot(...)` (snapshot), `fc.Operations.PatchVM(...)`
+  (resume). The defer-resume-on-error cleanup is preserved.
+- `sandbox.go:533-539` (graceful-stop): replace `fcsdk.NewMachine` +
+  `machine.Shutdown(ctx)` with `transientFirecrackerClient` +
+  `fc.Operations.CreateSyncAction(operations.NewCreateSyncActionParams().
+    WithContext(ctx).WithInfo(&models.InstanceActionInfo{ActionType: 
+      ptrTo(models.InstanceActionInfoActionTypeSendCtrlAltDel)}))`.
+  (This path's leak is harmless — the VM dies right after — but using the
+  helper uniformly is cleaner and costs nothing. The existing
+  `if merr == nil { ... }` error-swallowing behavior is preserved to avoid
+  behavior change; flagged as a separate bug in "Pre-existing latent bug".)
 
 ### What this does not change
 
 - `CreateSandbox`/`StartSandbox`'s long-lived `Machine` (the one that
   actually launches the VMM) keeps using the default transport — correct,
   it manages the VMM lifecycle.
-- The Firecracker API surface used (`UpdateBalloon`/`CreateSnapshot`/
-  `Shutdown`) is unchanged — no drift risk, no re-implementation.
+- The Firecracker API surface used (`PatchBalloon`/`CreateSnapshot`/
+  `PatchVM`/`CreateSyncAction`) is unchanged — same generated operations,
+  no drift risk, no HTTP re-implementation.
 
 ### Tests
 
-- Unit test: `withIdleReapingClient` produces a `Machine` whose transport
-  has `IdleConnTimeout == 30s` (defensive against SDK upgrades that change
-  default client construction order).
+- Unit test: `transientFirecrackerClient` produces a `*client.Firecracker`
+  whose transport is the idle-reaping one (assert via `fc.Transport` field,
+  checking the underlying `*http.Transport`'s `IdleConnTimeout == 30s`).
+- Unit test: against a mock unix listener, `PatchBalloon` issued through
+  the transient client connects and the idle conn is reaped after
+  `IdleConnTimeout` (use a short timeout in the test).
 - Existing resize/snapshot/graceful-stop tests pass.
 - `grep -rn "fcsdk.NewMachine" internal/provider/firecracker/` confirms
-  the helper is used at the 3 transient sites and the long-lived Machine
-  is unchanged elsewhere.
+  the long-lived launch Machine is unchanged and the 3 transient sites no
+  longer use `fcsdk.NewMachine`.
 
 ---
 
