@@ -31,7 +31,12 @@ func TestAcquireSandbox_ReferenceLifetime(t *testing.T) {
 	}
 
 	release1()
-	release2 := <-acquired2
+	var release2 func()
+	select {
+	case release2 = <-acquired2:
+	case <-time.After(time.Second):
+		t.Fatal("second acquire did not complete after first release")
+	}
 	bs.mu.Lock()
 	entry, ok := bs.sbxLocks["sbx-1"]
 	if !ok || entry.refs != 1 {

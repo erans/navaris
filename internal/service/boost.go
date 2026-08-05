@@ -393,6 +393,12 @@ func (s *BoostService) cancelOnLifecycle(ctx context.Context, sandboxID string) 
 	releaseSandbox := s.acquireSandbox(sandboxID)
 	defer releaseSandbox()
 
+	s.cancelOnLifecycleLocked(ctx, sandboxID)
+}
+
+// cancelOnLifecycleLocked is called while the caller holds the sandbox's
+// operation lock. It drops the boost row + timer without attempting a revert.
+func (s *BoostService) cancelOnLifecycleLocked(ctx context.Context, sandboxID string) {
 	boost, err := s.boosts.Get(ctx, sandboxID)
 	if err != nil {
 		return
