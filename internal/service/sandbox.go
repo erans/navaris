@@ -828,6 +828,12 @@ func (s *SandboxService) handleDestroy(ctx context.Context, op *domain.Operation
 	}
 
 	if err := s.provider.DestroySandbox(ctx, ref); err != nil {
+		if sbx.State == domain.SandboxStopping {
+			sbx.State = domain.SandboxFailed
+			sbx.UpdatedAt = time.Now().UTC()
+			s.sandboxes.Update(ctx, sbx)
+			s.publishStateChange(ctx, sbx)
+		}
 		return err
 	}
 
