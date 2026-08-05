@@ -11,6 +11,13 @@ import (
 	"github.com/navaris/navaris/internal/telemetry"
 )
 
+// addDNATFn/removeDNATFn wrap network.AddDNAT/RemoveDNAT so tests can stub
+// the iptables path. Default to the real functions.
+var (
+	addDNATFn    = network.AddDNAT
+	removeDNATFn = network.RemoveDNAT
+)
+
 func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targetPort int, opts domain.PublishPortOptions) (_ domain.PublishedEndpoint, retErr error) {
 	ctx, endSpan := telemetry.ProviderSpan(ctx, backendName, "PublishPort")
 	defer func() { endSpan(retErr) }()
@@ -22,6 +29,16 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 	if err != nil {
 		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port %s: %w", vmID, err)
 	}
+
+	// F1: serialize the vminfo RMW against concurrent writers and StopSandbox.
+	// Allocate stays outside the lock (portAlloc has its own mutex; no
+	// deadlock risk since portAlloc.mu is never held while acquiring fileMu).
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		p.portAlloc.Release(hostPort)
+		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port %s: %w", vmID, err)
+	}
+	defer fl.mu.Unlock()
 
 	// Read vminfo to get guest IP.
 	infoPath := p.vmInfoPath(vmID)
@@ -40,7 +57,7 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 	guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 
 	// Add iptables rules.
-	if err := network.AddDNAT(hostPort, guestIP, targetPort); err != nil {
+	if err := addDNATFn(hostPort, guestIP, targetPort); err != nil {
 		p.portAlloc.Release(hostPort)
 		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port dnat %s: %w", vmID, err)
 	}
@@ -51,7 +68,7 @@ func (p *Provider) PublishPort(ctx context.Context, ref domain.BackendRef, targe
 	}
 	info.Ports[hostPort] = targetPort
 	if err := info.Write(infoPath); err != nil {
-		network.RemoveDNAT(hostPort, guestIP, targetPort)
+		removeDNATFn(hostPort, guestIP, targetPort)
 		p.portAlloc.Release(hostPort)
 		return domain.PublishedEndpoint{}, fmt.Errorf("firecracker publish port write vminfo %s: %w", vmID, err)
 	}
@@ -68,6 +85,13 @@ func (p *Provider) UnpublishPort(ctx context.Context, ref domain.BackendRef, pub
 
 	vmID := ref.Ref
 
+	// F1: serialize the vminfo RMW against concurrent writers and StopSandbox.
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		return fmt.Errorf("firecracker unpublish port %s: %w", vmID, err)
+	}
+	defer fl.mu.Unlock()
+
 	infoPath := p.vmInfoPath(vmID)
 	info, err := ReadVMInfo(infoPath)
 	if err != nil {
@@ -82,7 +106,7 @@ func (p *Provider) UnpublishPort(ctx context.Context, ref domain.BackendRef, pub
 	guestIP := p.subnets.GuestIP(info.SubnetIdx).String()
 
 	// Remove iptables rules.
-	network.RemoveDNAT(publishedPort, guestIP, targetPort)
+	removeDNATFn(publishedPort, guestIP, targetPort)
 
 	// Update vminfo.
 	delete(info.Ports, publishedPort)

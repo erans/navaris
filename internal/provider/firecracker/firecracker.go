@@ -281,6 +281,7 @@ func (p *Provider) recover() error {
 	for _, info := range infos {
 		p.vmMu.Lock()
 		p.vms[info.ID] = info
+		p.fileMu[info.ID] = &vmFileLock{} // F1: ensure first post-startup writer finds the lock
 		p.vmMu.Unlock()
 
 		// Advance allocators past in-use values.
@@ -315,6 +316,10 @@ func (p *Provider) recover() error {
 						network.RemoveDNAT(hp, guestIP, tp)
 					}
 				}
+				// F1: safe without lockFor — recover() is single-threaded at
+				// daemon startup, so no concurrent writer can race this
+				// write. Do not call this path from any concurrent context
+				// without adding lockFor.
 				info.Ports = nil
 				infoPath := p.vmInfoPath(info.ID)
 				if err := info.Write(infoPath); err != nil {
