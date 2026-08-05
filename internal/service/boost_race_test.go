@@ -26,7 +26,7 @@ func TestBoostStartVsExpire_SerializeApply(t *testing.T) {
 	env := newBoostEnvWithClock(t, clk)
 	sbx := env.seedSandbox(t, "sbx-ser", domain.SandboxRunning, "mock")
 
-	applyCh := make(chan int)       // signals an apply started (cpu value)
+	applyCh := make(chan int)        // signals an apply started (cpu value)
 	releaseCh := make(chan struct{}) // test gates each apply's return
 	var mu sync.Mutex
 	var order []int
@@ -111,5 +111,207 @@ func TestBoostStartVsExpire_SerializeApply(t *testing.T) {
 	mu.Unlock()
 	if last != 4 {
 		t.Fatalf("last apply = %d; want 4 (B's limit)", last)
+	}
+}
+
+func TestBoostStartVsStart_BookkeepingAndApplyShareOrder(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx-start-order", domain.SandboxRunning, "mock")
+
+	type applyCall struct {
+		cpu     int
+		release chan struct{}
+	}
+	entered := make(chan applyCall, 2)
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef,
+		req domain.UpdateResourcesRequest) error {
+		call := applyCall{cpu: *req.CPULimit, release: make(chan struct{})}
+		entered <- call
+		<-call.release
+		return nil
+	}
+
+	cpuA, cpuB := 4, 8
+	doneA, doneB := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := env.boost.Start(context.Background(), service.StartBoostOpts{
+			SandboxID: sbx.SandboxID, CPULimit: &cpuA, DurationSeconds: 60,
+		})
+		doneA <- err
+	}()
+	callA := <-entered
+	rowA, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		_, err := env.boost.Start(context.Background(), service.StartBoostOpts{
+			SandboxID: sbx.SandboxID, CPULimit: &cpuB, DurationSeconds: 60,
+		})
+		doneB <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	whileA, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whileA.BoostID != rowA.BoostID {
+		close(callA.release)
+		t.Fatalf("Start(B) replaced bookkeeping while Start(A) was applying: got %s want %s",
+			whileA.BoostID, rowA.BoostID)
+	}
+	select {
+	case callB := <-entered:
+		close(callB.release)
+		close(callA.release)
+		t.Fatal("Start(B) applied while Start(A) held the sandbox operation")
+	default:
+	}
+
+	close(callA.release)
+	if err := <-doneA; err != nil {
+		t.Fatal(err)
+	}
+	callB := <-entered
+	if callB.cpu != cpuB {
+		t.Fatalf("second apply cpu=%d; want %d", callB.cpu, cpuB)
+	}
+	close(callB.release)
+	if err := <-doneB; err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.BoostedCPULimit == nil || *final.BoostedCPULimit != cpuB {
+		t.Fatalf("final boost cpu=%v; want %d", final.BoostedCPULimit, cpuB)
+	}
+}
+
+func TestBoostStart_DifferentSandboxesApplyConcurrently(t *testing.T) {
+	env := newBoostEnv(t)
+	a := env.seedSandbox(t, "sbx-a", domain.SandboxRunning, "mock")
+	b := env.seedSandbox(t, "sbx-b", domain.SandboxRunning, "mock")
+
+	entered := make(chan chan struct{}, 2)
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef,
+		domain.UpdateResourcesRequest) error {
+		release := make(chan struct{})
+		entered <- release
+		<-release
+		return nil
+	}
+
+	cpuA, cpuB := 4, 8
+	done := make(chan error, 2)
+	go func() {
+		_, err := env.boost.Start(context.Background(), service.StartBoostOpts{
+			SandboxID: a.SandboxID, CPULimit: &cpuA, DurationSeconds: 60})
+		done <- err
+	}()
+	go func() {
+		_, err := env.boost.Start(context.Background(), service.StartBoostOpts{
+			SandboxID: b.SandboxID, CPULimit: &cpuB, DurationSeconds: 60})
+		done <- err
+	}()
+
+	var releases []chan struct{}
+	for len(releases) < 2 {
+		select {
+		case release := <-entered:
+			releases = append(releases, release)
+		case <-time.After(time.Second):
+			t.Fatal("different sandboxes did not enter apply concurrently")
+		}
+	}
+	for _, release := range releases {
+		close(release)
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestBoostStartVsCancel_SerializeBookkeepingAndApply(t *testing.T) {
+	env := newBoostEnv(t)
+	sbx := env.seedSandbox(t, "sbx-cancel-order", domain.SandboxRunning, "mock")
+
+	cpuA := 4
+	boostA, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpuA, DurationSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type applyCall struct {
+		cpu     int
+		release chan struct{}
+	}
+	entered := make(chan applyCall, 2)
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef,
+		req domain.UpdateResourcesRequest) error {
+		call := applyCall{cpu: *req.CPULimit, release: make(chan struct{})}
+		entered <- call
+		<-call.release
+		return nil
+	}
+
+	cancelDone := make(chan error, 1)
+	go func() { cancelDone <- env.boost.Cancel(context.Background(), sbx.SandboxID) }()
+	cancelCall := <-entered
+
+	cpuB := 8
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := env.boost.Start(context.Background(), service.StartBoostOpts{
+			SandboxID: sbx.SandboxID, CPULimit: &cpuB, DurationSeconds: 60,
+		})
+		startDone <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	row, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.BoostID != boostA.BoostID {
+		close(cancelCall.release)
+		t.Fatalf("Start replaced boost while Cancel revert was applying: got %s want %s",
+			row.BoostID, boostA.BoostID)
+	}
+	select {
+	case startCall := <-entered:
+		close(startCall.release)
+		close(cancelCall.release)
+		t.Fatal("Start applied concurrently with Cancel")
+	default:
+	}
+
+	close(cancelCall.release)
+	if err := <-cancelDone; err != nil {
+		t.Fatal(err)
+	}
+	startCall := <-entered
+	if startCall.cpu != cpuB {
+		t.Fatalf("post-Cancel Start cpu=%d; want %d", startCall.cpu, cpuB)
+	}
+	close(startCall.release)
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.BoostedCPULimit == nil || *final.BoostedCPULimit != cpuB {
+		t.Fatalf("final boost cpu=%v; want %d", final.BoostedCPULimit, cpuB)
 	}
 }
