@@ -164,6 +164,7 @@ type Provider struct {
 	cidMu         sync.Mutex
 	vms           map[string]*VMInfo
 	vmMu          sync.RWMutex
+	fileMu        map[string]*vmFileLock // F1: per-VM vminfo.json serialization; guarded by vmMu for lookup
 	hostIface     string
 	cgroupVersion string
 	// cgroupSkipFSCheck disables the cgroupfs magic-number validation in
@@ -231,6 +232,7 @@ func New(cfg Config) (*Provider, error) {
 		portAlloc:      network.NewPortAllocator(),
 		cidNext:        cfg.VsockCIDBase,
 		vms:            make(map[string]*VMInfo),
+		fileMu:         make(map[string]*vmFileLock),
 		hostIface:      hostIface,
 		cgroupVersion:  detectCgroupVersion(),
 		boostListeners: make(map[string]*boostListener),

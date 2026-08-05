@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type VMInfo struct {
@@ -119,6 +120,18 @@ func ReadVMInfo(path string) (*VMInfo, error) {
 		return nil, fmt.Errorf("unmarshal vminfo %s: %w", path, err)
 	}
 	return &info, nil
+}
+
+// vmFileLock serializes per-VM read-modify-write access to vminfo.json.
+// The mu field is acquired standalone (via Provider.lockFor); the stopped
+// flag is the fail-fast sentinel set at the very start of StopSandbox.
+//
+// Lock ordering: acquire fileMu[vmID].mu BEFORE p.vmMu when both are needed
+// (lockFor acquires vmMu only for the map lookup and releases it before
+// taking the per-VM mu, so no ordering constraint arises from the lookup).
+type vmFileLock struct {
+	mu      sync.Mutex
+	stopped bool
 }
 
 func ScanVMDirs(base string) ([]*VMInfo, []error) {
