@@ -90,11 +90,10 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		return nil, err
 	}
 
-	// Cancel any existing boost — replace semantics. Hold s.mu across the
-	// timer cancel + row delete + new timer schedule to prevent two boosts
-	// being in flight for the same sandbox.
+	// Phase 1: bookkeeping under s.mu (cancel prior boost, upsert new row,
+	// look up the per-sandbox apply lock). s.mu is released before the slow
+	// UpdateResources apply so it doesn't block other sandboxes.
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if prior, err := s.boosts.Get(ctx, opts.SandboxID); err == nil {
 		if t, ok := s.timers[prior.BoostID]; ok {
@@ -102,6 +101,7 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 			delete(s.timers, prior.BoostID)
 		}
 		if err := s.boosts.Delete(ctx, prior.BoostID); err != nil {
+			s.mu.Unlock()
 			return nil, fmt.Errorf("delete prior boost: %w", err)
 		}
 	}
@@ -120,8 +120,18 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		Source:                source,
 	}
 	if err := s.boosts.Upsert(ctx, boost); err != nil {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("persist boost: %w", err)
 	}
+	sbxMu := s.lockSandbox(sbx.SandboxID)
+	s.mu.Unlock()
+
+	// Phase 2: apply under the per-sandbox lock (NOT s.mu) so slow applies
+	// don't block other sandboxes. defer sbxMu.Unlock() keeps it held
+	// through the rollback path too. F7: serializes Start vs expire for
+	// the same sandbox across UpdateResources.
+	sbxMu.Lock()
+	defer sbxMu.Unlock()
 
 	// Apply live-only — the persisted limits stay as the user's intent.
 	_, err = s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
@@ -131,18 +141,26 @@ func (s *BoostService) Start(ctx context.Context, opts StartBoostOpts) (*domain.
 		ApplyLiveOnly: true,
 	})
 	if err != nil {
-		// Roll back the boost row; the live VM is unchanged.
+		// Roll back the boost row; the live VM is unchanged. Re-acquire
+		// s.mu briefly for the delete (held while we still hold sbxMu —
+		// consistent sbxMu→s.mu ordering; never the reverse).
+		s.mu.Lock()
 		if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil {
+			s.mu.Unlock()
 			return nil, fmt.Errorf("apply boost failed: %v; rollback also failed: %w", err, delErr)
 		}
+		s.mu.Unlock()
 		return nil, err
 	}
 
-	// Schedule the auto-revert timer. The callback runs in a goroutine;
-	// expire() takes the lock itself.
+	// Phase 3: schedule the auto-revert timer under s.mu (the timers map is
+	// guarded by s.mu). The callback runs in a goroutine; expire() takes the
+	// locks itself.
+	s.mu.Lock()
 	s.timers[boost.BoostID] = s.clock.AfterFunc(dur, func() {
 		s.expire(context.Background(), boost.BoostID)
 	})
+	s.mu.Unlock()
 
 	_ = s.events.Publish(ctx, domain.Event{
 		Type:      domain.EventBoostStarted,
@@ -185,25 +203,39 @@ var boostBackoff = []time.Duration{
 }
 
 func (s *BoostService) expire(ctx context.Context, boostID string) {
+	// Phase 1: delete the timer + fetch the boost row + look up the
+	// per-sandbox apply lock, all under s.mu.
 	s.mu.Lock()
 	delete(s.timers, boostID)
-	s.mu.Unlock()
-
 	boost, err := s.boosts.GetByID(ctx, boostID)
 	if err != nil {
 		// Race: boost was cancelled or deleted while the timer was firing.
+		s.mu.Unlock()
 		return
 	}
+	sbxMu := s.lockSandbox(boost.SandboxID)
+	s.mu.Unlock()
+
+	// Phase 2: apply under the per-sandbox lock (NOT s.mu). F7: serializes
+	// expire vs Start for the same sandbox across UpdateResources.
+	sbxMu.Lock()
+	defer sbxMu.Unlock()
 
 	sbx, err := s.sandboxes.Get(ctx, boost.SandboxID)
 	if err != nil {
-		// Sandbox is gone; clean up the boost row.
+		// Sandbox is gone; clean up the boost row + lock entry.
+		s.mu.Lock()
 		_ = s.boosts.Delete(ctx, boostID)
+		delete(s.sbxLocks, boost.SandboxID)
+		s.mu.Unlock()
 		return
 	}
 	if sbx.State != domain.SandboxRunning {
 		// Defense-in-depth: lifecycle hooks should have removed this.
+		s.mu.Lock()
 		_ = s.boosts.Delete(ctx, boostID)
+		delete(s.sbxLocks, boost.SandboxID)
+		s.mu.Unlock()
 		s.emitExpired(ctx, boost, "sandbox_not_running", sbx.CPULimit, sbx.MemoryLimitMB)
 		return
 	}
@@ -217,7 +249,10 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 	})
 
 	if applyErr == nil {
+		s.mu.Lock()
 		_ = s.boosts.Delete(ctx, boostID)
+		delete(s.sbxLocks, boost.SandboxID) // F7: boost ended; release lock entry
+		s.mu.Unlock()
 		s.emitExpired(ctx, boost, "expired", sbx.CPULimit, sbx.MemoryLimitMB)
 		return
 	}
@@ -225,7 +260,9 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 	// Failure: increment attempts, retry with backoff or transition to revert_failed.
 	attempts := boost.RevertAttempts + 1
 	if attempts > len(boostBackoff) {
+		s.mu.Lock()
 		_ = s.boosts.UpdateState(ctx, boostID, domain.BoostRevertFailed, attempts, applyErr.Error())
+		s.mu.Unlock()
 		_ = s.events.Publish(ctx, domain.Event{
 			Type:      domain.EventBoostRevertFailed,
 			Timestamp: s.clock.Now().UTC(),
@@ -240,10 +277,9 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 		return
 	}
 
-	_ = s.boosts.UpdateState(ctx, boostID, domain.BoostActive, attempts, applyErr.Error())
-
 	// Schedule retry under the lock to keep the timers map consistent.
 	s.mu.Lock()
+	_ = s.boosts.UpdateState(ctx, boostID, domain.BoostActive, attempts, applyErr.Error())
 	s.timers[boostID] = s.clock.AfterFunc(boostBackoff[attempts-1], func() {
 		s.expire(context.Background(), boostID)
 	})
@@ -288,6 +324,7 @@ func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
 		t.Stop()
 		delete(s.timers, boost.BoostID)
 	}
+	delete(s.sbxLocks, boost.SandboxID)
 	s.mu.Unlock()
 
 	sbx, err := s.sandboxes.Get(ctx, sandboxID)
@@ -369,6 +406,7 @@ func (s *BoostService) cancelOnLifecycle(ctx context.Context, sandboxID string) 
 		t.Stop()
 		delete(s.timers, boost.BoostID)
 	}
+	delete(s.sbxLocks, boost.SandboxID)
 	s.mu.Unlock()
 	_ = s.boosts.Delete(ctx, boost.BoostID)
 }
