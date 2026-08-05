@@ -562,7 +562,7 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 		fl = &vmFileLock{}
 		p.fileMu[vmID] = fl
 	}
-	fl.stopped = true
+	fl.stopped.Store(true)
 	p.vmMu.Unlock()
 	fl.mu.Lock()
 	defer fl.mu.Unlock()

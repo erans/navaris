@@ -34,7 +34,9 @@ func TestLockFor_FailFastWhenStopped(t *testing.T) {
 
 	// Simulate StopSandbox having flipped the sentinel.
 	p.vmMu.Lock()
-	p.fileMu["vm-2"] = &vmFileLock{stopped: true}
+	fl := &vmFileLock{}
+	fl.stopped.Store(true)
+	p.fileMu["vm-2"] = fl
 	p.vmMu.Unlock()
 
 	_, err := p.lockFor("vm-2")
@@ -84,6 +86,38 @@ func TestLockFor_SerializesConcurrentWriters(t *testing.T) {
 	}
 }
 
+func TestLockFor_RechecksStoppedAfterWaiting(t *testing.T) {
+	p := &Provider{vms: map[string]*VMInfo{}, fileMu: map[string]*vmFileLock{}}
+	fl := &vmFileLock{}
+	p.fileMu["vm-gap"] = fl
+
+	// Force lockFor past its fast check and into the per-VM mutex wait.
+	fl.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		got, err := p.lockFor("vm-gap")
+		if got != nil {
+			got.mu.Unlock()
+		}
+		done <- err
+	}()
+
+	// Give the waiter time to complete the map lookup/fast check. The held
+	// per-VM mutex keeps it from completing before the sentinel transition.
+	time.Sleep(20 * time.Millisecond)
+	fl.stopped.Store(true)
+	fl.mu.Unlock()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, domain.ErrVMStopped) {
+			t.Fatalf("lockFor error = %v; want ErrVMStopped", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lockFor did not complete after sentinel transition")
+	}
+}
+
 // TestLockFor_FailFastWhileStopHoldsLock verifies the fast path: a late
 // writer must fail with ErrVMStopped WITHOUT blocking on fl.mu while
 // StopSandbox holds it. (With a naive "acquire fl.mu then check stopped"
@@ -91,7 +125,8 @@ func TestLockFor_SerializesConcurrentWriters(t *testing.T) {
 func TestLockFor_FailFastWhileStopHoldsLock(t *testing.T) {
 	p := &Provider{vms: map[string]*VMInfo{}, fileMu: map[string]*vmFileLock{}}
 	p.vmMu.Lock()
-	fl := &vmFileLock{stopped: true}
+	fl := &vmFileLock{}
+	fl.stopped.Store(true)
 	p.fileMu["vm-4"] = fl
 	p.vmMu.Unlock()
 

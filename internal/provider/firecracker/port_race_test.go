@@ -100,7 +100,9 @@ func TestPublishPort_AfterStopSentinel_FailsFast(t *testing.T) {
 	p.vmMu.Lock()
 	p.vms["vm-s"] = seed
 	// Simulate StopSandbox having just flipped the sentinel.
-	p.fileMu["vm-s"] = &vmFileLock{stopped: true}
+	fl := &vmFileLock{}
+	fl.stopped.Store(true)
+	p.fileMu["vm-s"] = fl
 	p.vmMu.Unlock()
 
 	_, err := p.PublishPort(context.Background(),

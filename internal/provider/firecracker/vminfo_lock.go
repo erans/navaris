@@ -25,7 +25,7 @@ func (p *Provider) lockFor(vmID string) (*vmFileLock, error) {
 	// WITHOUT acquiring fl.mu — which StopSandbox holds for its entire
 	// teardown (up to 30s). Acquiring fl.mu first would block, defeating
 	// fail-fast.
-	if fl.stopped {
+	if fl.stopped.Load() {
 		p.vmMu.Unlock()
 		return nil, fmt.Errorf("firecracker: vm %s is stopping: %w", vmID, domain.ErrVMStopped)
 	}
@@ -34,7 +34,7 @@ func (p *Provider) lockFor(vmID string) (*vmFileLock, error) {
 	fl.mu.Lock()
 	// Re-check after acquiring: StopSandbox may have flipped stopped between
 	// the vmMu.Unlock above and this Lock. If so, bail.
-	if fl.stopped {
+	if fl.stopped.Load() {
 		fl.mu.Unlock()
 		return nil, fmt.Errorf("firecracker: vm %s is stopping: %w", vmID, domain.ErrVMStopped)
 	}

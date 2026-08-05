@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 type VMInfo struct {
@@ -131,7 +132,7 @@ func ReadVMInfo(path string) (*VMInfo, error) {
 // taking the per-VM mu, so no ordering constraint arises from the lookup).
 type vmFileLock struct {
 	mu      sync.Mutex
-	stopped bool
+	stopped atomic.Bool
 }
 
 func ScanVMDirs(base string) ([]*VMInfo, []error) {
