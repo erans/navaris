@@ -522,7 +522,7 @@ This test references `addDNATFn`/`removeDNATFn` (package-level vars introduced i
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test -tags firecracker -race ./internal/provider/firecracker/ -run TestPublishPort_Concurrent -v`
-Expected: FAIL (either `t.Skip` removed and the assertion fails, or the helper doesn't exist).
+Expected: FAIL to compile — `addDNATFn`/`removeDNATFn` (Step 3) and `p.fileMu`/`vmFileLock` (Task 3) are not yet defined. (If Task 3 is already merged, only `addDNATFn`/`removeDNATFn` are undefined.)
 
 - [ ] **Step 3: Convert `PublishPort` to use `lockFor`**
 
@@ -1212,28 +1212,7 @@ git commit -m "fix(firecracker): replace transient fcsdk.NewMachine with idle-re
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `internal/service/boost_test.go`:
-
-```go
-func TestLockSandbox_LazyCreation(t *testing.T) {
-	env := newBoostEnv(t)
-	// Reach into the service via a white-box test? boost_test.go is
-	// package service_test (black-box). If lockSandbox is unexported, this
-	// test cannot call it directly.
-	//
-	// OPTION A: make lockSandbox exported (e.g., LockSandboxForTesting) —
-	//   not great.
-	// OPTION B: test the observable behavior: two concurrent Starts on the
-	//   same sandbox serialize their UpdateResources calls (Task 10's race
-	//   test covers this). For this task, assert that s.sbxLocks is non-nil
-	//   after NewBoostService via reflection — fragile.
-	// OPTION C: add an internal_test.go in package service for white-box
-	//   coverage of lockSandbox.
-	t.Skip("decide A/B/C and implement")
-}
-```
-
-Decision: use **Option C** — create `internal/service/boost_internal_test.go` with `package service` (white-box) for `lockSandbox` directly. This matches the codebase's mixed convention (boost_test.go is black-box, but the codebase also has white-box tests like `package firecracker`).
+Create `internal/service/boost_internal_test.go` (white-box `package service`, since `lockSandbox` is unexported — the existing `boost_test.go` is black-box `package service_test` and cannot reach unexported fields):
 
 ```go
 // internal/service/boost_internal_test.go
