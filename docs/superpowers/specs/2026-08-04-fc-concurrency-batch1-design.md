@@ -175,9 +175,13 @@ This ensures a Start reads current persistent fields and cannot overwrite a
 port, limit, or restore mutation that completed while launch was beginning.
 
 A pre-commit runtime-state write failure is a failed Start: do not register the
-VM in `p.vms`; kill a launched process and best-effort remove its cgroup, tap,
-and subnet allocation before returning the persistence error. Cleanup errors
-must be joined with the original error rather than hiding it.
+VM in `p.vms`; terminate the launched machine and best-effort remove its cgroup,
+tap, and subnet allocation before returning the persistence error. When a PID
+is available, termination first sends `SIGKILL`; `ESRCH` is benign, but every
+other signal error is retained and triggers `Machine.StopVMM` as a fallback.
+When `Machine.PID` is unavailable, `Machine.StopVMM` is used directly. All
+non-benign termination and cleanup errors are joined with the persistence error
+rather than hidden.
 
 `StopSandbox` treats its early `Stopping=true` write as a best-effort marker:
 a pre-commit marker failure is logged and teardown continues. The final
@@ -475,7 +479,11 @@ The final whole-branch review found two remaining F1 commit-boundary defects,
 two F7 bookkeeping-failure defects, and two Minor robustness issues. The Start
 and Stop commit rules, replacement compensation, store-error policy,
 independent resize compensation, and context-aware Unix dial described above
-were approved for one final implementation/re-review wave.
+were approved for one final implementation/re-review wave. Its scoped
+re-review found one residual Important: non-benign `SIGKILL` errors were still
+discarded. A human-approved narrow process exception adds the termination
+fallback/error-aggregation rule above and permits one targeted remediation and
+re-review.
 
 ## Open questions
 

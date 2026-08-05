@@ -1758,3 +1758,129 @@ Write exact RED/GREEN evidence and self-review to the Task 6 report. This is the
 single final-review fix wave; the controller performs one scoped re-review and
 must escalate any residual Critical/Important finding rather than dispatching a
 second fix wave.
+
+---
+
+### Task 7: Targeted failed-Start termination remediation
+
+> **Process exception:** Task 6's sole scoped re-review found one residual
+> Important. The human approved exactly this remediation and one narrow
+> re-review; do not change F7, resize, F12, APIs, schema, or unrelated cleanup.
+
+**Files:**
+- Modify: `internal/provider/firecracker/sandbox.go:325-340,496-510,823-839`
+- Modify: `internal/provider/firecracker/port_race_test.go`
+
+**Interfaces:**
+- Consumes: normal/snapshot `*fcsdk.Machine`, checked `VMInfo.Write`, and
+  `cleanupStartFailure` from Task 6.
+- Produces: `startKillProcess(pid int) error` test seam; a shared checked
+  runtime-commit helper used by both Start paths; machine-level termination
+  fallback and complete cleanup-error aggregation.
+
+- [ ] **Step 1: Add deterministic RED termination tests**
+
+Add a package seam reference in tests before production defines it. Add:
+
+```go
+func TestCleanupStartFailure_KillFailureUsesFallbackAndAggregates(t *testing.T)
+func TestCleanupStartFailure_MissingPIDUsesMachineFallback(t *testing.T)
+func TestCommitStartedVM_WriteFailureTerminatesAndSkipsCache(t *testing.T)
+```
+
+Required assertions:
+
+1. Stub `startKillProcess` to return `killErr` for a positive PID. Pass a
+   fallback closure that records invocation and returns `fallbackErr`. Call the
+   cleanup helper with empty tap and a provider configuration where cgroup
+   removal is a no-op. Assert the fallback ran and the returned error matches
+   both `killErr` and `fallbackErr`.
+2. For PID zero, make the kill seam fail the test if invoked. Pass a fallback
+   closure returning `fallbackErr`; assert it ran and its error is returned.
+3. Table-test operation labels `start` and `snapshot`. Force `VMInfo.Write` to
+   fail pre-commit via `vminfoOpenDir`, invoke the shared runtime-commit helper,
+   and assert the persistence error is preserved, termination is invoked, and
+   `p.vms[vmID]` is absent. Include a termination error in one case and assert
+   `errors.Is` finds both errors.
+4. Add an `ESRCH` case: it is benign and must not invoke fallback or appear as
+   a cleanup error.
+
+No sleeps; use direct callbacks/counters. Run:
+
+```bash
+go test -race -tags firecracker ./internal/provider/firecracker/ \
+  -run 'Test(CleanupStartFailure_|CommitStartedVM_)' -count=1
+```
+
+Expected RED: `startKillProcess` and the shared commit helper are absent, and
+the current cleanup discards direct signal errors/has no machine fallback.
+
+- [ ] **Step 2: Implement termination fallback and shared commit helper**
+
+In `sandbox.go`, define:
+
+```go
+var startKillProcess = func(pid int) error {
+    return syscall.Kill(pid, syscall.SIGKILL)
+}
+```
+
+Extend `cleanupStartFailure` to accept `stopVMM func() error`:
+
+- positive PID: call `startKillProcess`; on nil, continue cleanup; on
+  `syscall.ESRCH`, treat the process as already gone; on any other error append
+  `fmt.Errorf("kill VMM after failed start %s: %w", vmID, err)` and invoke
+  `stopVMM` as fallback;
+- missing/non-positive PID: invoke `stopVMM` directly;
+- append any fallback error with `%w` and continue cgroup/tap/subnet cleanup;
+- return `errors.Join(errs...)`; never suppress one cleanup error because
+  another operation failed.
+
+Extract the duplicated checked write/cache block into a private helper such as:
+
+```go
+func (p *Provider) commitStartedVM(
+    operation, vmID, infoPath string,
+    info *VMInfo,
+    pid int,
+    stopVMM func() error,
+    tapName string,
+    subnetIdx int,
+) error
+```
+
+The helper writes first; on error it calls `cleanupStartFailure`, joins primary
+and cleanup errors, and does not mutate `p.vms`. On success it registers `info`
+under `vmMu`. Both normal and snapshot Start call this helper with
+`machine.StopVMM`, then release the already-held VM lock exactly where Task 6
+did. No global mutex may overlap termination, cgroup, tap, subnet, or file I/O.
+
+- [ ] **Step 3: Verify and commit**
+
+```bash
+gofmt -w internal/provider/firecracker/sandbox.go \
+  internal/provider/firecracker/port_race_test.go
+git diff --check
+go test -race -tags firecracker ./internal/provider/firecracker/ \
+  -run 'Test(CleanupStartFailure_|CommitStartedVM_|StartSandbox_|StopSandbox_)' -count=1
+go build ./...
+go build -tags firecracker ./...
+go test -race -tags firecracker \
+  ./internal/provider/firecracker/... \
+  ./internal/service/... \
+  ./internal/api/... \
+  ./internal/domain/... -count=1
+```
+
+Expected: focused tests, both builds, and full race gate pass; diff check is
+clean. Commit only the two scoped files:
+
+```bash
+git add internal/provider/firecracker/sandbox.go \
+  internal/provider/firecracker/port_race_test.go
+git commit -m "fix(firecracker): guarantee failed-start termination"
+```
+
+Write Task 7 report with exact RED/GREEN evidence. The controller then performs
+one narrow review of the residual Important and must escalate any further
+Critical/Important result.
