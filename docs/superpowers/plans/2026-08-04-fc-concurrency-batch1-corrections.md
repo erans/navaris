@@ -642,17 +642,18 @@ git commit -m "fix(firecracker): make resize a disk-authoritative transaction"
 
 ---
 
-### Task 3: Add a ref-counted per-sandbox lock registry
+### Task 3: Linearize all per-sandbox boost operations
 
 **Files:**
-- Modify: `internal/service/boost.go:12-48,162-174`
+- Modify: `internal/service/boost.go:12-420`
 - Modify: `internal/service/boost_internal_test.go`
+- Modify: `internal/service/boost_race_test.go`
 
 **Interfaces:**
-- Consumes: `BoostService.mu` and the existing `sbxLocks` map.
-- Produces: `sandboxLock{mu sync.Mutex, refs int}` and `acquireSandbox(sandboxID string) func()`.
+- Consumes: `BoostService.mu`, `timers`, `BoostStore`, `SandboxStore`, and `SandboxService.UpdateResources`.
+- Produces: `sandboxLock{mu sync.Mutex, refs int}`; `acquireSandbox(sandboxID string) func()`; Start, expiry, Cancel, and lifecycle cleanup serialized from bookkeeping through live apply.
 
-- [ ] **Step 1: Replace the old helper test with failing lifetime tests**
+- [ ] **Step 1: Replace the old lock-helper test with failing registry-lifetime tests**
 
 Replace `boost_internal_test.go` with:
 
@@ -724,114 +725,7 @@ func TestAcquireSandbox_DifferentSandboxesDoNotBlock(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
-
-Run:
-
-```bash
-go test -race ./internal/service/ -run 'TestAcquireSandbox_' -count=1
-```
-
-Expected: compile failure because `sandboxLock` and `acquireSandbox` do not
-exist.
-
-- [ ] **Step 3: Implement the registry**
-
-In `boost.go`, replace the map type and initialize it in `NewBoostService`:
-
-```go
-type sandboxLock struct {
-	mu   sync.Mutex
-	refs int // guarded by BoostService.mu; holders and waiters both count
-}
-
-// In BoostService:
-sbxLocks map[string]*sandboxLock
-
-// In NewBoostService:
-sbxLocks: make(map[string]*sandboxLock),
-```
-
-Replace `lockSandbox` with:
-
-```go
-// acquireSandbox returns with the sandbox's operation lock held. The returned
-// release function must be called exactly once. Registration increments refs
-// before waiting, so the map entry cannot disappear while a holder or waiter
-// retains its pointer.
-func (s *BoostService) acquireSandbox(sandboxID string) func() {
-	s.mu.Lock()
-	entry, ok := s.sbxLocks[sandboxID]
-	if !ok {
-		entry = &sandboxLock{}
-		s.sbxLocks[sandboxID] = entry
-	}
-	entry.refs++
-	s.mu.Unlock()
-
-	entry.mu.Lock()
-	return func() {
-		entry.mu.Unlock()
-		s.mu.Lock()
-		entry.refs--
-		if entry.refs == 0 && s.sbxLocks[sandboxID] == entry {
-			delete(s.sbxLocks, sandboxID)
-		}
-		s.mu.Unlock()
-	}
-}
-```
-
-At this intermediate task, migrate the existing Start and expiry apply
-boundaries without changing their ordering yet:
-
-- In Start, finish the current bookkeeping, call `s.mu.Unlock()`, then call
-  `releaseSandbox := s.acquireSandbox(sbx.SandboxID)` and defer it before the
-  provider apply. Remove the old `lockSandbox` lookup and explicit mutex calls.
-- In expiry, keep the current timer deletion and `GetByID` while `s.mu` is held,
-  call `s.mu.Unlock()`, then call
-  `releaseSandbox := s.acquireSandbox(boost.SandboxID)` and defer it before the
-  sandbox lookup/provider apply.
-- Never call `acquireSandbox` while `s.mu` is held: it registers its reference
-  by taking `s.mu` internally.
-
-Remove all manual `delete(s.sbxLocks, ...)` calls, including Cancel and
-lifecycle cleanup. Those two paths do not acquire the operation lock until Task
-5, but they must not invalidate an entry retained by Start or expiry.
-Reference-counted release is the only permitted deletion. Remove the old
-`lockSandbox` helper after both call sites compile against `acquireSandbox`.
-
-- [ ] **Step 4: Run registry and existing boost tests**
-
-Run:
-
-```bash
-go test -race ./internal/service/ -run 'Test(AcquireSandbox|Boost)' -count=1
-```
-
-Expected: PASS. The existing Start-vs-expire test must remain green during the
-mechanical migration.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add internal/service/boost.go internal/service/boost_internal_test.go
-git commit -m "fix(service): add ref-counted sandbox operation locks"
-```
-
----
-
-### Task 4: Linearize Boost Start bookkeeping and live apply
-
-**Files:**
-- Modify: `internal/service/boost.go:63-160`
-- Modify: `internal/service/boost_race_test.go`
-
-**Interfaces:**
-- Consumes: `acquireSandbox` from Task 3.
-- Produces: Start holds one sandbox operation lock from revalidation through replacement, live apply, timer scheduling, and event publication.
-
-- [ ] **Step 1: Add the failing Start-vs-Start test**
+- [ ] **Step 2: Add failing Start-vs-Start and cross-sandbox tests**
 
 Append to `boost_race_test.go`:
 
@@ -913,115 +807,7 @@ func TestBoostStartVsStart_BookkeepingAndApplyShareOrder(t *testing.T) {
 		t.Fatalf("final boost cpu=%v; want %d", final.BoostedCPULimit, cpuB)
 	}
 }
-```
 
-- [ ] **Step 2: Run the test and verify RED**
-
-Run:
-
-```bash
-go test -race ./internal/service/ -run TestBoostStartVsStart_BookkeepingAndApplyShareOrder -count=1
-```
-
-Expected: FAIL because Start(B) replaces the boost row while Start(A)'s live
-apply is blocked.
-
-- [ ] **Step 3: Move Start's sandbox lock before bookkeeping**
-
-Retain cheap argument checks and the initial sandbox lookup for fast rejection.
-Immediately after initial state/bounds validation, acquire the operation lock:
-
-```go
-releaseSandbox := s.acquireSandbox(opts.SandboxID)
-defer releaseSandbox()
-
-// Re-read under the per-sandbox serialization boundary.
-sbx, err = s.sandboxes.Get(ctx, opts.SandboxID)
-if err != nil {
-	return nil, err
-}
-if sbx.State != domain.SandboxRunning {
-	return nil, fmt.Errorf("boost requires sandbox state running, got %s: %w",
-		sbx.State, domain.ErrInvalidState)
-}
-if err := validateResourceBounds(opts.CPULimit, opts.MemoryLimitMB, sbx.Backend); err != nil {
-	return nil, err
-}
-```
-
-Replace the old Phase 1/2/3 block with the complete serialized body below.
-Only timer-map access takes `s.mu`; boost-store, provider, and event calls do
-not:
-
-```go
-if prior, getErr := s.boosts.Get(ctx, opts.SandboxID); getErr == nil {
-	s.mu.Lock()
-	if timer, ok := s.timers[prior.BoostID]; ok {
-		timer.Stop()
-		delete(s.timers, prior.BoostID)
-	}
-	s.mu.Unlock()
-	if err := s.boosts.Delete(ctx, prior.BoostID); err != nil {
-		return nil, fmt.Errorf("delete prior boost: %w", err)
-	}
-}
-
-now := s.clock.Now().UTC()
-boost := &domain.Boost{
-	BoostID:               "bst-" + uuid.NewString()[:8],
-	SandboxID:             sbx.SandboxID,
-	OriginalCPULimit:      copyIntPtr(sbx.CPULimit),
-	OriginalMemoryLimitMB: copyIntPtr(sbx.MemoryLimitMB),
-	BoostedCPULimit:       copyIntPtr(opts.CPULimit),
-	BoostedMemoryLimitMB:  copyIntPtr(opts.MemoryLimitMB),
-	StartedAt:             now,
-	ExpiresAt:             now.Add(dur),
-	State:                 domain.BoostActive,
-	Source:                source,
-}
-if err := s.boosts.Upsert(ctx, boost); err != nil {
-	return nil, fmt.Errorf("persist boost: %w", err)
-}
-
-_, err = s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
-	SandboxID:     sbx.SandboxID,
-	CPULimit:      opts.CPULimit,
-	MemoryLimitMB: opts.MemoryLimitMB,
-	ApplyLiveOnly: true,
-})
-if err != nil {
-	if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil {
-		return nil, fmt.Errorf("apply boost failed: %v; rollback also failed: %w", err, delErr)
-	}
-	return nil, err
-}
-
-s.mu.Lock()
-s.timers[boost.BoostID] = s.clock.AfterFunc(dur, func() {
-	s.expire(context.Background(), boost.BoostID)
-})
-s.mu.Unlock()
-
-_ = s.events.Publish(ctx, domain.Event{
-	Type:      domain.EventBoostStarted,
-	Timestamp: now,
-	Data: map[string]any{
-		"boost_id":                boost.BoostID,
-		"sandbox_id":              boost.SandboxID,
-		"boosted_cpu_limit":       boost.BoostedCPULimit,
-		"boosted_memory_limit_mb": boost.BoostedMemoryLimitMB,
-		"expires_at":              boost.ExpiresAt.Format(time.RFC3339Nano),
-		"source":                  source,
-	},
-})
-return boost, nil
-```
-
-- [ ] **Step 4: Add and run the different-sandbox concurrency test**
-
-Append:
-
-```go
 func TestBoostStart_DifferentSandboxesApplyConcurrently(t *testing.T) {
 	env := newBoostEnv(t)
 	a := env.seedSandbox(t, "sbx-a", domain.SandboxRunning, "mock")
@@ -1069,35 +855,7 @@ func TestBoostStart_DifferentSandboxesApplyConcurrently(t *testing.T) {
 }
 ```
 
-Run:
-
-```bash
-go test -race ./internal/service/ \
-  -run 'TestBoostStart(VsStart_BookkeepingAndApplyShareOrder|_DifferentSandboxesApplyConcurrently|_ReplacesExisting|_ProviderError_RollsBack)' -count=1
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add internal/service/boost.go internal/service/boost_race_test.go
-git commit -m "fix(service): linearize boost Start bookkeeping and apply"
-```
-
----
-
-### Task 5: Serialize expiry, Cancel, and lifecycle cleanup
-
-**Files:**
-- Modify: `internal/service/boost.go:190-420`
-- Modify: `internal/service/boost_race_test.go`
-
-**Interfaces:**
-- Consumes: `acquireSandbox` from Task 3 and linearized Start from Task 4.
-- Produces: expiry re-checks boost identity under the sandbox lock; Cancel and lifecycle cleanup share the same operation boundary.
-
-- [ ] **Step 1: Add the failing Start-vs-Cancel test**
+- [ ] **Step 3: Add the failing Start-vs-Cancel test**
 
 Append to `boost_race_test.go`:
 
@@ -1181,20 +939,164 @@ func TestBoostStartVsCancel_SerializeBookkeepingAndApply(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [ ] **Step 4: Run all new tests and verify RED**
 
 Run:
 
 ```bash
-go test -race ./internal/service/ -run TestBoostStartVsCancel_SerializeBookkeepingAndApply -count=1
+go test -race ./internal/service/ \
+  -run 'Test(AcquireSandbox_|BoostStartVsStart_|BoostStartVsCancel_|BoostStart_DifferentSandboxes)' \
+  -count=1
 ```
 
-Expected: FAIL because current Cancel removes the lock-map entry and performs
-its provider revert without holding the same sandbox operation lock.
+Expected: compile failure because `sandboxLock` and `acquireSandbox` do not
+exist. If the registry test is temporarily excluded to inspect behavioral
+failures, Start-vs-Start fails because B replaces the row while A applies, and
+Start-vs-Cancel fails because Cancel does not share the apply lock.
 
-- [ ] **Step 3: Rewrite expiry around boost-ID revalidation**
+- [ ] **Step 5: Implement the ref-counted registry**
 
-Replace `expire` with this complete boost-ID-revalidating implementation:
+In `boost.go`, replace the map type and constructor initialization:
+
+```go
+type sandboxLock struct {
+	mu   sync.Mutex
+	refs int // guarded by BoostService.mu; holders and waiters both count
+}
+
+// In BoostService:
+sbxLocks map[string]*sandboxLock
+
+// In NewBoostService:
+sbxLocks: make(map[string]*sandboxLock),
+```
+
+Replace `lockSandbox` with:
+
+```go
+// acquireSandbox returns with the sandbox's operation lock held. The returned
+// release function must be called exactly once. Registration increments refs
+// before waiting, so the entry cannot disappear while a holder or waiter
+// retains its pointer.
+func (s *BoostService) acquireSandbox(sandboxID string) func() {
+	s.mu.Lock()
+	entry, ok := s.sbxLocks[sandboxID]
+	if !ok {
+		entry = &sandboxLock{}
+		s.sbxLocks[sandboxID] = entry
+	}
+	entry.refs++
+	s.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		s.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 && s.sbxLocks[sandboxID] == entry {
+			delete(s.sbxLocks, sandboxID)
+		}
+		s.mu.Unlock()
+	}
+}
+```
+
+No other path may delete `sbxLocks`.
+
+- [ ] **Step 6: Replace Start with one serialized bookkeeping/apply flow**
+
+Retain argument validation and the initial sandbox lookup. Immediately after
+initial state and bounds validation, acquire the operation lock and revalidate:
+
+```go
+releaseSandbox := s.acquireSandbox(opts.SandboxID)
+defer releaseSandbox()
+
+sbx, err = s.sandboxes.Get(ctx, opts.SandboxID)
+if err != nil {
+	return nil, err
+}
+if sbx.State != domain.SandboxRunning {
+	return nil, fmt.Errorf("boost requires sandbox state running, got %s: %w",
+		sbx.State, domain.ErrInvalidState)
+}
+if err := validateResourceBounds(opts.CPULimit, opts.MemoryLimitMB, sbx.Backend); err != nil {
+	return nil, err
+}
+```
+
+Replace the old phase blocks with:
+
+```go
+if prior, getErr := s.boosts.Get(ctx, opts.SandboxID); getErr == nil {
+	s.mu.Lock()
+	if timer, ok := s.timers[prior.BoostID]; ok {
+		timer.Stop()
+		delete(s.timers, prior.BoostID)
+	}
+	s.mu.Unlock()
+	if err := s.boosts.Delete(ctx, prior.BoostID); err != nil {
+		return nil, fmt.Errorf("delete prior boost: %w", err)
+	}
+}
+
+now := s.clock.Now().UTC()
+boost := &domain.Boost{
+	BoostID:               "bst-" + uuid.NewString()[:8],
+	SandboxID:             sbx.SandboxID,
+	OriginalCPULimit:      copyIntPtr(sbx.CPULimit),
+	OriginalMemoryLimitMB: copyIntPtr(sbx.MemoryLimitMB),
+	BoostedCPULimit:       copyIntPtr(opts.CPULimit),
+	BoostedMemoryLimitMB:  copyIntPtr(opts.MemoryLimitMB),
+	StartedAt:             now,
+	ExpiresAt:             now.Add(dur),
+	State:                 domain.BoostActive,
+	Source:                source,
+}
+if err := s.boosts.Upsert(ctx, boost); err != nil {
+	return nil, fmt.Errorf("persist boost: %w", err)
+}
+
+_, err = s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
+	SandboxID:     sbx.SandboxID,
+	CPULimit:      opts.CPULimit,
+	MemoryLimitMB: opts.MemoryLimitMB,
+	ApplyLiveOnly: true,
+})
+if err != nil {
+	if delErr := s.boosts.Delete(ctx, boost.BoostID); delErr != nil {
+		return nil, fmt.Errorf("apply boost failed: %v; rollback also failed: %w", err, delErr)
+	}
+	return nil, err
+}
+
+s.mu.Lock()
+s.timers[boost.BoostID] = s.clock.AfterFunc(dur, func() {
+	s.expire(context.Background(), boost.BoostID)
+})
+s.mu.Unlock()
+
+_ = s.events.Publish(ctx, domain.Event{
+	Type:      domain.EventBoostStarted,
+	Timestamp: now,
+	Data: map[string]any{
+		"boost_id":                boost.BoostID,
+		"sandbox_id":              boost.SandboxID,
+		"boosted_cpu_limit":       boost.BoostedCPULimit,
+		"boosted_memory_limit_mb": boost.BoostedMemoryLimitMB,
+		"expires_at":              boost.ExpiresAt.Format(time.RFC3339Nano),
+		"source":                  source,
+	},
+})
+return boost, nil
+```
+
+Only timer-map access takes `s.mu`; boost-store, provider, and event calls do
+not.
+
+- [ ] **Step 7: Replace expiry with boost-ID revalidation under the lock**
+
+Use this complete implementation:
 
 ```go
 func (s *BoostService) expire(ctx context.Context, boostID string) {
@@ -1250,11 +1152,9 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 			Type:      domain.EventBoostRevertFailed,
 			Timestamp: s.clock.Now().UTC(),
 			Data: map[string]any{
-				"boost_id":   boostID,
-				"sandbox_id": boost.SandboxID,
-				"attempts":   attempts,
-				"last_error": applyErr.Error(),
-				"source":     "external",
+				"boost_id": boostID, "sandbox_id": boost.SandboxID,
+				"attempts": attempts, "last_error": applyErr.Error(),
+				"source": "external",
 			},
 		})
 		return
@@ -1269,10 +1169,9 @@ func (s *BoostService) expire(ctx context.Context, boostID string) {
 }
 ```
 
-- [ ] **Step 4: Rewrite Cancel and lifecycle cleanup around the same lock**
+- [ ] **Step 8: Serialize Cancel and lifecycle cleanup**
 
-Replace `Cancel` and `cancelOnLifecycle` with the complete implementations
-below:
+Replace `Cancel` and `cancelOnLifecycle` with:
 
 ```go
 func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
@@ -1302,10 +1201,8 @@ func (s *BoostService) Cancel(ctx context.Context, sandboxID string) error {
 	}
 
 	_, applyErr := s.sandboxSvc.UpdateResources(ctx, UpdateResourcesOpts{
-		SandboxID:     sbx.SandboxID,
-		CPULimit:      sbx.CPULimit,
-		MemoryLimitMB: sbx.MemoryLimitMB,
-		ApplyLiveOnly: true,
+		SandboxID: sbx.SandboxID, CPULimit: sbx.CPULimit,
+		MemoryLimitMB: sbx.MemoryLimitMB, ApplyLiveOnly: true,
 	})
 	if applyErr != nil {
 		_ = s.boosts.UpdateState(ctx, boost.BoostID, domain.BoostRevertFailed,
@@ -1336,10 +1233,7 @@ func (s *BoostService) cancelOnLifecycle(ctx context.Context, sandboxID string) 
 }
 ```
 
-Remove every manual `delete(s.sbxLocks, ...)` outside the reference-count-zero
-branch in `acquireSandbox`.
-
-- [ ] **Step 5: Run all boost ordering and behavior tests**
+- [ ] **Step 9: Run the complete F7 test and audit gate**
 
 Run:
 
@@ -1347,32 +1241,38 @@ Run:
 go test -race ./internal/service/ \
   -run 'Test(BoostStartVs|BoostStart_|BoostExpire_|BoostCancel_|SandboxStop_CancelsBoost|AcquireSandbox_)' \
   -count=1
+go test -race ./internal/service/... -count=1
 ```
 
-Expected: PASS, including the existing Start-vs-expire test.
+Expected: PASS, including the existing Start-vs-expire, retry, replacement,
+provider-error, and lifecycle tests.
 
-Audit deletion and slow-call locking:
+Audit:
 
 ```bash
-rg -n 'delete\(s\.sbxLocks|UpdateResources\(|s\.mu\.(Lock|Unlock)' internal/service/boost.go
+rg -n 'delete\(s\.sbxLocks|UpdateResources\(|s\.mu\.(Lock|Unlock)|boosts\.(Get|GetByID|Upsert|Delete|UpdateState)' internal/service/boost.go
 ```
 
 Expected:
 
-- exactly one `delete(s.sbxLocks, ...)`, in the `refs == 0` release branch;
-- every boost `UpdateResources` call occurs while the sandbox operation lock is
-  held and while `s.mu` is not held.
+- exactly one `delete(s.sbxLocks, ...)`, in `acquireSandbox` when `refs == 0`;
+- Start, expiry, Cancel, and lifecycle cleanup acquire the sandbox operation
+  lock before same-sandbox bookkeeping;
+- every boost-store, provider, and event call occurs while `s.mu` is not held;
+- every provider apply occurs while the sandbox operation lock is held.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add internal/service/boost.go internal/service/boost_race_test.go
-git commit -m "fix(service): serialize boost expiry and cancellation"
+git add internal/service/boost.go \
+  internal/service/boost_internal_test.go \
+  internal/service/boost_race_test.go
+git commit -m "fix(service): linearize per-sandbox boost operations"
 ```
 
 ---
 
-### Task 6: Remove the pre-existing boost-listener test race
+### Task 4: Remove the pre-existing boost-listener test race
 
 **Files:**
 - Modify: `internal/provider/firecracker/boost_listener_test.go:12-59`
@@ -1450,13 +1350,13 @@ git commit -m "test(firecracker): synchronize boost listener dispatch"
 
 ---
 
-### Task 7: Controller verification and branch audit
+### Task 5: Controller verification and branch audit
 
 **Files:**
 - Verify only; modify documentation only if verification uncovers line-number or status drift.
 
 **Interfaces:**
-- Consumes: Tasks 1–6.
+- Consumes: Tasks 1–4.
 - Produces: fresh evidence that the corrected branch satisfies the revised spec and is ready for a new whole-branch review.
 
 - [ ] **Step 1: Run formatting and static diff checks**
