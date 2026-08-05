@@ -1,6 +1,7 @@
 package firecracker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,65 @@ func TestVMInfoWriteRead(t *testing.T) {
 	}
 	if got.TapDevice != info.TapDevice || got.SubnetIdx != info.SubnetIdx {
 		t.Errorf("mismatch: got %+v", got)
+	}
+}
+
+func TestVMInfoWriteDirectoryOpenFailureIsPreCommit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vminfo.json")
+
+	prior := &VMInfo{ID: "nvrs-fc-prior", PID: 111, CID: 100, UID: 10000}
+	if err := prior.Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	oldOpenDir := vminfoOpenDir
+	openErr := errors.New("open dir failed")
+	vminfoOpenDir = func(string) (*os.File, error) {
+		return nil, openErr
+	}
+	t.Cleanup(func() { vminfoOpenDir = oldOpenDir })
+
+	next := &VMInfo{ID: "nvrs-fc-next", PID: 222, CID: 101, UID: 10001}
+	if err := next.Write(path); !errors.Is(err, openErr) {
+		t.Fatalf("Write error = %v, want %v", err, openErr)
+	}
+
+	got, err := ReadVMInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != prior.ID || got.PID != prior.PID || got.CID != prior.CID {
+		t.Fatalf("vminfo changed after pre-rename open failure: got %+v want %+v", got, prior)
+	}
+}
+
+func TestVMInfoWriteDirectorySyncFailureIsPostCommitSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vminfo.json")
+
+	prior := &VMInfo{ID: "nvrs-fc-prior", PID: 111, CID: 100, UID: 10000}
+	if err := prior.Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSyncDir := vminfoSyncDir
+	vminfoSyncDir = func(*os.File) error {
+		return errors.New("sync dir failed")
+	}
+	t.Cleanup(func() { vminfoSyncDir = oldSyncDir })
+
+	next := &VMInfo{ID: "nvrs-fc-next", PID: 222, CID: 101, UID: 10001}
+	if err := next.Write(path); err != nil {
+		t.Fatalf("Write returned post-rename sync error: %v", err)
+	}
+
+	got, err := ReadVMInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != next.ID || got.PID != next.PID || got.CID != next.CID {
+		t.Fatalf("vminfo not committed after post-rename sync failure: got %+v want %+v", got, next)
 	}
 }
 

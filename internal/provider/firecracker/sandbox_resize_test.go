@@ -246,18 +246,65 @@ type cpuApplyGate struct {
 	release chan struct{}
 }
 
+const resizeTestTimeout = 2 * time.Second
+
+func recvResizeTest[T any](t *testing.T, name string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(resizeTestTimeout):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+	var zero T
+	return zero
+}
+
+func waitResizeTest(t *testing.T, name string, ch <-chan struct{}) {
+	t.Helper()
+	if !waitResizeTestRelease(t, name, ch) {
+		t.FailNow()
+	}
+}
+
+func waitResizeTestRelease(t *testing.T, name string, ch <-chan struct{}) bool {
+	t.Helper()
+	select {
+	case <-ch:
+		return true
+	case <-time.After(resizeTestTimeout):
+		t.Errorf("timed out waiting for %s", name)
+		return false
+	}
+}
+
 func TestUpdateResources_WaitsForPortMutationBeforeLiveApply(t *testing.T) {
 	oldAdd, oldRemove := addDNATFn, removeDNATFn
-	defer func() { addDNATFn, removeDNATFn = oldAdd, oldRemove }()
+	oldWrite := resizeWriteCPUMax
+	defer func() {
+		addDNATFn, removeDNATFn = oldAdd, oldRemove
+		resizeWriteCPUMax = oldWrite
+	}()
 
 	addStarted := make(chan struct{})
 	releaseAdd := make(chan struct{})
 	addDNATFn = func(int, string, int) error {
 		close(addStarted)
-		<-releaseAdd
+		if !waitResizeTestRelease(t, "release addDNAT", releaseAdd) {
+			return errors.New("timed out waiting for addDNAT release")
+		}
 		return nil
 	}
 	removeDNATFn = func(int, string, int) {}
+
+	cpuApplied := make(chan struct{}, 1)
+	resizeWriteCPUMax = func(p *Provider, dir string, quota, period int64) error {
+		select {
+		case cpuApplied <- struct{}{}:
+		default:
+		}
+		return oldWrite(p, dir, quota, period)
+	}
 
 	tmp := t.TempDir()
 	p := &Provider{
@@ -276,7 +323,14 @@ func TestUpdateResources_WaitsForPortMutationBeforeLiveApply(t *testing.T) {
 			domain.PublishPortOptions{})
 		publishDone <- err
 	}()
-	<-addStarted // PublishPort holds fl.mu here.
+	waitResizeTest(t, "PublishPort to enter addDNAT", addStarted)
+
+	hookReached := make(chan struct{})
+	releaseHook := make(chan struct{})
+	p.lockForAfterFastCheckHook = func() {
+		close(hookReached)
+		waitResizeTestRelease(t, "release resize hook", releaseHook)
+	}
 
 	cpu := 2
 	resizeDone := make(chan error, 1)
@@ -285,16 +339,22 @@ func TestUpdateResources_WaitsForPortMutationBeforeLiveApply(t *testing.T) {
 			domain.BackendRef{Backend: "firecracker", Ref: seed.ID},
 			domain.UpdateResourcesRequest{CPULimit: &cpu})
 	}()
+	waitResizeTest(t, "resize post-fast-check hook", hookReached)
 
-	time.Sleep(50 * time.Millisecond)
-	if _, err := os.Stat(filepath.Join(tmp, seed.ID, "cpu.max")); !os.IsNotExist(err) {
-		t.Fatalf("resize applied before acquiring per-VM lock; cpu.max err=%v", err)
+	select {
+	case <-cpuApplied:
+		close(releaseHook)
+		close(releaseAdd)
+		t.Fatal("resize applied CPU before acquiring per-VM lock")
+	default:
 	}
+
+	close(releaseHook)
 	close(releaseAdd)
-	if err := <-publishDone; err != nil {
+	if err := recvResizeTest(t, "PublishPort completion", publishDone); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-resizeDone; err != nil {
+	if err := recvResizeTest(t, "resize completion", resizeDone); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -307,7 +367,9 @@ func TestUpdateResources_SerializesLiveApplyAndCommit(t *testing.T) {
 	resizeWriteCPUMax = func(_ *Provider, _ string, quota, _ int64) error {
 		gate := cpuApplyGate{quota: quota, release: make(chan struct{})}
 		entered <- gate
-		<-gate.release
+		if !waitResizeTestRelease(t, "release CPU apply", gate.release) {
+			return errors.New("timed out waiting for CPU apply release")
+		}
 		return nil
 	}
 
@@ -325,28 +387,38 @@ func TestUpdateResources_SerializesLiveApplyAndCommit(t *testing.T) {
 			domain.BackendRef{Backend: "firecracker", Ref: seed.ID},
 			domain.UpdateResourcesRequest{CPULimit: &cpuA})
 	}()
-	gateA := <-entered
+	gateA := recvResizeTest(t, "first resize CPU apply", entered)
+
+	hookReached := make(chan struct{})
+	releaseHook := make(chan struct{})
+	p.lockForAfterFastCheckHook = func() {
+		close(hookReached)
+		waitResizeTestRelease(t, "release resize hook", releaseHook)
+	}
 
 	go func() {
 		doneB <- p.UpdateResources(context.Background(),
 			domain.BackendRef{Backend: "firecracker", Ref: seed.ID},
 			domain.UpdateResourcesRequest{CPULimit: &cpuB})
 	}()
+	waitResizeTest(t, "second resize post-fast-check hook", hookReached)
 	select {
 	case gateB := <-entered:
 		close(gateB.release)
 		close(gateA.release)
+		close(releaseHook)
 		t.Fatal("second resize entered live apply before first committed")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
+	close(releaseHook)
 	close(gateA.release)
-	if err := <-doneA; err != nil {
+	if err := recvResizeTest(t, "first resize completion", doneA); err != nil {
 		t.Fatal(err)
 	}
-	gateB := <-entered
+	gateB := recvResizeTest(t, "second resize CPU apply", entered)
 	close(gateB.release)
-	if err := <-doneB; err != nil {
+	if err := recvResizeTest(t, "second resize completion", doneB); err != nil {
 		t.Fatal(err)
 	}
 
