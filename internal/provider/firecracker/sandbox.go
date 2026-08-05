@@ -121,6 +121,15 @@ func (p *Provider) CreateSandbox(ctx context.Context, req domain.CreateSandboxRe
 		info.EnableBoostChannel = *req.EnableBoostChannel
 	}
 	info.SandboxID = req.SandboxID
+	// F1: serialize the vminfo write. lockFor lazy-creates the fileMu entry;
+	// it lives until StopSandbox deletes it. lockFor cannot return ErrVMStopped
+	// here (fresh vmID, no prior sentinel) but handle the error for symmetry.
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
+	}
+	defer fl.mu.Unlock()
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
@@ -303,12 +312,31 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		}
 	}
 
+	// F1: serialize the vminfo write against concurrent writers/StopSandbox.
+	// Acquire fl.mu before vmMu (lock ordering: fileMu before vmMu), and
+	// release it once the VM is registered — the subsequent boost/masquerade/
+	// agent-wait code does not touch vminfo and must not hold the per-VM lock
+	// (it would block StopSandbox and writers for up to 30s during agent
+	// wait). Use an explicit unlock, not defer, for that reason.
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		// VM is stopping/stopped — abort the start. Best-effort kill the
+		// process we just started (the concurrent StopSandbox read stale
+		// vminfo and won't find this fresh PID) and release the tap/subnet.
+		if pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+		network.DeleteTap(tapName)
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker start %s: %w", vmID, err)
+	}
 	info.Write(infoPath)
 
 	// Register in memory.
 	p.vmMu.Lock()
 	p.vms[vmID] = info
 	p.vmMu.Unlock()
+	fl.mu.Unlock()
 
 	// Start per-VM boost channel listener (no-op if boostHandler is nil or
 	// boost channel is not enabled for this sandbox).
@@ -466,6 +494,18 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		}
 	}
 
+	// F1: serialize the vminfo write (same rationale as StartSandbox);
+	// fl.mu before vmMu, explicit unlock after register so the per-VM lock
+	// is not held through masquerade/agent-wait.
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		if pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+		network.DeleteTap(tapName)
+		p.subnets.Release(subnetIdx)
+		return fmt.Errorf("firecracker snapshot restore %s: %w", vmID, err)
+	}
 	if err := info.Write(infoPath); err != nil {
 		slog.Warn("firecracker: failed to write vminfo after snapshot restore", "vm", vmID, "error", err)
 	}
@@ -474,6 +514,7 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 	p.vmMu.Lock()
 	p.vms[vmID] = info
 	p.vmMu.Unlock()
+	fl.mu.Unlock()
 
 	// Start per-VM boost channel listener for snapshot-restored VMs.
 	if info.EnableBoostChannel {
@@ -507,6 +548,23 @@ func (p *Provider) StopSandbox(ctx context.Context, ref domain.BackendRef, force
 	defer func() { endSpan(retErr) }()
 
 	vmID := ref.Ref
+
+	// F1: flip the stopped sentinel and acquire the per-VM file lock for the
+	// entire teardown. Late writers (PublishPort/UnpublishPort/UpdateResources)
+	// call lockFor, observe stopped=true under vmMu, and fail fast with
+	// ErrVMStopped WITHOUT blocking on fl.mu. fl.mu is held until the
+	// function returns so the graceful-wait loop and both vminfo writes run
+	// under it; concurrent writers serialize on fl.mu (or fail fast).
+	p.vmMu.Lock()
+	fl, ok := p.fileMu[vmID]
+	if !ok {
+		fl = &vmFileLock{}
+		p.fileMu[vmID] = fl
+	}
+	fl.stopped = true
+	p.vmMu.Unlock()
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
 
 	// Stop the boost listener before killing the VM process so the UDS is
 	// unlinked and no new connections arrive during shutdown.
@@ -578,6 +636,7 @@ stopped:
 
 	p.vmMu.Lock()
 	delete(p.vms, vmID)
+	delete(p.fileMu, vmID) // F1: lock lifetime == VM lifetime
 	p.vmMu.Unlock()
 
 	return nil
@@ -728,6 +787,14 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 		CeilingCPU:    rl.CeilingCPU,
 		CeilingMemMib: rl.CeilingMemMib,
 	}
+	// F1: serialize the vminfo write (lockFor lazy-creates the fileMu entry;
+	// lives until StopSandbox).
+	fl, err := p.lockFor(vmID)
+	if err != nil {
+		os.RemoveAll(vmDir)
+		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)
+	}
+	defer fl.mu.Unlock()
 	if err := info.Write(p.vmInfoPath(vmID)); err != nil {
 		os.RemoveAll(vmDir)
 		return domain.BackendRef{}, fmt.Errorf("firecracker write vminfo %s: %w", vmID, err)

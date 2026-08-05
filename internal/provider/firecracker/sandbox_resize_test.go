@@ -32,6 +32,7 @@ func TestUpdateResources_CPU_AppliedViaCgroup(t *testing.T) {
 				CgroupActive: true,
 			},
 		},
+		fileMu: map[string]*vmFileLock{}, // F1: lockFor (resize commit) needs the map
 	}
 	// Pre-create the cgroup directory like setupCgroup would have at boot
 	// (we're skipping setupCgroup here and testing the resize path

@@ -124,6 +124,21 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 	// vminfo.json write fails, attempt to revert: undo in-memory updates
 	// and revert the running VM to the prior limits, so the service layer's
 	// SQLite rollback leaves the system in a consistent state.
+	//
+	// F1: hold fl.mu (via lockFor) across the whole commit so the in-memory
+	// mutation and the vminfo.json write are atomic w.r.t. concurrent
+	// writers/StopSandbox. fl.mu is acquired before vmMu (lock ordering).
+	// If the VM is mid-teardown, return a ProviderResizeError so the service
+	// layer maps it to a 409 and skips retrying a dead VM.
+	fl, err := p.lockFor(ref.Ref)
+	if err != nil {
+		return &domain.ProviderResizeError{
+			Reason: domain.ResizeReasonVMStopped,
+			Detail: err.Error(),
+		}
+	}
+	defer fl.mu.Unlock()
+
 	p.vmMu.Lock()
 	if req.CPULimit != nil {
 		info.LimitCPU = int64(*req.CPULimit)
