@@ -17,7 +17,7 @@
 - `Provider.vmMu` and `BoostService.mu` must not be held while waiting for a per-resource mutex or while calling iptables, cgroup, Firecracker socket, boost-store, event-bus, or provider operations.
 - Same-resource operations serialize completely; different VMs and different sandboxes remain concurrent.
 - Keep `//go:build firecracker` on every Firecracker production and test file.
-- Do not change F12 production code. The real idle-reap integration-test enhancement remains deferred.
+- Do not change F12 operation mapping, pooling, or request timeouts. The approved final-review amendment only replaces `net.DialUnix` with context-aware `net.Dialer.DialContext`; the real idle-reap integration-test enhancement remains deferred.
 - Do not change public API shapes or the database schema. Preserve the implemented HTTP 409 mapping for `ErrVMStopped` and `ResizeReasonVMStopped`.
 - The final gate is:
 
@@ -49,6 +49,9 @@ go test -race -tags firecracker \
 - `internal/service/boost_internal_test.go` — white-box registry lifetime tests.
 - `internal/service/boost_race_test.go` — deterministic Start/Start, Start/expire, Start/Cancel, and cross-sandbox ordering tests.
 - `internal/provider/firecracker/boost_listener_test.go` — remove the pre-existing test-only data race.
+- `internal/provider/firecracker/fcapi_transport.go` and `_test.go` — make Unix connection establishment context-aware.
+- `internal/provider/firecracker/port_race_test.go` — final Stop commit-failure retry coverage.
+- `internal/service/boost_test.go` — fault-injected replacement and store-error recovery coverage.
 
 ---
 
@@ -1454,3 +1457,304 @@ to re-check the formerly load-bearing findings:
 
 Do not merge until the reviewer returns no Critical or Important findings and
 the verification evidence remains current.
+
+---
+
+### Task 6: Close final-review commit and failure-recovery gaps
+
+**Files:**
+- Modify: `internal/provider/firecracker/sandbox.go:142-652`
+- Modify: `internal/provider/firecracker/port_race_test.go`
+- Modify: `internal/provider/firecracker/sandbox_resize.go:16-170`
+- Modify: `internal/provider/firecracker/sandbox_resize_test.go`
+- Modify: `internal/provider/firecracker/fcapi_transport.go:30-50`
+- Modify: `internal/provider/firecracker/fcapi_transport_test.go`
+- Modify: `internal/service/boost.go:90-420`
+- Modify: `internal/service/boost_test.go`
+- Modify if white-box timer inspection is needed: `internal/service/boost_internal_test.go`
+
+**Interfaces:**
+- Consumes: `Provider.lockFor`, `VMInfo.Write`'s pre/post-rename contract,
+  `domain.BoostStore`'s atomic sandbox-unique `Upsert`, `domain.ErrNotFound`,
+  `Clock`, and the ref-counted sandbox operation lock.
+- Produces: Start/Stop commit-boundary correctness; independent resize
+  compensation; context-aware Unix dialing; timer helpers that preserve a
+  visible/retriable boost across transient bookkeeping failures. No public API
+  or database-schema changes.
+
+- [ ] **Step 1: Add deterministic RED tests for Start/Stop commit boundaries**
+
+Add a test seam in the test first (the production symbol is intentionally
+absent for RED):
+
+```go
+// Production will default this to ReadVMInfo and call it only after lockFor.
+startReadVMInfo(path string) (*VMInfo, error)
+```
+
+Add `TestStartSandbox_AcquiresVMLockBeforeReading` in a Firecracker test file.
+Seed `vminfo.json` and `p.fileMu[vmID]`, lock `fl.mu`, and install both
+`p.lockForAfterFastCheckHook` and `startReadVMInfo` channel hooks. Start
+`StartSandbox` in a goroutine and assert the lock hook wins before the read hook;
+then release the lock and have the read hook return a sentinel error before any
+network or Firecracker operation. This is a deterministic ordering assertion:
+no sleep or negative scheduling window.
+
+Add `TestStopSandbox_FinalWriteFailureRetainsStateForRetry` to
+`port_race_test.go`:
+
+```go
+// Seed a dead VM (PID 0, no tap/ports) in disk, p.vms, and p.fileMu.
+// Make vminfoOpenDir return writeErr for the first Stop call.
+err := p.StopSandbox(ctx, ref, true)
+if !errors.Is(err, writeErr) { t.Fatalf(...) }
+if p.vms[vmID] == nil || p.fileMu[vmID] != fl || !fl.stopped.Load() {
+    t.Fatal("failed final commit discarded retry state")
+}
+// Restore vminfoOpenDir and retry Stop. It must succeed and delete both maps.
+```
+
+Run:
+
+```bash
+go test -race -tags firecracker ./internal/provider/firecracker/ \
+  -run 'Test(StartSandbox_AcquiresVMLockBeforeReading|StopSandbox_FinalWriteFailureRetainsStateForRetry)' -count=1
+```
+
+Expected RED: `startReadVMInfo` is absent, and after adding only the seam at the
+current read site the ordering test observes read-before-lock; Stop currently
+returns nil and deletes both entries.
+
+- [ ] **Step 2: Implement F1 Start/Stop commit semantics**
+
+In `sandbox.go`:
+
+1. Define `var startReadVMInfo = ReadVMInfo`.
+2. In `StartSandbox`, call `lockFor(vmID)` before `startReadVMInfo(infoPath)` and
+   defer/explicitly manage unlock on every return. Pass the already-held lock
+   state into snapshot startup; remove its late recursive `lockFor`.
+3. Hold `fl.mu` through machine/snapshot launch, `info.Write`, and `p.vms`
+   registration only. Release before listener, masquerade, snapshot-file
+   removal, or agent wait.
+4. Check both normal and snapshot `info.Write` results. On pre-commit failure,
+   do not register the cache; kill a positive PID and best-effort call
+   `removeCgroup(vmID)`, `network.DeleteTap(tapName)`, and
+   `p.subnets.Release(subnetIdx)`. Return `errors.Join(writeErr, cleanupErrs...)`
+   with operation context. Do not hide the persistence error.
+5. In Stop, warn on the early `Stopping=true` write failure and continue.
+   Check the final `ClearRuntime` write. On failure, return it before deleting
+   `p.vms` or `p.fileMu`; the existing deferred unlock permits a retry while
+   `stopped=true` rejects other writers. Delete both entries only after commit.
+
+Run the focused tests above plus:
+
+```bash
+go test -race -tags firecracker ./internal/provider/firecracker/ \
+  -run 'Test(StartSandbox_|StopSandbox_|PublishPort_|UpdateResources_)' -count=1
+```
+
+Expected: PASS.
+
+- [ ] **Step 3: Add RED boost replacement/store-failure tests**
+
+In `boost_test.go`, add fault-injection wrappers by embedding real stores and
+overriding only selected methods:
+
+```go
+type faultBoostStore struct {
+    domain.BoostStore
+    upsertErr, deleteErr, updateStateErr, getByIDErr error
+}
+type faultSandboxStore struct {
+    domain.SandboxStore
+    getErr error
+}
+```
+
+Each injected error is one-shot: protect it with a mutex, clear it when
+returned, and delegate subsequent calls. Rebuild `BoostService` with the
+wrapper, existing sandbox service/event bus, and `fakeClock`.
+
+Add deterministic tests with these required assertions:
+
+- `TestBoostStart_ReplacementApplyFailureRestoresPrior`: Start A, fail B's live
+  apply, then assert A's row/ID remains and advancing A's remaining duration
+  invokes expiry/revert and deletes A.
+- `TestBoostStart_ReplacementUpsertFailureKeepsPrior`: fail only B's Upsert;
+  assert A's row remains and its timer still expires it.
+- `TestBoostExpire_TransientSandboxLookupRearamsRetry`: fail the sandbox lookup
+  during expiry with a non-`ErrNotFound` error; assert the boost row remains,
+  then advance the first backoff and assert retry reverts/deletes it.
+- `TestBoostExpire_DeleteFailureRearamsCleanup`: let live revert succeed but
+  fail Delete once; assert the row remains and a backoff retry deletes it.
+- `TestBoostExpire_UpdateStateFailureRearamsRetry`: fail live revert and the
+  first state update; assert the active row remains armed and another backoff
+  attempt occurs.
+- `TestBoostCancel_TransientLookupPreservesExpiry`: fail sandbox lookup during
+  Cancel; Cancel returns the error, the row remains, and the restored timer can
+  later reconcile it.
+- `TestBoostCancel_DeleteFailureReturnsAndRearams`: successful live revert plus
+  failed Delete returns the bookkeeping error, preserves the row, and arms a
+  cleanup retry.
+- `TestBoostLifecycle_DeleteFailureLeavesTimerArmed`: a failed lifecycle Delete
+  must not stop/remove the existing timer.
+
+Use fake-clock advancement and call-count channels/counters; do not use sleeps.
+Run:
+
+```bash
+go test -race ./internal/service/... \
+  -run 'TestBoost(Start_Replacement.*|Expire_.*(Lookup|Delete|UpdateState).*|Cancel_.*(Lookup|Delete).*|Lifecycle_DeleteFailure.*)' -count=1
+```
+
+Expected RED: current Start deletes A before B is safe; expiry/Cancel delete or
+unarm rows on transient failures; lifecycle removes the timer before Delete.
+
+- [ ] **Step 4: Implement F7 failure recovery without broad locks**
+
+In `boost.go`, add private timer helpers whose only critical section is `s.mu`:
+
+```go
+func (s *BoostService) armExpiry(boostID string, delay time.Duration)
+func (s *BoostService) armRemaining(b *domain.Boost)
+func (s *BoostService) armRetry(boostID string)
+func (s *BoostService) stopTimer(boostID string)
+```
+
+`armRemaining` uses `b.ExpiresAt.Sub(s.clock.Now().UTC())`, clamped to zero.
+`armRetry` uses `boostBackoff[0]`. Helpers replace an existing map timer safely,
+but never call a store/provider/event while holding `s.mu`.
+
+Implement the approved policies:
+
+1. Start fetches prior bookkeeping. Treat only `ErrNotFound` as no prior; any
+   other lookup error aborts. Stop A's timer, then `Upsert(B)` directly without
+   deleting A. Failed B Upsert rearms unchanged A. Failed B live apply restores
+   A with `Upsert(A)` and rearms its remaining timer; with no A, delete B. If
+   rollback Upsert/Delete fails, join it with the apply error and arm a short
+   retry for whichever row remains visible.
+2. Expiry distinguishes `ErrNotFound` from transient errors at both `GetByID`
+   reads and at sandbox lookup. Transient errors arm retry and preserve the
+   row. Check successful-revert and non-running Delete results; failure arms
+   retry. Check every `UpdateState`; if it fails, keep/arm retry. Publish
+   `revert_failed` only after that state commits.
+3. Cancel restores a timer on transient sandbox lookup, returns failed Delete
+   or UpdateState via `errors.Join`, and arms retry whenever bookkeeping remains
+   unresolved. A committed `revert_failed` remains operator-driven as before.
+4. Lifecycle cleanup performs `Delete` before stopping the timer. `ErrNotFound`
+   is a no-op; transient Get/Delete errors are logged and leave the timer armed.
+5. Keep `sandboxLock.mu → BoostService.mu`; never hold `s.mu` over store,
+   provider, event, or sandbox calls.
+
+Run the tests from Step 3 and the complete service race package:
+
+```bash
+go test -race ./internal/service/... -count=1
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Add RED tests for both Minor findings**
+
+Add `resizePatchBalloon` as the test-facing name for the current
+`p.patchBalloon` call path, then add
+`TestUpdateResources_PersistFailureAttemptsBothCompensations`. Inject successful
+forward CPU/memory applies, force `vminfoOpenDir` to fail at persistence, make
+both CPU and balloon compensation calls fail, and assert:
+
+- both compensation call counters increment;
+- the returned error matches/contains the persistence, CPU-revert, and
+  memory-revert errors.
+
+In `fcapi_transport_test.go`, add:
+
+```go
+func TestBuildIdleReapingTransport_DialHonorsCancelledContext(t *testing.T) {
+    // Listen on a real temporary Unix socket so the old net.DialUnix would
+    // succeed despite an already-cancelled context.
+    // Extract *http.Transport as in the existing configuration test.
+    ctx, cancel := context.WithCancel(context.Background())
+    cancel()
+    conn, err := socketTransport.DialContext(ctx, "tcp", "ignored")
+    if conn != nil { conn.Close(); t.Fatal("dial succeeded with cancelled context") }
+    if !errors.Is(err, context.Canceled) { t.Fatalf(...) }
+}
+```
+
+Run:
+
+```bash
+go test -race -tags firecracker ./internal/provider/firecracker/ \
+  -run 'Test(UpdateResources_PersistFailureAttemptsBothCompensations|BuildIdleReapingTransport_DialHonorsCancelledContext)' -count=1
+```
+
+Expected RED: persistence returns after the CPU compensation error without
+calling balloon compensation; the old `net.DialUnix` ignores the cancelled
+context and connects.
+
+- [ ] **Step 6: Implement both Minor corrections**
+
+In `sandbox_resize.go`, route balloon operations through
+`resizePatchBalloon`. On persistence failure, attempt CPU and memory reverts in
+separate branches, collect each error, and return `errors.Join` containing the
+persistence error and all failed compensations.
+
+In `fcapi_transport.go`, replace the custom dial body with:
+
+```go
+dialer := &net.Dialer{}
+DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+    return dialer.DialContext(ctx, "unix", sockPath)
+},
+```
+
+Run the Step 5 tests and all Firecracker race tests:
+
+```bash
+go test -race -tags firecracker ./internal/provider/firecracker/... -count=1
+```
+
+Expected: PASS.
+
+- [ ] **Step 7: Verify, audit, and commit the one final fix wave**
+
+```bash
+gofmt -w \
+  internal/provider/firecracker/sandbox.go \
+  internal/provider/firecracker/port_race_test.go \
+  internal/provider/firecracker/sandbox_resize.go \
+  internal/provider/firecracker/sandbox_resize_test.go \
+  internal/provider/firecracker/fcapi_transport.go \
+  internal/provider/firecracker/fcapi_transport_test.go \
+  internal/service/boost.go \
+  internal/service/boost_test.go \
+  internal/service/boost_internal_test.go
+git diff --check
+go build ./...
+go build -tags firecracker ./...
+go test -race -tags firecracker \
+  ./internal/provider/firecracker/... \
+  ./internal/service/... \
+  ./internal/api/... \
+  ./internal/domain/... -count=1
+rg -n 'info\.Write\(' internal/provider/firecracker --glob '*.go'
+rg -n 'delete\(s\.sbxLocks' internal/service/boost.go
+rg -n 'fcsdk\.NewMachine' internal/provider/firecracker --glob '*.go'
+```
+
+Expected: clean diff; both builds and all race packages pass; Start reads under
+`lockFor`; Stop deletes lock/cache only after final commit; one refcount-zero
+`sandboxLock` deletion; two long-lived SDK machines.
+
+Commit:
+
+```bash
+git add internal/provider/firecracker internal/service/boost.go \
+  internal/service/boost_test.go internal/service/boost_internal_test.go
+git commit -m "fix: close final concurrency failure paths"
+```
+
+Write exact RED/GREEN evidence and self-review to the Task 6 report. This is the
+single final-review fix wave; the controller performs one scoped re-review and
+must escalate any residual Critical/Important finding rather than dispatching a
+second fix wave.

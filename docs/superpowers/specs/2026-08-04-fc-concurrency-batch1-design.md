@@ -1,6 +1,6 @@
 # Firecracker + Service Concurrency Fixes — Batch 1
 
-**Status:** Revised design approved in discussion; written-spec review pending
+**Status:** Revised design and final-review corrective amendment approved
 **Date:** 2026-08-04
 **Revision reason:** The final whole-branch implementation review found that the
 original F1 and F7 locking designs did not fully serialize their state
@@ -38,8 +38,10 @@ The remaining adversarial-review batches are unchanged:
 
 The pre-existing Firecracker socket-path inconsistency between graceful stop
 and snapshot/resize remains out of scope. The F12 test enhancement that would
-observe a real idle connection being reaped is also deferred; the transport
-configuration and production behavior have already been verified.
+observe a real idle connection being reaped is also deferred. The only further
+F12 production correction in the final review wave is making Unix-socket
+connection establishment honor the supplied context; operation mapping, idle
+pooling, and request timeout behavior remain unchanged.
 
 ---
 
@@ -162,6 +164,34 @@ map into the existing `p.vms` entry under `vmMu`. The copy must not alias the
 mutable disk object. Failed DNAT, file, or allocator operations retain their
 existing rollback behavior and do not update the cache.
 
+### Start and Stop commit boundaries
+
+`StartSandbox` acquires `lockFor(vmID)` before reading an existing
+`vminfo.json`. The same lock remains held through normal or snapshot launch,
+runtime-field persistence, and cache registration, then is released before
+boost-listener startup, masquerade setup, and the agent-health wait. Snapshot
+startup consumes the already-held lock rather than recursively acquiring it.
+This ensures a Start reads current persistent fields and cannot overwrite a
+port, limit, or restore mutation that completed while launch was beginning.
+
+A pre-commit runtime-state write failure is a failed Start: do not register the
+VM in `p.vms`; kill a launched process and best-effort remove its cgroup, tap,
+and subnet allocation before returning the persistence error. Cleanup errors
+must be joined with the original error rather than hiding it.
+
+`StopSandbox` treats its early `Stopping=true` write as a best-effort marker:
+a pre-commit marker failure is logged and teardown continues. The final
+`ClearRuntime` write is the authoritative commit. If that write returns a
+pre-commit error, Stop returns the error and retains both the cache entry and
+the `fileMu` entry with `stopped=true`, allowing a later Stop retry while
+rejecting all other late writers. Cache and lock entries are deleted only after
+the final write commits.
+
+If resize persistence fails after both CPU and memory were applied, CPU and
+memory compensation are attempted independently. The returned error joins the
+persistence error with every failed compensation so one revert failure cannot
+prevent the other revert attempt.
+
 ### Error mapping
 
 `domain.ErrVMStopped` remains mapped to HTTP 409. `UpdateResources` wraps a
@@ -211,8 +241,10 @@ MaxIdleConnsPerHost: 1
 IdleConnTimeout:     idleTimeout
 ```
 
-Production call sites use a 30-second idle timeout. The helper is only for
-one-shot API calls; long-lived VMM launch paths retain `fcsdk.NewMachine`.
+Production call sites use a 30-second idle timeout. Its custom `DialContext`
+uses `net.Dialer.DialContext(ctx, "unix", sockPath)` so cancellation can
+interrupt socket connection establishment. The helper is only for one-shot API
+calls; long-lived VMM launch paths retain `fcsdk.NewMachine`.
 
 The transient sites call generated operations directly:
 
@@ -300,14 +332,21 @@ sandbox lock and defers release. It then re-fetches and validates the sandbox
 under the serialization boundary so it does not act on a stale pre-lock view.
 While holding the sandbox lock, Start:
 
-1. stops/removes the prior timer under `s.mu`;
-2. deletes or replaces prior boost bookkeeping in the store;
-3. persists the new boost row;
+1. fetches the prior boost and stops/removes its timer under `s.mu`;
+2. atomically replaces the prior row using the store's sandbox-unique `Upsert`
+   without first deleting the prior row;
+3. if replacement persistence fails, rearms the unchanged prior row for its
+   remaining duration;
 4. applies the boosted limits live;
-5. on failure, deletes its own row while still serialized;
-6. on success, schedules the new timer under `s.mu` and publishes the event.
+5. if live apply fails, restores the prior row and remaining-duration timer, or
+   deletes the replacement when there was no prior row;
+6. if rollback bookkeeping itself fails, returns a joined error and schedules
+   a short cleanup retry for whichever row remains visible;
+7. on success, schedules the new timer under `s.mu` and publishes the event.
 
-Bookkeeping and apply therefore have one order for concurrent Starts.
+Bookkeeping and apply therefore have one order for concurrent Starts, and a
+failed replacement cannot silently discard the lease that still describes live
+resources.
 
 ### Expiry
 
@@ -341,11 +380,27 @@ This batch does not otherwise redesign sandbox Stop/Destroy state transitions.
 
 ### Events and failure handling
 
-Event publication retains existing best-effort semantics and occurs after the
-corresponding state transition while the sandbox operation remains serialized.
-No path holds global `s.mu` while publishing or calling `UpdateResources`.
-Every operation defers its sandbox-lock release so store, provider, rollback,
-and event failures cannot leak a registry reference.
+Only an error matching `domain.ErrNotFound` is treated as absence. A transient
+boost- or sandbox-store lookup failure preserves the row and rearms a bounded
+retry timer; it must not delete bookkeeping. Expiry and Cancel check every
+`Delete` and `UpdateState` result:
+
+- after a successful live revert, a failed delete leaves the row visible and
+  schedules a cleanup retry;
+- after a failed live revert, a failed state update schedules another retry and
+  returns or logs the joined error rather than leaving an unarmed active row;
+- Cancel propagates bookkeeping failures to its caller and restores a timer so
+  expiry can still reconcile the row;
+- lifecycle cleanup deletes the row before stopping/removing its timer. A
+  transient lookup or delete failure is logged and leaves the existing timer
+  armed; `ErrNotFound` is a successful no-op.
+
+Retry scheduling is performed under `s.mu`, never while calling a store or
+provider. Event publication retains existing best-effort semantics and occurs
+after the corresponding state transition while the sandbox operation remains
+serialized. No path holds global `s.mu` while publishing or calling
+`UpdateResources`. Every operation defers its sandbox-lock release so store,
+provider, rollback, and event failures cannot leak a registry reference.
 
 ### F7 tests
 
@@ -379,8 +434,12 @@ gate can pass without an exception.
 4. Implement the ref-counted registry and serialize complete boost operations.
 5. Fix the test-only boost-listener race.
 6. Run the complete build and race verification gate.
+7. Apply the approved final-review commit-boundary, failure-recovery,
+   independent-compensation, and context-aware-dial corrections in one wave.
+8. Re-run the complete gate and perform one final scoped re-review.
 
-F12 production code is not changed during this correction cycle.
+F12 operation mapping and timeout behavior are unchanged; the final review
+amendment makes only Unix connection establishment context-aware.
 
 ## Verification gate
 
@@ -405,11 +464,21 @@ Additionally:
 
 No database schema or public API shape changes. `ErrVMStopped` and
 `ResizeReasonVMStopped` retain their already-implemented HTTP 409 behavior.
-The F1 and F7 revisions change only concurrency ordering and cache consistency;
-F12 behavior is unchanged from the approved implementation.
+The F1 and F7 revisions change concurrency ordering, cache consistency, and
+failure recovery without changing public contracts or schema. F12 operation
+behavior is unchanged except that a cancelled context can now interrupt Unix
+socket connection establishment.
+
+## Final-review corrective amendment
+
+The final whole-branch review found two remaining F1 commit-boundary defects,
+two F7 bookkeeping-failure defects, and two Minor robustness issues. The Start
+and Stop commit rules, replacement compensation, store-error policy,
+independent resize compensation, and context-aware Unix dial described above
+were approved for one final implementation/re-review wave.
 
 ## Open questions
 
 None. The state-authority model, stop synchronization, keyed-lock lifecycle,
-serialized boost operations, correction-test scope, and verification-only test
-fix were approved during the revision discussion.
+serialized boost operations, failure recovery, correction-test scope, and
+verification-only test fix were approved during the revision discussions.
