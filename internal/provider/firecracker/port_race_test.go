@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/navaris/navaris/internal/domain"
@@ -121,6 +123,150 @@ func TestStopSandbox_FinalWriteFailureRetainsStateForRetry(t *testing.T) {
 	p.vmMu.Unlock()
 	if vmsHas || fmHas {
 		t.Fatalf("StopSandbox retry left entries: vms=%v fileMu=%v", vmsHas, fmHas)
+	}
+}
+
+func TestCleanupStartFailure_KillFailureUsesFallbackAndAggregates(t *testing.T) {
+	p := &Provider{config: Config{EnableJailer: true}}
+	vmID := "vm-cleanup-kill"
+	killErr := errors.New("kill failed")
+	fallbackErr := errors.New("fallback failed")
+
+	oldKill := startKillProcess
+	defer func() { startKillProcess = oldKill }()
+	startKillProcess = func(pid int) error {
+		if pid != 1234 {
+			t.Fatalf("startKillProcess pid = %d; want 1234", pid)
+		}
+		return killErr
+	}
+
+	fallbackCalls := 0
+	err := p.cleanupStartFailure(vmID, 1234, func() error {
+		fallbackCalls++
+		return fallbackErr
+	}, "", 0)
+	if fallbackCalls != 1 {
+		t.Fatalf("fallback calls = %d; want 1", fallbackCalls)
+	}
+	if !errors.Is(err, killErr) || !errors.Is(err, fallbackErr) {
+		t.Fatalf("cleanup error = %v; want kill and fallback errors", err)
+	}
+
+	startKillProcess = func(pid int) error {
+		if pid != 5678 {
+			t.Fatalf("startKillProcess pid = %d; want 5678", pid)
+		}
+		return syscall.ESRCH
+	}
+	fallbackCalls = 0
+	err = p.cleanupStartFailure(vmID, 5678, func() error {
+		fallbackCalls++
+		return nil
+	}, "", 0)
+	if err != nil {
+		t.Fatalf("cleanup ESRCH error = %v; want nil", err)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("fallback calls for ESRCH = %d; want 0", fallbackCalls)
+	}
+}
+
+func TestCleanupStartFailure_MissingPIDUsesMachineFallback(t *testing.T) {
+	p := &Provider{config: Config{EnableJailer: true}}
+	fallbackErr := errors.New("fallback failed")
+
+	oldKill := startKillProcess
+	defer func() { startKillProcess = oldKill }()
+	startKillProcess = func(pid int) error {
+		t.Fatalf("startKillProcess called for missing PID %d", pid)
+		return nil
+	}
+
+	fallbackCalls := 0
+	err := p.cleanupStartFailure("vm-cleanup-missing-pid", 0, func() error {
+		fallbackCalls++
+		return fallbackErr
+	}, "", 0)
+	if fallbackCalls != 1 {
+		t.Fatalf("fallback calls = %d; want 1", fallbackCalls)
+	}
+	if !errors.Is(err, fallbackErr) {
+		t.Fatalf("cleanup error = %v; want fallback error", err)
+	}
+}
+
+func TestCommitStartedVM_WriteFailureTerminatesAndSkipsCache(t *testing.T) {
+	terminationErr := errors.New("termination failed")
+	cases := []struct {
+		operation string
+		killErr   error
+	}{
+		{operation: "start"},
+		{operation: "snapshot", killErr: terminationErr},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.operation, func(t *testing.T) {
+			dir := t.TempDir()
+			p := &Provider{
+				config: Config{ChrootBase: dir, EnableJailer: true},
+				vms:    map[string]*VMInfo{},
+			}
+			vmID := "vm-commit-" + tc.operation
+			if err := os.MkdirAll(p.vmDir(vmID), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			writeErr := errors.New("write failed " + tc.operation)
+			oldOpenDir := vminfoOpenDir
+			vminfoOpenDir = func(string) (*os.File, error) { return nil, writeErr }
+			defer func() { vminfoOpenDir = oldOpenDir }()
+
+			oldKill := startKillProcess
+			defer func() { startKillProcess = oldKill }()
+			killCalls := 0
+			startKillProcess = func(pid int) error {
+				killCalls++
+				if pid != 4321 {
+					t.Fatalf("startKillProcess pid = %d; want 4321", pid)
+				}
+				return tc.killErr
+			}
+
+			fallbackCalls := 0
+			info := &VMInfo{ID: vmID, PID: 4321, Ports: map[int]int{}}
+			err := p.commitStartedVM(tc.operation, vmID, p.vmInfoPath(vmID), info, 4321, func() error {
+				fallbackCalls++
+				return nil
+			}, "", 0)
+			if !errors.Is(err, writeErr) {
+				t.Fatalf("commitStartedVM error = %v; want write error", err)
+			}
+			if !strings.Contains(err.Error(), "firecracker persist "+tc.operation+" runtime "+vmID) {
+				t.Fatalf("commitStartedVM error = %q; want operation label %q", err, tc.operation)
+			}
+			if killCalls != 1 {
+				t.Fatalf("startKillProcess calls = %d; want 1", killCalls)
+			}
+			if tc.killErr != nil {
+				if !errors.Is(err, tc.killErr) {
+					t.Fatalf("commitStartedVM error = %v; want termination error", err)
+				}
+				if fallbackCalls != 1 {
+					t.Fatalf("fallback calls = %d; want 1", fallbackCalls)
+				}
+			} else if fallbackCalls != 0 {
+				t.Fatalf("fallback calls = %d; want 0", fallbackCalls)
+			}
+
+			p.vmMu.Lock()
+			_, cached := p.vms[vmID]
+			p.vmMu.Unlock()
+			if cached {
+				t.Fatalf("p.vms[%s] registered after write failure", vmID)
+			}
+		})
 	}
 }
 

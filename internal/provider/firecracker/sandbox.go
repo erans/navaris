@@ -26,7 +26,12 @@ import (
 // validImageRef matches safe image reference names (alphanumeric, dots, dashes, underscores).
 var validImageRef = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
-var startReadVMInfo = ReadVMInfo
+var (
+	startReadVMInfo  = ReadVMInfo
+	startKillProcess = func(pid int) error {
+		return syscall.Kill(pid, syscall.SIGKILL)
+	}
+)
 
 func vmName() string {
 	return "nvrs-fc-" + uuid.NewString()[:8]
@@ -328,19 +333,12 @@ func (p *Provider) StartSandbox(ctx context.Context, ref domain.BackendRef) (ret
 		}
 	}
 
-	if err := info.Write(infoPath); err != nil {
-		cleanupErr := p.cleanupStartFailure(vmID, pid, tapName, subnetIdx)
-		return errors.Join(
-			fmt.Errorf("firecracker persist start runtime %s: %w", vmID, err),
-			cleanupErr,
-		)
+	if err := p.commitStartedVM("start", vmID, infoPath, info, pid, machine.StopVMM, tapName, subnetIdx); err != nil {
+		return err
 	}
 
-	// Register in memory, then release the per-VM lock before listener,
-	// masquerade, and agent-wait work that does not touch vminfo.
-	p.vmMu.Lock()
-	p.vms[vmID] = info
-	p.vmMu.Unlock()
+	// Release the per-VM lock before listener, masquerade, and agent-wait work
+	// that does not touch vminfo.
 	unlock()
 
 	// Start per-VM boost channel listener (no-op if boostHandler is nil or
@@ -499,19 +497,12 @@ func (p *Provider) startFromSnapshot(ctx context.Context, vmID, vmDir string, in
 		}
 	}
 
-	if err := info.Write(infoPath); err != nil {
-		cleanupErr := p.cleanupStartFailure(vmID, pid, tapName, subnetIdx)
-		return errors.Join(
-			fmt.Errorf("firecracker persist snapshot runtime %s: %w", vmID, err),
-			cleanupErr,
-		)
+	if err := p.commitStartedVM("snapshot", vmID, infoPath, info, pid, machine.StopVMM, tapName, subnetIdx); err != nil {
+		return err
 	}
 
-	// Register in memory, then release the per-VM lock before listener,
-	// masquerade, snapshot-file cleanup, and agent-wait work.
-	p.vmMu.Lock()
-	p.vms[vmID] = info
-	p.vmMu.Unlock()
+	// Release the per-VM lock before listener, masquerade, snapshot-file cleanup,
+	// and agent-wait work.
 	unlock()
 
 	// Start per-VM boost channel listener for snapshot-restored VMs.
@@ -820,11 +811,50 @@ func (p *Provider) CreateSandboxFromSnapshot(ctx context.Context, snapshotRef do
 
 // Helper functions.
 
-func (p *Provider) cleanupStartFailure(vmID string, pid int, tapName string, subnetIdx int) error {
-	if pid > 0 {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+func (p *Provider) commitStartedVM(
+	operation, vmID, infoPath string,
+	info *VMInfo,
+	pid int,
+	stopVMM func() error,
+	tapName string,
+	subnetIdx int,
+) error {
+	if err := info.Write(infoPath); err != nil {
+		cleanupErr := p.cleanupStartFailure(vmID, pid, stopVMM, tapName, subnetIdx)
+		return errors.Join(
+			fmt.Errorf("firecracker persist %s runtime %s: %w", operation, vmID, err),
+			cleanupErr,
+		)
 	}
+
+	p.vmMu.Lock()
+	p.vms[vmID] = info
+	p.vmMu.Unlock()
+	return nil
+}
+
+func (p *Provider) cleanupStartFailure(vmID string, pid int, stopVMM func() error, tapName string, subnetIdx int) error {
 	var errs []error
+	stopFallback := func() {
+		if stopVMM == nil {
+			return
+		}
+		if err := stopVMM(); err != nil {
+			errs = append(errs, fmt.Errorf("stop VMM after failed start %s: %w", vmID, err))
+		}
+	}
+
+	if pid > 0 {
+		if err := startKillProcess(pid); err != nil {
+			if !errors.Is(err, syscall.ESRCH) {
+				errs = append(errs, fmt.Errorf("kill VMM after failed start %s: %w", vmID, err))
+				stopFallback()
+			}
+		}
+	} else {
+		stopFallback()
+	}
+
 	if err := p.removeCgroup(vmID); err != nil {
 		errs = append(errs, fmt.Errorf("remove cgroup after failed start %s: %w", vmID, err))
 	}
