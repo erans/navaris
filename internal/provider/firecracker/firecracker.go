@@ -156,16 +156,18 @@ type boostListener struct {
 
 // Provider implements domain.Provider for Firecracker microVMs.
 type Provider struct {
-	config        Config
-	subnets       *network.Allocator
-	uids          *jailer.UIDAllocator
-	portAlloc     *network.PortAllocator
-	cidNext       uint32
-	cidMu         sync.Mutex
-	vms           map[string]*VMInfo
-	vmMu          sync.RWMutex
-	hostIface     string
-	cgroupVersion string
+	config                    Config
+	subnets                   *network.Allocator
+	uids                      *jailer.UIDAllocator
+	portAlloc                 *network.PortAllocator
+	cidNext                   uint32
+	cidMu                     sync.Mutex
+	vms                       map[string]*VMInfo
+	vmMu                      sync.RWMutex
+	fileMu                    map[string]*vmFileLock // F1: per-VM vminfo.json serialization; guarded by vmMu for lookup
+	lockForAfterFastCheckHook func()                 // tests-only; nil in production
+	hostIface                 string
+	cgroupVersion             string
 	// cgroupSkipFSCheck disables the cgroupfs magic-number validation in
 	// setupCgroup. Tests-only — production code never sets this. Without
 	// it, every cgroup-helper unit test would need a real cgroup mount
@@ -231,6 +233,7 @@ func New(cfg Config) (*Provider, error) {
 		portAlloc:      network.NewPortAllocator(),
 		cidNext:        cfg.VsockCIDBase,
 		vms:            make(map[string]*VMInfo),
+		fileMu:         make(map[string]*vmFileLock),
 		hostIface:      hostIface,
 		cgroupVersion:  detectCgroupVersion(),
 		boostListeners: make(map[string]*boostListener),
@@ -279,6 +282,7 @@ func (p *Provider) recover() error {
 	for _, info := range infos {
 		p.vmMu.Lock()
 		p.vms[info.ID] = info
+		p.fileMu[info.ID] = &vmFileLock{} // F1: ensure first post-startup writer finds the lock
 		p.vmMu.Unlock()
 
 		// Advance allocators past in-use values.
@@ -313,6 +317,10 @@ func (p *Provider) recover() error {
 						network.RemoveDNAT(hp, guestIP, tp)
 					}
 				}
+				// F1: safe without lockFor — recover() is single-threaded at
+				// daemon startup, so no concurrent writer can race this
+				// write. Do not call this path from any concurrent context
+				// without adding lockFor.
 				info.Ports = nil
 				infoPath := p.vmInfoPath(info.ID)
 				if err := info.Write(infoPath); err != nil {

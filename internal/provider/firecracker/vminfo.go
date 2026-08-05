@@ -3,8 +3,18 @@ package firecracker
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
+)
+
+var (
+	vminfoOpenDir = os.Open
+	vminfoSyncDir = func(dir *os.File) error {
+		return dir.Sync()
+	}
 )
 
 type VMInfo struct {
@@ -84,20 +94,23 @@ func (v *VMInfo) Write(path string) error {
 		return fmt.Errorf("sync vminfo %s: %w", path, err)
 	}
 	tmp.Close()
+	// Open the directory before rename so open failures are pre-commit errors.
+	d, err := vminfoOpenDir(dir)
+	if err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("open dir for sync %s: %w", dir, err)
+	}
+	defer d.Close()
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("rename vminfo %s: %w", path, err)
 	}
-	// Sync the directory to ensure the rename is durable.
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open dir for sync %s: %w", dir, err)
+	// Sync the directory to ensure the rename is durable. After rename, the
+	// logical write is committed; sync failure is a durability warning only.
+	if err := vminfoSyncDir(d); err != nil {
+		slog.Warn("firecracker: vminfo directory sync failed after rename",
+			"path", path, "dir", dir, "error", err)
 	}
-	if err := d.Sync(); err != nil {
-		d.Close()
-		return fmt.Errorf("sync dir %s: %w", dir, err)
-	}
-	d.Close()
 	return nil
 }
 
@@ -119,6 +132,18 @@ func ReadVMInfo(path string) (*VMInfo, error) {
 		return nil, fmt.Errorf("unmarshal vminfo %s: %w", path, err)
 	}
 	return &info, nil
+}
+
+// vmFileLock serializes per-VM read-modify-write access to vminfo.json.
+// The mu field is acquired standalone (via Provider.lockFor); the stopped
+// flag is the fail-fast sentinel set at the very start of StopSandbox.
+//
+// Lock ordering: acquire fileMu[vmID].mu BEFORE p.vmMu when both are needed
+// (lockFor acquires vmMu only for the map lookup and releases it before
+// taking the per-VM mu, so no ordering constraint arises from the lookup).
+type vmFileLock struct {
+	mu      sync.Mutex
+	stopped atomic.Bool
 }
 
 func ScanVMDirs(base string) ([]*VMInfo, []error) {

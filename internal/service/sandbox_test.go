@@ -125,6 +125,109 @@ func TestSandboxServiceDestroy(t *testing.T) {
 	}
 }
 
+func TestSandboxDestroy_ProviderFailureMarksRunningPretransitionFailed(t *testing.T) {
+	env := newBoostEnv(t)
+	env.sandbox.SetBoostService(env.boost)
+	sbx := env.seedSandbox(t, "sbx-destroy-fail-running", domain.SandboxRunning, "mock")
+	destroyErr := errors.New("destroy failed")
+	destroyCalled := make(chan struct{}, 1)
+	env.mock.DestroySandboxFn = func(_ context.Context, _ domain.BackendRef) error {
+		destroyCalled <- struct{}{}
+		return destroyErr
+	}
+
+	ch, cancel, err := env.events.Subscribe(t.Context(), domain.EventFilter{
+		SandboxID: &sbx.SandboxID,
+		Types:     []domain.EventType{domain.EventSandboxStateChanged},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if _, err := env.sandbox.Destroy(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	env.dispatcher.WaitIdle()
+
+	select {
+	case <-destroyCalled:
+	default:
+		t.Fatal("provider DestroySandbox was not called")
+	}
+	got, err := env.sandbox.Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != domain.SandboxFailed {
+		t.Fatalf("state after provider destroy failure = %s; want %s", got.State, domain.SandboxFailed)
+	}
+	requireSandboxStateEvent(t, ch, domain.SandboxFailed)
+}
+
+func TestSandboxDestroy_ProviderFailurePreservesStoppedAndFailedStates(t *testing.T) {
+	destroyErr := errors.New("destroy failed")
+	for _, state := range []domain.SandboxState{domain.SandboxStopped, domain.SandboxFailed} {
+		t.Run(string(state), func(t *testing.T) {
+			env := newBoostEnv(t)
+			env.sandbox.SetBoostService(env.boost)
+			sbx := env.seedSandbox(t, "sbx-destroy-fail-"+string(state), state, "mock")
+			destroyCalled := make(chan struct{}, 1)
+			env.mock.DestroySandboxFn = func(_ context.Context, _ domain.BackendRef) error {
+				destroyCalled <- struct{}{}
+				return destroyErr
+			}
+
+			ch, cancel, err := env.events.Subscribe(t.Context(), domain.EventFilter{
+				SandboxID: &sbx.SandboxID,
+				Types:     []domain.EventType{domain.EventSandboxStateChanged},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+
+			if _, err := env.sandbox.Destroy(t.Context(), sbx.SandboxID); err != nil {
+				t.Fatal(err)
+			}
+			env.dispatcher.WaitIdle()
+
+			select {
+			case <-destroyCalled:
+			default:
+				t.Fatal("provider DestroySandbox was not called")
+			}
+			got, err := env.sandbox.Get(t.Context(), sbx.SandboxID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != state {
+				t.Fatalf("state after provider destroy failure = %s; want %s", got.State, state)
+			}
+			select {
+			case event := <-ch:
+				t.Fatalf("unexpected sandbox state event after provider destroy failure: %#v", event.Data)
+			default:
+			}
+		})
+	}
+}
+
+func requireSandboxStateEvent(t *testing.T, ch <-chan domain.Event, want domain.SandboxState) {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-ch:
+			if got, _ := event.Data["state"].(string); got == string(want) {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for sandbox state event %s", want)
+		}
+	}
+}
+
 func TestSandboxServiceInvalidStateTransition(t *testing.T) {
 	env := newServiceEnv(t)
 	// Create a sandbox and wait for it to be running

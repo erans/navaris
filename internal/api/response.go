@@ -93,6 +93,9 @@ func mapErrorCode(err error) int {
 	if errors.Is(err, domain.ErrConflict) {
 		return http.StatusConflict
 	}
+	if errors.Is(err, domain.ErrVMStopped) {
+		return http.StatusConflict
+	}
 	if errors.Is(err, domain.ErrInvalidArgument) {
 		return http.StatusBadRequest
 	}

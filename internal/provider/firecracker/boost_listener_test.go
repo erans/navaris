@@ -11,19 +11,19 @@ import (
 )
 
 type fakeBoostServer struct {
-	calls []string
+	calls chan string
 }
 
 func (f *fakeBoostServer) Serve(_ context.Context, conn net.Conn, sandboxID string) {
-	f.calls = append(f.calls, sandboxID)
-	conn.Close()
+	defer conn.Close()
+	f.calls <- sandboxID
 }
 
 func TestBoostListener_AcceptsAndDispatches(t *testing.T) {
 	tmp := t.TempDir()
 	udsPath := filepath.Join(tmp, "vsock_1025")
 
-	server := &fakeBoostServer{}
+	server := &fakeBoostServer{calls: make(chan string, 1)}
 	p := &Provider{
 		boostHandler:   server,
 		boostListeners: make(map[string]*boostListener),
@@ -46,16 +46,13 @@ func TestBoostListener_AcceptsAndDispatches(t *testing.T) {
 	}
 	conn.Close()
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if len(server.calls) > 0 {
-			break
+	select {
+	case got := <-server.calls:
+		if got != "sbx-1" {
+			t.Fatalf("sandboxID = %q; want sbx-1", got)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if len(server.calls) != 1 || server.calls[0] != "sbx-1" {
-		t.Fatalf("server.calls = %v, want [sbx-1]", server.calls)
+	case <-time.After(time.Second):
+		t.Fatal("boost listener did not dispatch connection")
 	}
 }
 

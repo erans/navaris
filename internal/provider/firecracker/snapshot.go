@@ -12,6 +12,8 @@ import (
 	"time"
 
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
 	"github.com/google/uuid"
 	"github.com/navaris/navaris/internal/domain"
 	"github.com/navaris/navaris/internal/storage"
@@ -146,13 +148,19 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	} else {
 		sockPath = filepath.Join(vmDir, "firecracker.sock")
 	}
-	machine, err := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
+	fc, err := transientFirecrackerClient(sockPath, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("firecracker live snapshot connect %s: %w", vmID, err)
 	}
 
 	// Pause -> snapshot -> copy -> resume.
-	if err := machine.PauseVM(ctx); err != nil {
+	// fcReqTimeout matches the SDK high-level client's default per-request
+	// timeout (defaultFirecrackerRequestTimeout = 500ms), which the previous
+	// machine.PatchVM wrapper applied via context.WithTimeout.
+	const fcReqTimeout = 500 * time.Millisecond
+	if _, err := fc.Operations.PatchVM(operations.NewPatchVMParamsWithContext(ctx).
+		WithBody(&models.VM{State: fcsdk.String(models.VMStatePaused)}).
+		WithTimeout(fcReqTimeout)); err != nil {
 		return nil, fmt.Errorf("firecracker pause %s: %w", vmID, err)
 	}
 
@@ -163,7 +171,9 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		if snapErr != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if rerr := machine.ResumeVM(cleanupCtx); rerr != nil {
+			if _, rerr := fc.Operations.PatchVM(operations.NewPatchVMParamsWithContext(cleanupCtx).
+				WithBody(&models.VM{State: fcsdk.String(models.VMStateResumed)}).
+				WithTimeout(fcReqTimeout)); rerr != nil {
 				slog.Error("firecracker: failed to resume after snapshot error", "vm", vmID, "error", rerr)
 			}
 		}
@@ -178,7 +188,14 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 		memFile = filepath.Join(vmDir, "vmstate.bin")
 		snapMeta = filepath.Join(vmDir, "snapshot.meta")
 	}
-	if snapErr = machine.CreateSnapshot(ctx, memFile, snapMeta); snapErr != nil {
+	// CreateSnapshot has no per-request timeout, matching the SDK high-level
+	// CreateSnapshot wrapper which uses the raw ctx (snapshotting can outlast
+	// the 500ms request budget the PatchVM wrappers apply).
+	if _, snapErr = fc.Operations.CreateSnapshot(operations.NewCreateSnapshotParamsWithContext(ctx).
+		WithBody(&models.SnapshotCreateParams{
+			MemFilePath:  fcsdk.String(memFile),
+			SnapshotPath: fcsdk.String(snapMeta),
+		})); snapErr != nil {
 		return nil, fmt.Errorf("firecracker create snapshot %s: %w", vmID, snapErr)
 	}
 
@@ -207,7 +224,9 @@ func (p *Provider) createLiveSnapshot(ctx context.Context, vmID, vmDir, snapDir 
 	}
 
 	// Resume the VM.
-	if err := machine.ResumeVM(ctx); err != nil {
+	if _, err := fc.Operations.PatchVM(operations.NewPatchVMParamsWithContext(ctx).
+		WithBody(&models.VM{State: fcsdk.String(models.VMStateResumed)}).
+		WithTimeout(fcReqTimeout)); err != nil {
 		return nil, fmt.Errorf("firecracker resume %s: %w", vmID, err)
 	}
 	snapErr = nil // Clear so defer doesn't try to resume again.
@@ -254,6 +273,13 @@ func (p *Provider) RestoreSnapshot(ctx context.Context, sandboxRef domain.Backen
 				return fmt.Errorf("firecracker restore copy %s: %w", name, err)
 			}
 		}
+
+		// F1: serialize the vminfo RMW against concurrent writers and StopSandbox.
+		fl, err := p.lockFor(vmID)
+		if err != nil {
+			return fmt.Errorf("firecracker restore vminfo %s: %w", vmID, err)
+		}
+		defer fl.mu.Unlock()
 
 		// Set restore flag in vminfo, preserving original subnet for network-correct restore.
 		infoPath := p.vmInfoPath(vmID)

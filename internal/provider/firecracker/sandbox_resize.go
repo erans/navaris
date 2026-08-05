@@ -4,14 +4,24 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
-	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
 	"github.com/navaris/navaris/internal/domain"
 )
+
+var resizeWriteCPUMax = func(p *Provider, dir string, quota, period int64) error {
+	return p.writeCPUMax(dir, quota, period)
+}
+
+var resizePatchBalloon = func(p *Provider, ctx context.Context, vmID string, amountMib int64) error {
+	return p.patchBalloon(ctx, vmID, amountMib)
+}
 
 // UpdateResources applies new CPU and/or memory limits live to a running
 // Firecracker VM. CPU is enforced via cgroup CPU bandwidth (cpu.max v2 /
@@ -31,11 +41,25 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		return nil
 	}
 
+	fl, err := p.lockFor(ref.Ref)
+	if err != nil {
+		return &domain.ProviderResizeError{
+			Reason: domain.ResizeReasonVMStopped,
+			Detail: err.Error(),
+		}
+	}
+	defer fl.mu.Unlock()
+
 	p.vmMu.RLock()
-	info, ok := p.vms[ref.Ref]
+	_, registered := p.vms[ref.Ref]
 	p.vmMu.RUnlock()
-	if !ok {
+	if !registered {
 		return fmt.Errorf("firecracker: vm %q not found: %w", ref.Ref, domain.ErrNotFound)
+	}
+
+	info, err := ReadVMInfo(p.vmInfoPath(ref.Ref))
+	if err != nil {
+		return fmt.Errorf("firecracker: read vminfo for resize %q: %w", ref.Ref, err)
 	}
 
 	// Validate first — fail fast before mutating anything.
@@ -93,7 +117,7 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 	if req.CPULimit != nil {
 		newCPU := int64(*req.CPULimit)
 		quota := newCPU * cpuPeriod
-		if err := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), quota, cpuPeriod); err != nil {
+		if err := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), quota, cpuPeriod); err != nil {
 			return &domain.ProviderResizeError{
 				Reason: domain.ResizeReasonCgroupWriteFailed,
 				Detail: err.Error(),
@@ -105,14 +129,14 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 	// Apply memory (balloon — slower, may fail mid-operation).
 	if req.MemoryLimitMB != nil {
 		balloonAmount := memCeiling - newMem
-		if err := p.patchBalloon(ctx, ref.Ref, balloonAmount); err != nil {
+		if err := resizePatchBalloon(p, ctx, ref.Ref, balloonAmount); err != nil {
 			// Best-effort revert of CPU so the operator's view of the running
 			// VM matches the SQLite state the service layer is about to roll
 			// back to. If revert fails, log and surface a multi-failure error
 			// so the operator can reconcile by hand.
 			if cpuApplied {
 				revertQuota := priorCPU * cpuPeriod
-				if revertErr := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); revertErr != nil {
+				if revertErr := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); revertErr != nil {
 					return fmt.Errorf("firecracker: patch balloon: %w; cgroup revert ALSO failed: %v (vm cpu/mem are inconsistent — operator must reconcile)", err, revertErr)
 				}
 			}
@@ -120,43 +144,41 @@ func (p *Provider) UpdateResources(ctx context.Context, ref domain.BackendRef, r
 		}
 	}
 
-	// Both branches succeeded — commit to in-memory state and disk. If the
-	// vminfo.json write fails, attempt to revert: undo in-memory updates
-	// and revert the running VM to the prior limits, so the service layer's
-	// SQLite rollback leaves the system in a consistent state.
-	p.vmMu.Lock()
 	if req.CPULimit != nil {
 		info.LimitCPU = int64(*req.CPULimit)
 	}
 	if req.MemoryLimitMB != nil {
 		info.LimitMemMib = newMem
 	}
-	p.vmMu.Unlock()
 	if err := info.Write(p.vmInfoPath(ref.Ref)); err != nil {
-		// Revert in-memory state.
-		p.vmMu.Lock()
-		if req.CPULimit != nil {
-			info.LimitCPU = priorCPU
-		}
-		if req.MemoryLimitMB != nil {
-			info.LimitMemMib = priorMem
-		}
-		p.vmMu.Unlock()
-		// Best-effort revert of the running VM. Log multi-failure if either
-		// revert step itself fails — the operator needs to reconcile.
+		// Disk and cache remain unchanged. Compensate the live changes. CPU and
+		// memory reverts are independent, so a CPU revert failure must not prevent
+		// the balloon revert attempt (and vice versa).
+		errs := []error{fmt.Errorf("firecracker: persist vminfo after resize: %w", err)}
 		if cpuApplied {
 			revertQuota := priorCPU * cpuPeriod
-			if rerr := p.writeCPUMax(p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); rerr != nil {
-				return fmt.Errorf("firecracker: persist vminfo after resize: %w; cgroup revert ALSO failed: %v", err, rerr)
+			if rerr := resizeWriteCPUMax(p, p.cgroupCPUDir(ref.Ref), revertQuota, cpuPeriod); rerr != nil {
+				errs = append(errs, fmt.Errorf("firecracker: cgroup revert after resize persist failure: %w", rerr))
 			}
 		}
 		if req.MemoryLimitMB != nil {
-			if rerr := p.patchBalloon(ctx, ref.Ref, priorBalloon); rerr != nil {
-				return fmt.Errorf("firecracker: persist vminfo after resize: %w; balloon revert ALSO failed: %v", err, rerr)
+			if rerr := resizePatchBalloon(p, ctx, ref.Ref, priorBalloon); rerr != nil {
+				errs = append(errs, fmt.Errorf("firecracker: balloon revert after resize persist failure: %w", rerr))
 			}
 		}
-		return fmt.Errorf("firecracker: persist vminfo after resize: %w", err)
+		return errors.Join(errs...)
 	}
+
+	p.vmMu.Lock()
+	if cached, ok := p.vms[ref.Ref]; ok {
+		if req.CPULimit != nil {
+			cached.LimitCPU = info.LimitCPU
+		}
+		if req.MemoryLimitMB != nil {
+			cached.LimitMemMib = info.LimitMemMib
+		}
+	}
+	p.vmMu.Unlock()
 	return nil
 }
 
@@ -178,16 +200,23 @@ func (p *Provider) patchBalloon(ctx context.Context, vmID string, amountMib int6
 	} else {
 		sockPath = p.socketPath(vmID)
 	}
-	machine, err := fcsdk.NewMachine(ctx, fcsdk.Config{SocketPath: sockPath})
+	fc, err := transientFirecrackerClient(sockPath, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("attach to vm: %w", err)
 	}
 
 	const maxAttempts = 10
 	const retryDelay = 300 * time.Millisecond
+	// fcReqTimeout matches the SDK high-level client's default per-request
+	// timeout (defaultFirecrackerRequestTimeout = 500ms), which the previous
+	// machine.UpdateBalloon wrapper applied via context.WithTimeout.
+	const fcReqTimeout = 500 * time.Millisecond
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if err := machine.UpdateBalloon(ctx, amountMib); err == nil {
+		params := operations.NewPatchBalloonParamsWithContext(ctx).
+			WithBody(&models.BalloonUpdate{AmountMib: &amountMib}).
+			WithTimeout(fcReqTimeout)
+		if _, err := fc.Operations.PatchBalloon(params); err == nil {
 			return nil
 		} else {
 			lastErr = err

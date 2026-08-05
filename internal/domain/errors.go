@@ -12,4 +12,5 @@ var (
 	ErrBusy             = errors.New("database busy")
 	ErrNotSupported     = errors.New("operation not supported")
 	ErrInvalidArgument  = errors.New("invalid argument")
+	ErrVMStopped        = errors.New("vm is stopping") // F1: returned by Provider.lockFor when the VM is mid-teardown
 )

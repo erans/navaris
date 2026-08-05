@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -261,6 +262,361 @@ func newBoostEnvWithClock(t *testing.T, clk service.Clock) *boostEnv {
 		env.events, clk, time.Hour,
 	)
 	return &boostEnv{serviceEnv: env, boost: bs}
+}
+
+type faultBoostStore struct {
+	domain.BoostStore
+	mu                                   sync.Mutex
+	upsertErr, deleteErr, updateStateErr error
+	getByIDErr                           error
+}
+
+func (s *faultBoostStore) take(errp *error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := *errp
+	if err != nil {
+		*errp = nil
+	}
+	return err
+}
+
+func (s *faultBoostStore) Upsert(ctx context.Context, b *domain.Boost) error {
+	if err := s.take(&s.upsertErr); err != nil {
+		return err
+	}
+	return s.BoostStore.Upsert(ctx, b)
+}
+
+func (s *faultBoostStore) GetByID(ctx context.Context, boostID string) (*domain.Boost, error) {
+	if err := s.take(&s.getByIDErr); err != nil {
+		return nil, err
+	}
+	return s.BoostStore.GetByID(ctx, boostID)
+}
+
+func (s *faultBoostStore) UpdateState(ctx context.Context, boostID string, state domain.BoostState, attempts int, lastErr string) error {
+	if err := s.take(&s.updateStateErr); err != nil {
+		return err
+	}
+	return s.BoostStore.UpdateState(ctx, boostID, state, attempts, lastErr)
+}
+
+func (s *faultBoostStore) Delete(ctx context.Context, boostID string) error {
+	if err := s.take(&s.deleteErr); err != nil {
+		return err
+	}
+	return s.BoostStore.Delete(ctx, boostID)
+}
+
+type faultSandboxStore struct {
+	domain.SandboxStore
+	mu     sync.Mutex
+	getErr error
+}
+
+func (s *faultSandboxStore) takeGet() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := s.getErr
+	if err != nil {
+		s.getErr = nil
+	}
+	return err
+}
+
+func (s *faultSandboxStore) Get(ctx context.Context, sandboxID string) (*domain.Sandbox, error) {
+	if err := s.takeGet(); err != nil {
+		return nil, err
+	}
+	return s.SandboxStore.Get(ctx, sandboxID)
+}
+
+func newBoostEnvWithFaults(t *testing.T, clk service.Clock) (*boostEnv, *faultBoostStore, *faultSandboxStore) {
+	t.Helper()
+	env := newServiceEnv(t)
+	boosts := &faultBoostStore{BoostStore: env.store.BoostStore()}
+	sandboxes := &faultSandboxStore{SandboxStore: env.store.SandboxStore()}
+	bs := service.NewBoostService(boosts, sandboxes, env.sandbox, env.events, clk, time.Hour)
+	env.sandbox.SetBoostService(bs)
+	return &boostEnv{serviceEnv: env, boost: bs}, boosts, sandboxes
+}
+
+func TestBoostStart_ReplacementApplyFailureRestoresPrior(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, _, _ := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-replace-apply", domain.SandboxRunning, "mock")
+	origCPU := *sbx.CPULimit
+
+	cpuA := 4
+	boostA, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpuA, DurationSeconds: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applyErr := errors.New("apply replacement failed")
+	failNextApply := true
+	revertedPrior := false
+	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, req domain.UpdateResourcesRequest) error {
+		if failNextApply {
+			failNextApply = false
+			return applyErr
+		}
+		if req.CPULimit != nil && *req.CPULimit == origCPU {
+			revertedPrior = true
+		}
+		return nil
+	}
+
+	cpuB := 8
+	_, err = env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpuB, DurationSeconds: 60,
+	})
+	if !errors.Is(err, applyErr) {
+		t.Fatalf("replacement Start error = %v; want apply error", err)
+	}
+	got, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatalf("prior boost row not restored: %v", err)
+	}
+	if got.BoostID != boostA.BoostID {
+		t.Fatalf("boost row = %s; want prior %s", got.BoostID, boostA.BoostID)
+	}
+
+	clk.fire(31 * time.Second)
+	if !revertedPrior {
+		t.Fatal("restored prior boost did not expire and revert")
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("prior boost row after expiry = %v; want ErrNotFound", err)
+	}
+}
+
+func TestBoostStart_ReplacementUpsertFailureKeepsPrior(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, boosts, _ := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-replace-upsert", domain.SandboxRunning, "mock")
+
+	cpuA := 4
+	boostA, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpuA, DurationSeconds: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upsertErr := errors.New("replacement upsert failed")
+	boosts.upsertErr = upsertErr
+	revertCalls := 0
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		revertCalls++
+		return nil
+	}
+
+	cpuB := 8
+	_, err = env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpuB, DurationSeconds: 60,
+	})
+	if !errors.Is(err, upsertErr) {
+		t.Fatalf("replacement Start error = %v; want upsert error", err)
+	}
+	got, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatalf("prior boost row missing after upsert failure: %v", err)
+	}
+	if got.BoostID != boostA.BoostID {
+		t.Fatalf("boost row = %s; want prior %s", got.BoostID, boostA.BoostID)
+	}
+
+	clk.fire(31 * time.Second)
+	if revertCalls != 1 {
+		t.Fatalf("prior expiry revert calls = %d; want 1", revertCalls)
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("prior boost row after expiry = %v; want ErrNotFound", err)
+	}
+}
+
+func TestBoostExpire_TransientSandboxLookupRearamsRetry(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, _, sandboxes := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-expire-lookup", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	lookupErr := errors.New("sandbox lookup unavailable")
+	sandboxes.getErr = lookupErr
+	revertCalls := 0
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		revertCalls++
+		return nil
+	}
+
+	clk.fire(11 * time.Second)
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatalf("boost row not preserved after transient lookup: %v", err)
+	}
+	clk.fire(time.Second)
+	if revertCalls != 1 {
+		t.Fatalf("retry revert calls = %d; want 1", revertCalls)
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row after retry = %v; want ErrNotFound", err)
+	}
+}
+
+func TestBoostExpire_DeleteFailureRearamsCleanup(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, boosts, _ := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-expire-delete", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	boosts.deleteErr = errors.New("delete failed")
+	clk.fire(11 * time.Second)
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatalf("boost row not preserved after delete failure: %v", err)
+	}
+	clk.fire(time.Second)
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row after cleanup retry = %v; want ErrNotFound", err)
+	}
+}
+
+func TestBoostExpire_UpdateStateFailureRearamsRetry(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, boosts, _ := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-expire-state", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	boost, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.BoostStore().UpdateState(t.Context(), boost.BoostID, domain.BoostActive, 5, "prior failures"); err != nil {
+		t.Fatal(err)
+	}
+
+	applyErr := errors.New("provider revert failed")
+	stateErr := errors.New("state update failed")
+	boosts.updateStateErr = stateErr
+	revertCalls := 0
+	env.mock.UpdateResourcesFn = func(context.Context, domain.BackendRef, domain.UpdateResourcesRequest) error {
+		revertCalls++
+		return applyErr
+	}
+
+	clk.fire(11 * time.Second)
+	got, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatalf("boost row not preserved after state update failure: %v", err)
+	}
+	if got.State != domain.BoostActive {
+		t.Fatalf("state after failed UpdateState = %s; want active", got.State)
+	}
+	clk.fire(time.Second)
+	if revertCalls != 2 {
+		t.Fatalf("retry revert calls = %d; want 2", revertCalls)
+	}
+	got, err = env.store.BoostStore().Get(t.Context(), sbx.SandboxID)
+	if err != nil {
+		t.Fatalf("boost row after retry missing: %v", err)
+	}
+	if got.State != domain.BoostRevertFailed {
+		t.Fatalf("state after retry = %s; want revert_failed", got.State)
+	}
+}
+
+func TestBoostCancel_TransientLookupPreservesExpiry(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, _, sandboxes := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-cancel-lookup", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	lookupErr := errors.New("sandbox lookup unavailable")
+	sandboxes.getErr = lookupErr
+	if err := env.boost.Cancel(t.Context(), sbx.SandboxID); !errors.Is(err, lookupErr) {
+		t.Fatalf("Cancel error = %v; want lookup error", err)
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatalf("boost row not preserved after cancel lookup failure: %v", err)
+	}
+	clk.fire(11 * time.Second)
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row after restored expiry = %v; want ErrNotFound", err)
+	}
+}
+
+func TestBoostCancel_DeleteFailureReturnsAndRearams(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, boosts, _ := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-cancel-delete", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteErr := errors.New("delete failed")
+	boosts.deleteErr = deleteErr
+	if err := env.boost.Cancel(t.Context(), sbx.SandboxID); !errors.Is(err, deleteErr) {
+		t.Fatalf("Cancel error = %v; want delete error", err)
+	}
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatalf("boost row not preserved after cancel delete failure: %v", err)
+	}
+	clk.fire(time.Second)
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row after cancel cleanup retry = %v; want ErrNotFound", err)
+	}
+}
+
+func TestBoostLifecycle_DeleteFailureLeavesTimerArmed(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env, boosts, _ := newBoostEnvWithFaults(t, clk)
+	sbx := env.seedSandbox(t, "sbx-lifecycle-delete", domain.SandboxRunning, "mock")
+
+	cpu := 8
+	if _, err := env.boost.Start(t.Context(), service.StartBoostOpts{
+		SandboxID: sbx.SandboxID, CPULimit: &cpu, DurationSeconds: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	boosts.deleteErr = errors.New("delete failed")
+	if _, err := env.sandbox.Stop(t.Context(), sbx.SandboxID, false); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	env.dispatcher.WaitIdle()
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); err != nil {
+		t.Fatalf("boost row not preserved after lifecycle delete failure: %v", err)
+	}
+	clk.fire(11 * time.Second)
+	if _, err := env.store.BoostStore().Get(t.Context(), sbx.SandboxID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("boost row after lifecycle timer fired = %v; want ErrNotFound", err)
+	}
 }
 
 func TestBoostExpire_RevertsToCurrentPersisted(t *testing.T) {

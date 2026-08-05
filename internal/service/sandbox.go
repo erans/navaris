@@ -439,6 +439,16 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 		attribute.String("sandbox.id", id),
 	)
 
+	var releaseBoost func()
+	if s.boostSvc != nil {
+		releaseBoost = s.boostSvc.acquireSandbox(id)
+		defer func() {
+			if releaseBoost != nil {
+				releaseBoost()
+			}
+		}()
+	}
+
 	sbx, err := s.sandboxes.Get(ctx, id)
 	if err != nil {
 		span.RecordError(err)
@@ -451,10 +461,6 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
-	}
-
-	if s.boostSvc != nil {
-		s.boostSvc.cancelOnLifecycle(ctx, id)
 	}
 
 	// Transition to stopping before enqueue to prevent duplicate operations
@@ -486,6 +492,11 @@ func (s *SandboxService) Stop(ctx context.Context, id string, force bool) (*doma
 		s.sandboxes.Update(ctx, sbx)
 		return nil, err
 	}
+	if s.boostSvc != nil {
+		s.boostSvc.cancelOnLifecycleLocked(ctx, id)
+		releaseBoost()
+		releaseBoost = nil
+	}
 	s.workers.Enqueue(op)
 	return op, nil
 }
@@ -498,6 +509,16 @@ func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operat
 		attribute.String("provider.backend", s.defaultBackend),
 		attribute.String("sandbox.id", id),
 	)
+
+	var releaseBoost func()
+	if s.boostSvc != nil {
+		releaseBoost = s.boostSvc.acquireSandbox(id)
+		defer func() {
+			if releaseBoost != nil {
+				releaseBoost()
+			}
+		}()
+	}
 
 	sbx, err := s.sandboxes.Get(ctx, id)
 	if err != nil {
@@ -512,8 +533,17 @@ func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operat
 		return nil, err
 	}
 
-	if s.boostSvc != nil {
-		s.boostSvc.cancelOnLifecycle(ctx, id)
+	prevState := sbx.State
+	transitioned := false
+	if s.boostSvc != nil && sbx.State == domain.SandboxRunning {
+		sbx.State = domain.SandboxStopping
+		sbx.UpdatedAt = time.Now().UTC()
+		if err := s.sandboxes.Update(ctx, sbx); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, err
+		}
+		transitioned = true
 	}
 
 	now := time.Now().UTC()
@@ -529,7 +559,17 @@ func (s *SandboxService) Destroy(ctx context.Context, id string) (*domain.Operat
 	if err := s.ops.Create(ctx, op); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
+		if transitioned {
+			sbx.State = prevState
+			sbx.UpdatedAt = time.Now().UTC()
+			s.sandboxes.Update(ctx, sbx)
+		}
 		return nil, err
+	}
+	if s.boostSvc != nil {
+		s.boostSvc.cancelOnLifecycleLocked(ctx, id)
+		releaseBoost()
+		releaseBoost = nil
 	}
 	s.workers.Enqueue(op)
 	return op, nil
@@ -788,6 +828,12 @@ func (s *SandboxService) handleDestroy(ctx context.Context, op *domain.Operation
 	}
 
 	if err := s.provider.DestroySandbox(ctx, ref); err != nil {
+		if sbx.State == domain.SandboxStopping {
+			sbx.State = domain.SandboxFailed
+			sbx.UpdatedAt = time.Now().UTC()
+			s.sandboxes.Update(ctx, sbx)
+			s.publishStateChange(ctx, sbx)
+		}
 		return err
 	}
 
