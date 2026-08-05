@@ -208,6 +208,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/navaris/navaris/internal/domain"
 )
@@ -282,6 +283,36 @@ func TestLockFor_SerializesConcurrentWriters(t *testing.T) {
 	wg.Wait()
 	if maxInFlight != 1 {
 		t.Errorf("max in-flight writers = %d; want 1 (must be serialized)", maxInFlight)
+	}
+}
+
+// TestLockFor_FailFastWhileStopHoldsLock verifies the fast path: a late
+// writer must fail with ErrVMStopped WITHOUT blocking on fl.mu while
+// StopSandbox holds it. (With a naive "acquire fl.mu then check stopped"
+// design, this test would block for the full hold time and time out.)
+func TestLockFor_FailFastWhileStopHoldsLock(t *testing.T) {
+	p := &Provider{vms: map[string]*VMInfo{}, fileMu: map[string]*vmFileLock{}}
+	p.vmMu.Lock()
+	fl := &vmFileLock{stopped: true}
+	p.fileMu["vm-4"] = fl
+	p.vmMu.Unlock()
+
+	// Simulate StopSandbox holding fl.mu through a long teardown.
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.lockFor("vm-4")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, domain.ErrVMStopped) {
+			t.Fatalf("err = %v; want ErrVMStopped", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lockFor blocked on fl.mu while stopped; fail-fast broken")
 	}
 }
 ```
@@ -359,9 +390,19 @@ func (p *Provider) lockFor(vmID string) (*vmFileLock, error) {
 		fl = &vmFileLock{}
 		p.fileMu[vmID] = fl
 	}
+	// Fast path: check stopped under vmMu so a late writer fails immediately
+	// WITHOUT acquiring fl.mu — which StopSandbox holds for its entire
+	// teardown (up to 30s). Acquiring fl.mu first would block, defeating
+	// fail-fast.
+	if fl.stopped {
+		p.vmMu.Unlock()
+		return nil, fmt.Errorf("firecracker: vm %s is stopping: %w", vmID, domain.ErrVMStopped)
+	}
 	p.vmMu.Unlock()
 
 	fl.mu.Lock()
+	// Re-check after acquiring: StopSandbox may have flipped stopped between
+	// the vmMu.Unlock above and this Lock. If so, bail.
 	if fl.stopped {
 		fl.mu.Unlock()
 		return nil, fmt.Errorf("firecracker: vm %s is stopping: %w", vmID, domain.ErrVMStopped)
@@ -407,43 +448,76 @@ Create `internal/provider/firecracker/port_race_test.go`:
 package firecracker
 
 import (
+	"context"
+	"os"
 	"sync"
 	"testing"
+
+	"github.com/navaris/navaris/internal/domain"
+	"github.com/navaris/navaris/internal/provider/firecracker/network"
 )
 
-// TestPublishPort_Concurrent_NoLostUpdate launches N concurrent PublishPort
-// calls against a single VM and asserts no port mapping is lost: after all
-// calls complete, info.Ports must contain exactly N entries and portAlloc
-// must have exactly N used entries (no orphans, no duplicates).
-//
-// This test uses a real temp vminfo.json file and a stubbed iptables path
-// (the test stubs network.AddDNAT / RemoveDNAT via package-level vars if
-// available; otherwise it constructs a Provider that skips the network
-// step — see sandbox_resize_test.go for the &Provider{...} pattern).
+// TestPublishPort_Concurrent_NoLostUpdate: N concurrent PublishPort calls
+// on one VM must produce exactly N distinct port mappings in vminfo.json.
+// Without lockFor, the unlocked read-modify-write loses updates (last
+// writer wins, so entries vanish). The iptables path is stubbed via the
+// package-level addDNATFn/removeDNATFn vars (introduced in Step 3) so the
+// test needs no iptables or root.
 func TestPublishPort_Concurrent_NoLostUpdate(t *testing.T) {
-	// TODO implement: requires a Provider with a real vminfo.json on disk
-	// for a "vm-race" entry, a portAlloc, and stubbed network.AddDNAT.
-	// If network.AddDNAT is not stubbable without a larger refactor, write
-	// a lower-level test that calls a hypothetical helper
-	// applyPortMapping(info, hostPort, targetPort) under lockFor and asserts
-	// the map contents. If that helper does not exist, extract one in this
-	// task and test it directly.
-	t.Skip("skeleton — implement in Step 1b after assessing stubbability")
+	addDNATFn = func(int, string, int) error { return nil }
+	removeDNATFn = func(int, string, int) {}
+	defer func() {
+		addDNATFn = network.AddDNAT
+		removeDNATFn = network.RemoveDNAT
+	}()
+
+	dir := t.TempDir()
+	p := &Provider{
+		config:    Config{ChrootBase: dir, EnableJailer: false},
+		subnets:   network.NewAllocator(),
+		portAlloc: network.NewPortAllocator(),
+		vms:       map[string]*VMInfo{},
+		fileMu:    map[string]*vmFileLock{},
+	}
+	seed := &VMInfo{ID: "vm-race", PID: os.Getpid(), TapDevice: "fc-race", SubnetIdx: 0, Ports: map[int]int{}}
+	if err := os.MkdirAll(p.vmDir("vm-race"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Write(p.vmInfoPath("vm-race")); err != nil {
+		t.Fatal(err)
+	}
+	p.vmMu.Lock()
+	p.vms["vm-race"] = seed
+	p.fileMu["vm-race"] = &vmFileLock{}
+	p.vmMu.Unlock()
+
+	const N = 25
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			if _, err := p.PublishPort(context.Background(),
+				domain.BackendRef{Backend: "firecracker", Ref: "vm-race"},
+				4000+i, domain.PublishPortOptions{}); err != nil {
+				t.Errorf("PublishPort %d: %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	info, err := ReadVMInfo(p.vmInfoPath("vm-race"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Ports) != N {
+		t.Fatalf("info.Ports has %d entries; want %d (lost-update race)", len(info.Ports), N)
+	}
 }
 ```
 
-Then run `sed -n '1,60p' internal/provider/firecracker/network/*.go` and `grep -rn "func AddDNAT\|func RemoveDNAT" internal/provider/firecracker/network/` to assess whether the network calls are stubbable. **If they are not cleanly stubbable**, replace the test body with a direct test of the RMW helper:
-
-```go
-// Lower-level alternative: test the read-modify-write in isolation by
-// calling PublishPort against a Provider whose config steers the network
-// step into a no-op, OR by extracting the vminfo RMW into a helper
-// `applyPortToInfo(infoPath, hostPort, targetPort) error` that takes the
-// file lock and is testable directly. Prefer the helper extraction: it
-// makes the lock boundary explicit and is testable without network stubs.
-```
-
-Decide on the approach (stub network vs. extract helper) and implement the test. If extracting a helper, name it `applyPortToInfo(vmID, hostPort, targetPort) error` and have `PublishPort` call it under `lockFor`.
+This test references `addDNATFn`/`removeDNATFn` (package-level vars introduced in Step 3) and `p.fileMu`/`vmFileLock` (from Task 3), so it will not compile until those exist — that is the expected RED state.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -451,6 +525,19 @@ Run: `go test -tags firecracker -race ./internal/provider/firecracker/ -run Test
 Expected: FAIL (either `t.Skip` removed and the assertion fails, or the helper doesn't exist).
 
 - [ ] **Step 3: Convert `PublishPort` to use `lockFor`**
+
+First, introduce package-level function variables in `port.go` (top of file, after imports) so the iptables path is stubbable in tests:
+
+```go
+// addDNATFn/removeDNATFn wrap network.AddDNAT/RemoveDNAT so tests can stub
+// the iptables path. Default to the real functions.
+var (
+	addDNATFn    = network.AddDNAT
+	removeDNATFn = network.RemoveDNAT
+)
+```
+
+Then replace every `network.AddDNAT(...)` / `network.RemoveDNAT(...)` call in `port.go` with `addDNATFn(...)` / `removeDNATFn(...)`. The real `PublishPort`/`UnpublishPort` now wrap their read-modify-write in `lockFor`:
 
 In `internal/provider/firecracker/port.go`, wrap the RMW. Current code (lines 27-53):
 
@@ -549,28 +636,97 @@ git commit -m "fix(firecracker): serialize PublishPort/UnpublishPort vminfo RMW 
 Add to `internal/provider/firecracker/port_race_test.go`:
 
 ```go
-// TestPublishPort_DuringStop_FailsFast starts a StopSandbox (which holds
-// the per-VM lock through its 30s graceful window) and then a concurrent
-// PublishPort on the same VM; the PublishPort must fail fast with
-// ErrVMStopped rather than block or succeed.
-func TestPublishPort_DuringStop_FailsFast(t *testing.T) {
-	// Construct a Provider with a "vm-stop" entry whose PID is this test
-	// process (so processAlive returns true and Stop enters the graceful
-	// loop). Pre-seed vminfo.json. Start StopSandbox in a goroutine; block
-	// until the sentinel is observed flipped (poll p.fileMu["vm-stop"].stopped
-	// under vmMu). Then call PublishPort and assert errors.Is(err, ErrVMStopped).
-	// Cancel the Stop's ctx so it exits promptly.
-	//
-	// NOTE: StopSandbox calls processAlive(info.PID) and may send signals
-	// to info.PID. Use os.Getpid() and a context with cancel so the test
-	// does not actually kill the test process. Stop's force=false path
-	// sends CtrlAltDel via the API socket (which won't exist — the error
-	// is swallowed) and then waits up to 30s; cancel the ctx to abort.
-	t.Skip("skeleton — implement; ensure Stop's signal path is safe for self-PID")
+// TestPublishPort_AfterStopSentinel_FailsFast: once StopSandbox has flipped
+// the stopped sentinel, a subsequent PublishPort on that VM must fail fast
+// with ErrVMStopped (not block, not succeed). The sentinel is set directly
+// here to simulate the instant StopSandbox begins; this deterministically
+// tests that PublishPort consults lockFor's fast path. No real StopSandbox
+// is invoked, so there is no signal/graceful-wait risk.
+func TestPublishPort_AfterStopSentinel_FailsFast(t *testing.T) {
+	addDNATFn = func(int, string, int) error { return nil }
+	defer func() { addDNATFn = network.AddDNAT }()
+
+	dir := t.TempDir()
+	p := &Provider{
+		config:    Config{ChrootBase: dir, EnableJailer: false},
+		subnets:   network.NewAllocator(),
+		portAlloc: network.NewPortAllocator(),
+		vms:       map[string]*VMInfo{},
+		fileMu:    map[string]*vmFileLock{},
+	}
+	seed := &VMInfo{ID: "vm-s", PID: os.Getpid(), TapDevice: "fc-s", SubnetIdx: 0, Ports: map[int]int{}}
+	if err := os.MkdirAll(p.vmDir("vm-s"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Write(p.vmInfoPath("vm-s")); err != nil {
+		t.Fatal(err)
+	}
+	p.vmMu.Lock()
+	p.vms["vm-s"] = seed
+	// Simulate StopSandbox having just flipped the sentinel.
+	p.fileMu["vm-s"] = &vmFileLock{stopped: true}
+	p.vmMu.Unlock()
+
+	_, err := p.PublishPort(context.Background(),
+		domain.BackendRef{Backend: "firecracker", Ref: "vm-s"},
+		41000, domain.PublishPortOptions{})
+	if !errors.Is(err, domain.ErrVMStopped) {
+		t.Fatalf("PublishPort err = %v; want ErrVMStopped", err)
+	}
+}
+
+// TestStopSandbox_CleansUpFileMuEntry: with a dead VM (PID=0 so the graceful
+// block is skipped; no TapDevice/Ports so network+port cleanup is skipped),
+// StopSandbox must delete the p.vms and p.fileMu entries for the VM. No
+// signals are sent (PID is not > 0), so the test is safe.
+func TestStopSandbox_CleansUpFileMuEntry(t *testing.T) {
+	dir := t.TempDir()
+	p := &Provider{
+		config: Config{ChrootBase: dir, EnableJailer: false},
+		vms:    map[string]*VMInfo{},
+		fileMu: map[string]*vmFileLock{},
+	}
+	seed := &VMInfo{ID: "vm-d", PID: 0, SubnetIdx: 0, Ports: map[int]int{}}
+	if err := os.MkdirAll(p.vmDir("vm-d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Write(p.vmInfoPath("vm-d")); err != nil {
+		t.Fatal(err)
+	}
+	p.vmMu.Lock()
+	p.vms["vm-d"] = seed
+	p.fileMu["vm-d"] = &vmFileLock{}
+	p.vmMu.Unlock()
+
+	if err := p.StopSandbox(context.Background(),
+		domain.BackendRef{Backend: "firecracker", Ref: "vm-d"}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	p.vmMu.Lock()
+	_, vmsHas := p.vms["vm-d"]
+	_, fmHas := p.fileMu["vm-d"]
+	p.vmMu.Unlock()
+	if vmsHas {
+		t.Error("p.vms[vm-d] not deleted by StopSandbox")
+	}
+	if fmHas {
+		t.Error("p.fileMu[vm-d] not deleted by StopSandbox")
+	}
+
+	got, err := ReadVMInfo(p.vmInfoPath("vm-d"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PID != 0 {
+		t.Errorf("vminfo PID = %d; want 0 (ClearRuntime)", got.PID)
+	}
 }
 ```
 
-Implement, taking care that `StopSandbox` is called with a cancellable context and that the test does not actually shut down its own process. If the signal path makes this unsafe, refactor: extract the `Stopping=true` write + sentinel flip into a `beginStop(vmID) (*vmFileLock, error)` helper that StopSandbox calls first, and test `beginStop` directly without invoking the full teardown.
+Add `"errors"` to the import block of `port_race_test.go` if not already present.
+
+These tests reference `p.fileMu`/`vmFileLock` (Task 3) and the `stopped` sentinel + `fileMu` deletion (Step 3). The fail-fast test fails (PublishPort does not yet consult lockFor) until Step 3 lands; the lifecycle test fails (`p.fileMu[vm-d]` still present) until Step 3 deletes the entry.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1193,53 +1349,102 @@ import (
 	"github.com/navaris/navaris/internal/service"
 )
 
-// TestBoostStartVsExpire_NoSilentRevert starts boost A with a short duration,
-// then concurrently starts boost B. Without the F7 fix, expire(A) and
-// Start(B) interleave their UpdateResources calls and the VM ends up at the
-// pre-boost (original) limits even though boost B is recorded as active.
-// With the fix, B's limits are what's applied last.
-func TestBoostStartVsExpire_NoSilentRevert(t *testing.T) {
-	env := newBoostEnv(t)
-	sbx := env.seedSandbox(t, "sbx-race", domain.SandboxRunning, "mock")
+// TestBoostStartVsExpire_SerializeApply verifies the F7 fix: Start(B) and
+// expire(A) for the same sandbox must serialize their UpdateResources apply
+// calls via the per-sandbox lock. Without the fix, both applies run
+// concurrently (no shared lock), so the test observes Start(B)'s apply while
+// expire(A) is still mid-apply. With the fix, Start(B) blocks on sbxMu until
+// expire(A) releases it, so Start(B)'s apply cannot overlap expire(A)'s.
+//
+// Mechanism: UpdateResourcesFn signals applyCh (cpu value) then blocks on
+// releaseCh, letting the test hold each apply open. The test starts A, fires
+// expire(A) (held open), then starts B and asserts B does NOT apply while
+// expire(A) is held. It then releases expire(A) and asserts B applies next.
+func TestBoostStartVsExpire_SerializeApply(t *testing.T) {
+	clk := newFakeClock(time.Now().UTC())
+	env := newBoostEnvWithClock(t, clk)
+	sbx := env.seedSandbox(t, "sbx-ser", domain.SandboxRunning, "mock")
 
-	// Record every UpdateResources call's CPULimit and block to widen the
-	// race window. Use a channel to serialize applies and observe order.
-	var (
-		applies []int
-		appliesMu sync.Mutex
-		applyCh = make(chan int)
-	)
+	applyCh := make(chan int)       // signals an apply started (cpu value)
+	releaseCh := make(chan struct{}) // test gates each apply's return
+	var mu sync.Mutex
+	var order []int
 	env.mock.UpdateResourcesFn = func(_ context.Context, _ domain.BackendRef, req domain.UpdateResourcesRequest) error {
-		cpu := 0
-		if req.CPULimit != nil { cpu = *req.CPULimit }
-		appliesMu.Lock()
-		applies = append(applies, cpu)
-		appliesMu.Unlock()
-		applyCh <- cpu // block until the test drains
+		cpu := -1
+		if req.CPULimit != nil {
+			cpu = *req.CPULimit
+		}
+		mu.Lock()
+		order = append(order, cpu)
+		mu.Unlock()
+		applyCh <- cpu
+		<-releaseCh
 		return nil
 	}
 
-	// Start boost A (cpu=2, duration=50ms so it expires quickly).
 	cpuA := 2
 	if _, err := env.boost.Start(context.Background(), service.StartBoostOpts{
-		SandboxID: sbx.SandboxID, CPULimit: &cpuA, DurationSeconds: 1,
+		SandboxID: sbx.SandboxID, CPULimit: &cpuA, DurationSeconds: 60,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	<-applyCh // Start(A) apply started (cpu=2); let it finish.
+	releaseCh <- struct{}{}
 
-	// Fire the expiry timer for A (fakeClock fire) and concurrently start B.
-	// Drain applyCh so applies proceed. After both, assert the LAST apply
-	// was B's cpu (4), not A's original (the pre-boost value).
-	//
-	// (Implement: spawn a goroutine that calls clk.fire(2*time.Second) to
-	// trigger expire(A); spawn another that calls Start(B, cpu=4). Drain
-	// applyCh in the main goroutine. After both complete, assert the
-	// last entry in `applies` is 4.)
-	t.Skip("implement per the comment — the fakeClock + applyCh orchestration")
+	// Launch expire(A) in a goroutine (fire the timer). Its revert apply starts
+	// and blocks on releaseCh, holding the per-sandbox lock (with the fix).
+	go clk.fire(61 * time.Second)
+	<-applyCh // expire(A) revert started; it now holds the per-sandbox lock.
+
+	// Launch Start(B) in a goroutine. With the fix, Start(B) blocks on the
+	// per-sandbox lock (expire holds it), so its apply does NOT start.
+	// Without the fix, Start(B) applies concurrently and sends on applyCh.
+	done := make(chan error, 1)
+	go func() {
+		cpuB := 4
+		_, err := env.boost.Start(context.Background(), service.StartBoostOpts{
+			SandboxID: sbx.SandboxID, CPULimit: &cpuB, DurationSeconds: 60,
+		})
+		done <- err
+	}()
+	select {
+	case <-applyCh:
+		t.Fatal("Start(B) applied concurrently with expire(A); per-sandbox lock did not serialize (F7 not fixed)")
+	case <-time.After(100 * time.Millisecond):
+		// Good: Start(B) is blocked on the per-sandbox lock.
+	}
+
+	// Release expire(A); it finishes and releases the per-sandbox lock.
+	// Start(B) then acquires the lock and applies cpu=4.
+	releaseCh <- struct{}{}
+	select {
+	case cpu := <-applyCh:
+		if cpu != 4 {
+			t.Fatalf("after expire release, apply cpu = %d; want 4 (B)", cpu)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start(B) did not apply after expire released")
+	}
+	releaseCh <- struct{}{} // let Start(B) finish
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start(B): %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start(B) did not complete")
+	}
+
+	mu.Lock()
+	last := order[len(order)-1]
+	mu.Unlock()
+	if last != 4 {
+		t.Fatalf("last apply = %d; want 4 (B's limit)", last)
+	}
 }
 ```
 
-Implement the orchestration. The key assertion: `applies[len(applies)-1] == 4` (B's limit), not the original (the pre-boost value). Before the fix, the test fails because `expire(A)`'s revert apply happens *after* `Start(B)`'s apply.
+Before the fix, the first `select` receives from `applyCh` (Start(B) applied concurrently) and the test fails. With the fix, Start(B) blocks on the per-sandbox lock, the first `select` times out, and after releasing expire(A), B's apply (cpu=4) is the last one.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1455,7 +1660,7 @@ If Step 4 surfaced missed sites, commit them. Otherwise this step is a no-op.
 - Worktree + feature branch: Global Constraints. ✅
 - Testing gate (`go test -race`): Task 11 Step 2. ✅
 
-**2. Placeholder scan:** No `TBD`/`TODO` left as plan instructions; the two `t.Skip("skeleton ...")` markers are explicit decision points with concrete guidance (not placeholders — the implementer is told to either implement the sketched test or use the named alternative). The Task 4 `TODO implement` inside the code comment is paired with a concrete decision procedure ("decide on the approach ... and implement"). Acceptable.
+**2. Placeholder scan:** No `TBD`/`TODO`/`t.Skip("skeleton...")` placeholders remain — the three test steps that were scaffolds during drafting (Tasks 4, 5, 10) were hardened with concrete, deterministic test code during pre-flight. The `lockFor` design was also corrected during pre-flight to check `stopped` under `vmMu` *before* acquiring `fl.mu` (so fail-fast works without blocking while StopSandbox holds `fl.mu` through its 30s teardown); Task 3 gained `TestLockFor_FailFastWhileStopHoldsLock` to pin that behavior.
 
 **3. Type consistency:**
 - `vmFileLock{mu sync.Mutex, stopped bool}` — consistent across Task 3 (def), Task 4 (usage), Task 5 (usage). ✅
