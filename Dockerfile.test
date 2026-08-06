@@ -1,3 +1,9 @@
+# Supply-chain: Go image pinned to 1.26.5-bookworm (matches go.mod).
+# To enforce digest pin (recommended), resolve via:
+#   docker buildx imagetools inspect golang:1.26.5-bookworm --format '{{json .Manifest}}' | jq -r .digest
+# Then append @sha256:<digest> to each FROM golang line (e.g. ...-bookworm@sha256:...).
+# Placeholder digest (replace before enforcing):
+ARG GOLANG_IMAGE_DIGEST=sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599
 FROM golang:1.26.5-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./

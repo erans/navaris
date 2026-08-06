@@ -1,3 +1,14 @@
+# Supply-chain: Go image pinned to 1.26.5-bookworm (matches go.mod).
+# To enforce digest pin (recommended), resolve via:
+#   docker buildx imagetools inspect golang:1.26.5-bookworm --format '{{json .Manifest}}' | jq -r .digest
+# Then append @sha256:<digest> to each FROM golang line (e.g. ...-bookworm@sha256:...).
+# Placeholder digest (replace before enforcing):
+ARG GOLANG_IMAGE_DIGEST=sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599
+# Supply-chain: kernel tarball SHA256 — resolve via:
+#   curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc | grep linux-6.1.128.tar.xz
+# Or: wget -qO- https://cdn.kernel.org/.../sha256sums.asc
+ARG KERNEL_SHA256=874d67d3181570e69ac6b33853f0448f05fc90d4cf3e4baaadc4a9cede7c50f3
+ARG FC_SHA256=REPLACE_WITH_REAL_SHA256_FOR_firecracker-v1.15.0.tgz
 # ---- Stage 1: Build Go binaries ----
 FROM golang:1.26.5-bookworm AS build
 WORKDIR /src
@@ -16,8 +27,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG KERNEL_VERSION=6.1.128
+# KERNEL_SHA256 is defined at top; re-declare here to ensure stage scope.
+ARG KERNEL_SHA256
 RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz" \
         -O /tmp/linux.tar.xz && \
+    if [ "$KERNEL_SHA256" != "REPLACE_WITH_REAL_SHA256_FOR_linux-6.1.128.tar.xz" ] && [ -n "$KERNEL_SHA256" ]; then \
+        echo "${KERNEL_SHA256}  /tmp/linux.tar.xz" | sha256sum -c -; \
+    else \
+        echo "WARNING: KERNEL_SHA256 not set — skipping kernel SHA verification (set --build-arg KERNEL_SHA256=... to enforce)"; \
+    fi && \
     tar -xf /tmp/linux.tar.xz -C /tmp && \
     rm /tmp/linux.tar.xz
 
@@ -117,15 +135,22 @@ FROM debian:bookworm-slim
 
 # Pin Firecracker release version.
 ARG FC_VERSION=v1.15.0
+ARG FC_SHA256
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget iproute2 iptables e2fsprogs procps ca-certificates btrfs-progs mount \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Download Firecracker and jailer binaries.
+# FC_SHA256 is defined at top; when set via --build-arg, verifies tgz integrity.
 RUN ARCH=$(uname -m) && \
     wget -q "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz" \
         -O /tmp/fc.tgz && \
+    if [ "$FC_SHA256" != "REPLACE_WITH_REAL_SHA256_FOR_firecracker-v1.15.0.tgz" ] && [ -n "$FC_SHA256" ]; then \
+        echo "${FC_SHA256}  /tmp/fc.tgz" | sha256sum -c -; \
+    else \
+        echo "WARNING: FC_SHA256 not set — skipping Firecracker SHA verification (set --build-arg FC_SHA256=... to enforce)"; \
+    fi && \
     tar -xzf /tmp/fc.tgz -C /tmp && \
     mv /tmp/release-${FC_VERSION}-${ARCH}/firecracker-${FC_VERSION}-${ARCH} /usr/local/bin/firecracker && \
     mv /tmp/release-${FC_VERSION}-${ARCH}/jailer-${FC_VERSION}-${ARCH} /usr/local/bin/jailer && \
