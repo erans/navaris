@@ -1,7 +1,7 @@
 {
   "name": "navaris-cli",
   "description": "Teach Claude Code how to drive the navaris CLI: create sandboxes, exec commands, attach sessions, manage snapshots and images",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Eran Sandler",
     "email": "eran@sandler.co.il"
