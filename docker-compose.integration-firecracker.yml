@@ -3,6 +3,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.navarisd-firecracker
+    # SECURITY: privileged grants all capabilities and disables seccomp/AppArmor.
+    # Least-priv alternative (documented; keep privileged for now for compatibility):
+    #   cap_add:
+    #     - NET_ADMIN  # TAP device + iptables for Firecracker/Incus networking
+    #     - SYS_ADMIN  # mount, btrfs loop, namespace setup
+    #     - MKNOD      # loop device creation for btrfs CoW tests
+    #   security_opt:
+    #     - no-new-privileges:true
+    #   # For Incus also needs: cgroup: host (already set) + devices or cgroup permissions.
+    #   # For Firecracker also needs: devices: [/dev/kvm] (already set) + /dev/net/tun if used.
+    # To harden: replace privileged with the above caps when host supports it,
+    # and test with: docker compose --profile ... up --force-recreate
     privileged: true
     devices:
       - /dev/kvm:/dev/kvm

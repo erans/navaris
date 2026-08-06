@@ -1,3 +1,6 @@
+# Least-priv note: navarisd in this file extends the base service.
+# If base replaces privileged with cap_add [NET_ADMIN,SYS_ADMIN] + security_opt [no-new-privileges:true],
+# this file inherits it automatically. No privileged set here — ensure base is hardened.
 services:
   navarisd:
     command:
