@@ -8,9 +8,8 @@ import (
 // rateLimiter is a per-key token bucket with refill-on-consume semantics.
 // Used by the /ui/login endpoint to throttle brute-force attempts.
 //
-// buckets is never evicted. This is acceptable because the login endpoint
-// is the only consumer and client-IP cardinality is low; no background
-// cleanup goroutine is warranted.
+// buckets are evicted by gc once idle past the TTL chosen by Handlers.GC;
+// navarisd sweeps on a 5-minute ticker.
 type rateLimiter struct {
 	capacity float64
 	refill   float64 // tokens per refillInterval
@@ -83,5 +82,18 @@ func (r *rateLimiter) refund(key string) {
 	b.tokens++
 	if b.tokens > r.capacity {
 		b.tokens = r.capacity
+	}
+}
+
+// gc evicts buckets idle longer than idleTTL. Called periodically by the
+// daemon (via Handlers.GC); not safe-made assumptions — takes the lock.
+func (r *rateLimiter) gc(idleTTL time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cutoff := r.now().Add(-idleTTL)
+	for k, b := range r.buckets {
+		if b.last.Before(cutoff) {
+			delete(r.buckets, k)
+		}
 	}
 }

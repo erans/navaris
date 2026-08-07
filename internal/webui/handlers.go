@@ -58,6 +58,10 @@ func NewHandlers(cfg Config) *Handlers {
 // Signer exposes the cookie signer so middleware can verify cookies.
 func (h *Handlers) Signer() *Signer { return h.signer }
 
+// GC evicts login rate-limit buckets idle for more than one hour.
+// Safe to call periodically from the daemon's housekeeping loop.
+func (h *Handlers) GC() { h.rl.gc(time.Hour) }
+
 type loginBody struct {
 	Password string `json:"password"`
 }
