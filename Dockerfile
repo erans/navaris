@@ -62,7 +62,7 @@ RUN apt-get update && \
     echo "deb [signed-by=/etc/apt/keyrings/zabbly.gpg] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo ${VERSION_CODENAME}) main" \
         > /etc/apt/sources.list.d/zabbly-incus.list && \
     apt-get update && \
-    apt-get install -y --no-install-recommends incus=6.23* && \
+    apt-get install -y --no-install-recommends incus=1:7.3-* && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Firecracker runtime dependencies.
