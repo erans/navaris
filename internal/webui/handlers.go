@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -15,13 +14,14 @@ const CookieName = "navaris_ui_session"
 // Config parameterises the UI handlers. Construct it once in main and pass
 // to NewHandlers. All durations with zero values fall back to defaults.
 type Config struct {
-	Password     string
-	SessionKey   []byte
-	SessionTTL   time.Duration
-	LoginDelay   time.Duration
-	RateCapacity float64
-	RateRefill   float64
-	RateInterval time.Duration
+	Password       string
+	SessionKey     []byte
+	SessionTTL     time.Duration
+	LoginDelay     time.Duration
+	RateCapacity   float64
+	RateRefill     float64
+	RateInterval   time.Duration
+	TrustedProxies []*net.IPNet
 }
 
 // Handlers holds the UI endpoints.
@@ -68,7 +68,7 @@ type loginBody struct {
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	// Rate limit check happens first — 429 is returned without even touching
 	// the password comparison.
-	clientIP := extractClientIP(r)
+	clientIP := h.clientIP(r)
 	if !h.rl.consume(clientIP) {
 		writeJSON(w, 429, map[string]any{"error": "rate_limited", "retry_after": 60})
 		return
@@ -156,26 +156,6 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"authenticated": true})
-}
-
-// extractClientIP returns the caller's IP for rate-limit bucketing. It
-// trusts the first entry of X-Forwarded-For if present, which means it is
-// ONLY safe when navarisd sits behind a reverse proxy that overwrites or
-// strips inbound XFF headers. A directly-exposed instance lets clients
-// pick their own rate-limit bucket by setting this header.
-func extractClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// First entry is the original client.
-		if i := strings.IndexByte(xff, ','); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
