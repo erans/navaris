@@ -48,8 +48,8 @@ add_bool_flag --incus-strict-pool-cow "${NAVARIS_INCUS_STRICT_POOL_COW:-}"
 add_string_flag --otlp-endpoint "${NAVARIS_OTLP_ENDPOINT:-}"
 add_string_flag --otlp-protocol "${NAVARIS_OTLP_PROTOCOL:-}"
 add_string_flag --service-name "${NAVARIS_SERVICE_NAME:-}"
-add_string_flag --ui-password "${NAVARIS_UI_PASSWORD:-}"
-add_string_flag --ui-session-key "${NAVARIS_UI_SESSION_KEY:-}"
+# NAVARIS_UI_PASSWORD / NAVARIS_UI_SESSION_KEY ride the environment too —
+# navarisd reads NAVARIS_* secrets from env, so keep them out of argv.
 add_string_flag --ui-session-ttl "${NAVARIS_UI_SESSION_TTL:-}"
 add_bool_flag --mcp-enabled "${NAVARIS_MCP_ENABLED:-}"
 add_bool_flag --mcp-read-only "${NAVARIS_MCP_READ_ONLY:-}"
