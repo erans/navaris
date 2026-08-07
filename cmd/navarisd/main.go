@@ -64,6 +64,7 @@ type config struct {
 	boostMaxDuration            time.Duration
 	boostChannelEnabled         bool
 	boostChannelDir             string
+	trustedProxies              []*net.IPNet
 }
 
 func main() {
@@ -117,12 +118,16 @@ func parseFlags() config {
 	flag.StringVar(&cfg.boostChannelDir, "boost-channel-dir", "/var/lib/navaris/boost-channels",
 		"host directory for per-sandbox Incus boost-channel UDS files")
 	flag.Parse()
-	// Env fallback for auth token: avoid passing secrets via argv (visible in
-	// /proc/<pid>/cmdline). Scripts should export NAVARIS_AUTH_TOKEN instead.
+	// Env fallbacks avoid passing secrets via argv (visible in
+	// /proc/<pid>/cmdline). Scripts should export these instead.
 	if cfg.authToken == "" {
-		if v := os.Getenv("NAVARIS_AUTH_TOKEN"); v != "" {
-			cfg.authToken = v
-		}
+		cfg.authToken = strings.TrimSpace(os.Getenv("NAVARIS_AUTH_TOKEN"))
+	}
+	if cfg.uiPassword == "" {
+		cfg.uiPassword = strings.TrimSpace(os.Getenv("NAVARIS_UI_PASSWORD"))
+	}
+	if cfg.uiSessionKey == "" {
+		cfg.uiSessionKey = strings.TrimSpace(os.Getenv("NAVARIS_UI_SESSION_KEY"))
 	}
 	if trustedProxiesRaw != "" {
 		parsed, err := parseTrustedProxies(trustedProxiesRaw)
@@ -170,6 +175,12 @@ func buildStorageRegistry(cfg config) (*storage.Registry, error) {
 func run(cfg config) error {
 	logger := setupLogger(cfg.logLevel)
 	slog.SetDefault(logger)
+
+	if len(cfg.trustedProxies) == 0 && !isLoopbackListen(cfg.listen) {
+		logger.Warn("no --trusted-proxies configured on a non-loopback listen address; " +
+			"X-Forwarded-For will be ignored and login rate limiting applies per direct peer — " +
+			"if navarisd runs behind a reverse proxy, set --trusted-proxies")
+	}
 
 	telemetryShutdown, err := telemetry.Init(context.Background(), telemetry.Config{
 		Endpoint:    cfg.otlpEndpoint,
@@ -347,21 +358,34 @@ func run(cfg config) error {
 	// provider that supports it. The handler depends on boostSvc (which depends
 	// on sbxSvc/prov), so providers are registered first above, and we wire the
 	// handler here via a type assertion to a local interface.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
 	rateLim := api.NewRateLimiterDefault()
 	// Periodically evict idle rate-limiter buckets.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			rateLim.GC()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				rateLim.GC()
+			}
 		}
 	}()
 	if uiHandlers != nil {
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
-			for range ticker.C {
-				uiHandlers.GC()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					uiHandlers.GC()
+				}
 			}
 		}()
 	}
@@ -497,10 +521,7 @@ func run(cfg config) error {
 	}
 	logger.Info("listening", "addr", ln.Addr().String())
 
-	// Graceful shutdown on signal
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-
+	// Graceful shutdown on signal; ctx is the one hoisted above the GC goroutines.
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- httpSrv.Serve(ln)
@@ -548,10 +569,6 @@ func setupLogger(level string) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
 }
 
-// normalizeListen converts a listen address to a loopback form suitable for
-// the MCP handler's outbound calls back into navarisd. Wildcard hosts ("",
-// "0.0.0.0", "::") become 127.0.0.1; explicit hosts are preserved. Invalid
-// addresses pass through so net.Listen reports the canonical error.
 // parseTrustedProxies parses a comma-separated list of CIDRs or plain IPs.
 func parseTrustedProxies(s string) ([]*net.IPNet, error) {
 	if strings.TrimSpace(s) == "" {
@@ -570,7 +587,7 @@ func parseTrustedProxies(s string) ([]*net.IPNet, error) {
 		}
 		ip := net.ParseIP(part)
 		if ip == nil {
-			return nil, fmt.Errorf("invalid CIDR %q: %w", part, err)
+			return nil, fmt.Errorf("invalid CIDR or IP %q: %w", part, err)
 		}
 		var cidr2 *net.IPNet
 		if ip.To4() != nil {
@@ -583,27 +600,27 @@ func parseTrustedProxies(s string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-// isTrustedProxy reports whether remoteAddr is in trusted CIDRs.
-func isTrustedProxy(remoteAddr string, trusted []*net.IPNet) bool {
-	if len(trusted) == 0 {
-		return false
-	}
-	host, _, err := net.SplitHostPort(remoteAddr)
+// isLoopbackListen reports whether addr binds to a loopback interface.
+// Wildcard/empty hosts are NOT loopback. "localhost" counts.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		host = remoteAddr
-	}
-	ip := net.ParseIP(strings.TrimSpace(host))
-	if ip == nil {
 		return false
 	}
-	for _, cidr := range trusted {
-		if cidr.Contains(ip) {
-			return true
-		}
+	if host == "" {
+		return false
 	}
-	return false
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
+// normalizeListen converts a listen address to a loopback form suitable for
+// the MCP handler's outbound calls back into navarisd. Wildcard hosts ("",
+// "0.0.0.0", "::") become 127.0.0.1; explicit hosts are preserved. Invalid
+// addresses pass through so net.Listen reports the canonical error.
 func normalizeListen(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
