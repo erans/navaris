@@ -16,19 +16,19 @@ import (
 type OperationHandler func(ctx context.Context, op *domain.Operation) error
 
 type Dispatcher struct {
-	opStore    domain.OperationStore
-	events     domain.EventBus
-	handlers   map[string]OperationHandler
-	queue      chan *domain.Operation
-	sem        chan struct{}
-	cancels    sync.Map // operationID -> context.CancelFunc
-	cancelled  sync.Map // operationID -> struct{} (pre-run cancellation)
-	wg         sync.WaitGroup
-	mu         sync.Mutex
-	stopped    bool
-	stopOnce   sync.Once
-	done       chan struct{}
-	opsTotal   metric.Int64Counter
+	opStore   domain.OperationStore
+	events    domain.EventBus
+	handlers  map[string]OperationHandler
+	queue     chan *domain.Operation
+	sem       chan struct{}
+	cancels   sync.Map // operationID -> context.CancelFunc
+	cancelled sync.Map // operationID -> struct{} (pre-run cancellation)
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	stopped   bool
+	stopOnce  sync.Once
+	done      chan struct{}
+	opsTotal  metric.Int64Counter
 }
 
 func NewDispatcher(opStore domain.OperationStore, events domain.EventBus, concurrency int) *Dispatcher {

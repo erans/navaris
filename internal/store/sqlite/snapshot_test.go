@@ -44,7 +44,7 @@ func TestSnapshotListBySandbox(t *testing.T) {
 			SnapshotID: uuid.NewString(), SandboxID: sbx.SandboxID,
 			Backend: "incus", Label: "snap", State: domain.SnapshotReady,
 			ConsistencyMode: domain.ConsistencyStopped,
-			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+			CreatedAt:       time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		})
 	}
 	list, _ := s.SnapshotStore().ListBySandbox(t.Context(), sbx.SandboxID)
@@ -69,7 +69,7 @@ func TestSnapshotListOrphaned(t *testing.T) {
 		SnapshotID: uuid.NewString(), SandboxID: sbx.SandboxID,
 		Backend: "incus", Label: "orphan", State: domain.SnapshotReady,
 		ConsistencyMode: domain.ConsistencyStopped,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		CreatedAt:       time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	s.SnapshotStore().Create(t.Context(), snap)
 

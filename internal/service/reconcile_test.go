@@ -15,8 +15,8 @@ import (
 )
 
 type reconcileEnv struct {
-	store    *sqlite.Store
-	mock     *provider.MockProvider
+	store      *sqlite.Store
+	mock       *provider.MockProvider
 	reconciler *service.Reconciler
 }
 

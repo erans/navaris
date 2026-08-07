@@ -66,7 +66,7 @@ func TestGCSweepOrphanedSnapshots(t *testing.T) {
 		SandboxID: uuid.NewString(), ProjectID: proj.ProjectID, Name: "sbx",
 		State: domain.SandboxDestroyed, Backend: "mock",
 		NetworkMode: domain.NetworkIsolated,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		CreatedAt:   time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	s.SandboxStore().Create(t.Context(), sbx)
 
@@ -74,7 +74,7 @@ func TestGCSweepOrphanedSnapshots(t *testing.T) {
 		SnapshotID: uuid.NewString(), SandboxID: sbx.SandboxID,
 		Backend: "mock", Label: "orphan", State: domain.SnapshotReady,
 		ConsistencyMode: domain.ConsistencyStopped,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		CreatedAt:       time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	s.SnapshotStore().Create(t.Context(), snap)
 

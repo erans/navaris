@@ -12,8 +12,8 @@ import (
 
 func mockFS() fs.FS {
 	return fstest.MapFS{
-		"index.html":      {Data: []byte("<!doctype html>INDEX")},
-		"assets/app.js":   {Data: []byte("console.log('app');")},
+		"index.html":       {Data: []byte("<!doctype html>INDEX")},
+		"assets/app.js":    {Data: []byte("console.log('app');")},
 		"assets/style.css": {Data: []byte("body{}")},
 	}
 }

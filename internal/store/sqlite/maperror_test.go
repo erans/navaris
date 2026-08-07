@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/navaris/navaris/internal/domain"
-	sqlite3 "modernc.org/sqlite/lib"
 	_ "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 func TestMapErrorNil(t *testing.T) {

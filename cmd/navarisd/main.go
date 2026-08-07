@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -75,10 +76,12 @@ func main() {
 
 func parseFlags() config {
 	var cfg config
+	var trustedProxiesRaw string
 	flag.StringVar(&cfg.listen, "listen", ":8080", "address to listen on")
 	flag.StringVar(&cfg.dbPath, "db-path", "navaris.db", "path to SQLite database")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.authToken, "auth-token", "", "bearer token for API authentication (empty = no auth)")
+	flag.StringVar(&trustedProxiesRaw, "trusted-proxies", "", "comma-separated CIDRs trusted for X-Forwarded-For (e.g. 10.0.0.0/8,1.2.3.4/32)")
 	flag.StringVar(&cfg.incusSocket, "incus-socket", "", "path to Incus socket (Firecracker > Incus > mock)")
 	flag.BoolVar(&cfg.incusStrictPoolCoW, "incus-strict-pool-cow", false, "fail startup if Incus storage pool driver is not CoW-capable (default: warn)")
 	flag.DurationVar(&cfg.gcInterval, "gc-interval", 5*time.Minute, "garbage collection sweep interval")
@@ -114,6 +117,21 @@ func parseFlags() config {
 	flag.StringVar(&cfg.boostChannelDir, "boost-channel-dir", "/var/lib/navaris/boost-channels",
 		"host directory for per-sandbox Incus boost-channel UDS files")
 	flag.Parse()
+	// Env fallback for auth token: avoid passing secrets via argv (visible in
+	// /proc/<pid>/cmdline). Scripts should export NAVARIS_AUTH_TOKEN instead.
+	if cfg.authToken == "" {
+		if v := os.Getenv("NAVARIS_AUTH_TOKEN"); v != "" {
+			cfg.authToken = v
+		}
+	}
+	if trustedProxiesRaw != "" {
+		parsed, err := parseTrustedProxies(trustedProxiesRaw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "navarisd: --trusted-proxies: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.trustedProxies = parsed
+	}
 	return cfg
 }
 
@@ -201,9 +219,10 @@ func run(cfg config) error {
 			logger.Warn("ui-session-key not set; generated ephemeral key; sessions will not survive restart — set --ui-session-key to persist sessions")
 		}
 		uiHandlers = webui.NewHandlers(webui.Config{
-			Password:   cfg.uiPassword,
-			SessionKey: sessionKey,
-			SessionTTL: cfg.uiSessionTTL,
+			Password:       cfg.uiPassword,
+			SessionKey:     sessionKey,
+			SessionTTL:     cfg.uiSessionTTL,
+			TrustedProxies: cfg.trustedProxies,
 		})
 		if webui.Assets == nil {
 			logger.Warn("web UI enabled but binary was built without -tags withui; /ui/* API routes are reachable but the SPA shell will not be served")
@@ -329,6 +348,23 @@ func run(cfg config) error {
 	// on sbxSvc/prov), so providers are registered first above, and we wire the
 	// handler here via a type assertion to a local interface.
 	rateLim := api.NewRateLimiterDefault()
+	// Periodically evict idle rate-limiter buckets.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			rateLim.GC()
+		}
+	}()
+	if uiHandlers != nil {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				uiHandlers.GC()
+			}
+		}()
+	}
 	boostHandler := api.NewBoostHTTPHandler(boostSvc, store.SandboxStore(), rateLim)
 	type boostHandlerSetter interface {
 		SetBoostHandler(provider.BoostServer)
@@ -516,6 +552,58 @@ func setupLogger(level string) *slog.Logger {
 // the MCP handler's outbound calls back into navarisd. Wildcard hosts ("",
 // "0.0.0.0", "::") become 127.0.0.1; explicit hosts are preserved. Invalid
 // addresses pass through so net.Listen reports the canonical error.
+// parseTrustedProxies parses a comma-separated list of CIDRs or plain IPs.
+func parseTrustedProxies(s string) ([]*net.IPNet, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var out []*net.IPNet
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, cidr, err := net.ParseCIDR(part)
+		if err == nil {
+			out = append(out, cidr)
+			continue
+		}
+		ip := net.ParseIP(part)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", part, err)
+		}
+		var cidr2 *net.IPNet
+		if ip.To4() != nil {
+			_, cidr2, _ = net.ParseCIDR(ip.String() + "/32")
+		} else {
+			_, cidr2, _ = net.ParseCIDR(ip.String() + "/128")
+		}
+		out = append(out, cidr2)
+	}
+	return out, nil
+}
+
+// isTrustedProxy reports whether remoteAddr is in trusted CIDRs.
+func isTrustedProxy(remoteAddr string, trusted []*net.IPNet) bool {
+	if len(trusted) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range trusted {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeListen(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

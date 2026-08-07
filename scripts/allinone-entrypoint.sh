@@ -124,7 +124,9 @@ ARGS=(
 )
 
 if [ -n "$NAVARIS_AUTH_TOKEN" ]; then
-    ARGS+=(--auth-token="$NAVARIS_AUTH_TOKEN")
+    # Avoid passing token via argv (visible in /proc/<pid>/cmdline);
+    # navarisd reads NAVARIS_AUTH_TOKEN from env when --auth-token is unset.
+    export NAVARIS_AUTH_TOKEN
 fi
 
 if [ -n "${NAVARIS_UI_PASSWORD:-}" ]; then
