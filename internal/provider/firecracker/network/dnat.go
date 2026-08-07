@@ -21,7 +21,9 @@ func AddDNAT(hostPort int, guestIP string, targetPort int) error {
 	}
 
 	for _, args := range rules {
-		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = childEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
 			// Best-effort rollback: remove any rules we already added.
 			RemoveDNAT(hostPort, guestIP, targetPort)
 			return fmt.Errorf("add dnat %s→%s: %w: %s", hp, dest, err, out)
@@ -45,6 +47,8 @@ func RemoveDNAT(hostPort int, guestIP string, targetPort int) {
 	}
 
 	for _, args := range rules {
-		exec.Command(args[0], args[1:]...).CombinedOutput()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = childEnv()
+		cmd.CombinedOutput()
 	}
 }

@@ -124,15 +124,15 @@ ARGS=(
 )
 
 if [ -n "$NAVARIS_AUTH_TOKEN" ]; then
-    ARGS+=(--auth-token="$NAVARIS_AUTH_TOKEN")
+    # Avoid passing token via argv (visible in /proc/<pid>/cmdline);
+    # navarisd reads NAVARIS_AUTH_TOKEN from env when --auth-token is unset.
+    export NAVARIS_AUTH_TOKEN
 fi
 
-if [ -n "${NAVARIS_UI_PASSWORD:-}" ]; then
-    ARGS+=(--ui-password="$NAVARIS_UI_PASSWORD")
-fi
-if [ -n "${NAVARIS_UI_SESSION_KEY:-}" ]; then
-    ARGS+=(--ui-session-key="$NAVARIS_UI_SESSION_KEY")
-fi
+# Avoid passing secrets via argv (visible in /proc/<pid>/cmdline);
+# navarisd reads NAVARIS_UI_PASSWORD / NAVARIS_UI_SESSION_KEY from env when the flags are unset.
+[ -n "${NAVARIS_UI_PASSWORD:-}" ] && export NAVARIS_UI_PASSWORD
+[ -n "${NAVARIS_UI_SESSION_KEY:-}" ] && export NAVARIS_UI_SESSION_KEY
 if [ -n "${NAVARIS_UI_SESSION_TTL:-}" ]; then
     ARGS+=(--ui-session-ttl="$NAVARIS_UI_SESSION_TTL")
 fi

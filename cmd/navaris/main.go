@@ -8,9 +8,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "navaris",
-	Short: "Navaris sandbox control plane CLI",
-	Long:  "Command-line interface for managing sandboxes, snapshots, images, and sessions.",
+	Use:           "navaris",
+	Short:         "Navaris sandbox control plane CLI",
+	Long:          "Command-line interface for managing sandboxes, snapshots, images, and sessions.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

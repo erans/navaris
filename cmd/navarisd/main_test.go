@@ -306,3 +306,65 @@ func TestWildcardListenMCPEndToEnd(t *testing.T) {
 		t.Fatal("expected at least one tool from wildcard-bound MCP server, got none")
 	}
 }
+
+func TestParseTrustedProxies(t *testing.T) {
+	ok := []struct {
+		in   string
+		want int
+	}{
+		{"10.0.0.0/8", 1},
+		{"1.2.3.4", 1}, // plain IPv4 → /32
+		{"::1", 1},     // plain IPv6 → /128
+		{"10.0.0.0/8, 1.2.3.4 , ::1", 3},
+		{"", 0},
+		{" , ,", 0},
+	}
+	for _, tc := range ok {
+		got, err := parseTrustedProxies(tc.in)
+		if err != nil {
+			t.Errorf("parseTrustedProxies(%q) unexpected error: %v", tc.in, err)
+		} else if len(got) != tc.want {
+			t.Errorf("parseTrustedProxies(%q) returned %d nets, want %d", tc.in, len(got), tc.want)
+		}
+	}
+	if _, err := parseTrustedProxies("not-an-ip"); err == nil {
+		t.Error("parseTrustedProxies(\"not-an-ip\") should fail")
+	}
+}
+
+func TestParseFlagsEnvFallbackTrimsAndPrefersFlag(t *testing.T) {
+	origArgs := os.Args
+	origFS := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = origArgs
+		flag.CommandLine = origFS
+	})
+	t.Setenv("NAVARIS_UI_PASSWORD", "  padded-secret\n")
+	t.Setenv("NAVARIS_UI_SESSION_KEY", "env-key")
+	t.Setenv("NAVARIS_AUTH_TOKEN", "env-token")
+	flag.CommandLine = flag.NewFlagSet("navarisd", flag.ContinueOnError)
+	os.Args = []string{"navarisd", "--ui-session-key=flag-key"}
+
+	cfg := parseFlags()
+	if cfg.uiPassword != "padded-secret" {
+		t.Errorf("uiPassword = %q, want trimmed env value %q", cfg.uiPassword, "padded-secret")
+	}
+	if cfg.uiSessionKey != "flag-key" {
+		t.Errorf("uiSessionKey = %q, want flag to win over env", cfg.uiSessionKey)
+	}
+	if cfg.authToken != "env-token" {
+		t.Errorf("authToken = %q, want env value", cfg.authToken)
+	}
+}
+
+func TestIsLoopbackListen(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1:8080": true, "[::1]:8080": true, "localhost:8080": true,
+		":8080": false, "0.0.0.0:8080": false, "192.168.1.10:8080": false,
+	}
+	for in, want := range cases {
+		if got := isLoopbackListen(in); got != want {
+			t.Errorf("isLoopbackListen(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

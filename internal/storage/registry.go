@@ -32,7 +32,7 @@ type Config struct {
 // does).
 type Registry struct {
 	mu       sync.RWMutex
-	prefixes []string             // sorted longest-first for For lookups
+	prefixes []string // sorted longest-first for For lookups
 	byPrefix map[string]Backend
 	fallback Backend
 }

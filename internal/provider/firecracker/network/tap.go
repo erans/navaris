@@ -25,7 +25,9 @@ func CreateTap(name string, hostIP string) error {
 		{"ip", "link", "set", name, "up"},
 	}
 	for _, args := range cmds {
-		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = childEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("tap %s: %s: %w: %s", name, strings.Join(args, " "), err, out)
 		}
 	}
@@ -33,7 +35,9 @@ func CreateTap(name string, hostIP string) error {
 }
 
 func DeleteTap(name string) error {
-	out, err := exec.Command("ip", "link", "del", name).CombinedOutput()
+	cmd := exec.Command("ip", "link", "del", name)
+	cmd.Env = childEnv()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("delete tap %s: %w: %s", name, err, out)
 	}
@@ -60,7 +64,9 @@ func DeleteMasqueradeArgs(guestIP string, hostIface string) []string {
 
 func AddMasquerade(guestIP string, hostIface string) error {
 	args := MasqueradeArgs(guestIP, hostIface)
-	out, err := exec.Command("iptables", args...).CombinedOutput()
+	cmd := exec.Command("iptables", args...)
+	cmd.Env = childEnv()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("add masquerade for %s: %w: %s", guestIP, err, out)
 	}
@@ -69,7 +75,9 @@ func AddMasquerade(guestIP string, hostIface string) error {
 
 func RemoveMasquerade(guestIP string, hostIface string) error {
 	args := DeleteMasqueradeArgs(guestIP, hostIface)
-	out, err := exec.Command("iptables", args...).CombinedOutput()
+	cmd := exec.Command("iptables", args...)
+	cmd.Env = childEnv()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("remove masquerade for %s: %w: %s", guestIP, err, out)
 	}
@@ -77,7 +85,9 @@ func RemoveMasquerade(guestIP string, hostIface string) error {
 }
 
 func DetectDefaultInterface() (string, error) {
-	out, err := exec.Command("ip", "route", "get", "1.1.1.1").CombinedOutput()
+	cmd := exec.Command("ip", "route", "get", "1.1.1.1")
+	cmd.Env = childEnv()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("detect default interface: %w: %s", err, out)
 	}
@@ -91,7 +101,9 @@ func DetectDefaultInterface() (string, error) {
 }
 
 func CheckIPForward() error {
-	out, err := exec.Command("sysctl", "-n", "net.ipv4.ip_forward").CombinedOutput()
+	cmd := exec.Command("sysctl", "-n", "net.ipv4.ip_forward")
+	cmd.Env = childEnv()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("check ip_forward: %w: %s", err, out)
 	}

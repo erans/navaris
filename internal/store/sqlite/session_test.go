@@ -47,7 +47,7 @@ func TestSessionListBySandbox(t *testing.T) {
 		s.SessionStore().Create(t.Context(), &domain.Session{
 			SessionID: uuid.NewString(), SandboxID: sbx.SandboxID,
 			Backing: domain.SessionBackingDirect, Shell: "/bin/bash",
-			State: domain.SessionActive,
+			State:     domain.SessionActive,
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		})
 	}
@@ -64,7 +64,7 @@ func TestSessionUpdate(t *testing.T) {
 	sess := &domain.Session{
 		SessionID: uuid.NewString(), SandboxID: sbx.SandboxID,
 		Backing: domain.SessionBackingDirect, Shell: "/bin/bash",
-		State: domain.SessionActive,
+		State:     domain.SessionActive,
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	s.SessionStore().Create(t.Context(), sess)

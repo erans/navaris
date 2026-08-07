@@ -15,14 +15,14 @@ import (
 )
 
 type SessionService struct {
-	sessions   domain.SessionStore
-	sandboxes  domain.SandboxStore
-	provider   domain.Provider
-	events     domain.EventBus
-	tmuxReady  sync.Map
-	tmuxMu     sync.Map // per-sandbox *sync.Mutex for serializing ensureTmux
-	bashReady  sync.Map
-	bashMu     sync.Map // per-sandbox *sync.Mutex for serializing ensureBash
+	sessions  domain.SessionStore
+	sandboxes domain.SandboxStore
+	provider  domain.Provider
+	events    domain.EventBus
+	tmuxReady sync.Map
+	tmuxMu    sync.Map // per-sandbox *sync.Mutex for serializing ensureTmux
+	bashReady sync.Map
+	bashMu    sync.Map // per-sandbox *sync.Mutex for serializing ensureBash
 }
 
 func NewSessionService(
