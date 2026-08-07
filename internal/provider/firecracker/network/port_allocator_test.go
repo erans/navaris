@@ -94,3 +94,18 @@ func TestPortAllocatorWrapAround(t *testing.T) {
 		t.Errorf("got %d, want %d", port, portMax)
 	}
 }
+
+func TestPortAllocator_InUse(t *testing.T) {
+	a := NewPortAllocator()
+	port, err := a.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.InUse(port) {
+		t.Fatalf("InUse(%d) = false after Allocate", port)
+	}
+	a.Release(port)
+	if a.InUse(port) {
+		t.Fatalf("InUse(%d) = true after Release", port)
+	}
+}

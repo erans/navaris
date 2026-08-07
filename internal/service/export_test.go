@@ -11,3 +11,13 @@ import (
 func (s *SandboxService) HandleFork(ctx context.Context, op *domain.Operation) error {
 	return s.handleFork(ctx, op)
 }
+
+func (s *BoostService) SandboxLockRefsForTest(sandboxID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.sbxLocks[sandboxID]
+	if entry == nil {
+		return 0
+	}
+	return entry.refs
+}

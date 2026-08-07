@@ -67,3 +67,10 @@ func (a *PortAllocator) MarkUsed(port int) {
 	defer a.mu.Unlock()
 	a.used[port] = true
 }
+
+// InUse reports whether port is currently allocated or recovery-reserved.
+func (a *PortAllocator) InUse(port int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.used[port]
+}

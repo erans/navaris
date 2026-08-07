@@ -1,3 +1,8 @@
+# Supply-chain: Zabbly key fingerprint and Incus version pinned.
+# To enforce fingerprint: curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --show-keys
+# Then build with: --build-arg ZABBLY_KEY_FINGERPRINT=<fingerprint>
+ARG ZABBLY_KEY_FINGERPRINT=4EFC590696CB15B87C73A3AD82CC8797C838DCFD
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -5,15 +10,24 @@ ENV PATH="/opt/incus/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/opt/incus/lib"
 
 # Install Incus from Zabbly PPA
+# Supply-chain: verify Zabbly key fingerprint before use. See top ARG.
+ARG ZABBLY_KEY_FINGERPRINT
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates curl gpg && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt/keyrings/zabbly.gpg && \
+    if [ "$ZABBLY_KEY_FINGERPRINT" != "REPLACE_WITH_REAL_FINGERPRINT" ] && [ -n "$ZABBLY_KEY_FINGERPRINT" ]; then \
+        echo "Verifying Zabbly key fingerprint..."; \
+        gpg --show-keys /etc/apt/keyrings/zabbly.gpg | grep -q "$ZABBLY_KEY_FINGERPRINT" || (echo "ERROR: Zabbly key fingerprint mismatch (expected $ZABBLY_KEY_FINGERPRINT)" >&2; exit 1); \
+    else \
+        echo "WARNING: ZABBLY_KEY_FINGERPRINT not set — skipping fingerprint verification (set --build-arg ZABBLY_KEY_FINGERPRINT=... to enforce)" >&2; \
+        gpg --show-keys /etc/apt/keyrings/zabbly.gpg || true; \
+    fi && \
     echo "deb [signed-by=/etc/apt/keyrings/zabbly.gpg] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo ${VERSION_CODENAME}) main" \
         > /etc/apt/sources.list.d/zabbly-incus.list && \
     apt-get update && \
-    apt-get install -y --no-install-recommends incus btrfs-progs && \
+    apt-get install -y --no-install-recommends incus=6.23* btrfs-progs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/incus-entrypoint.sh /entrypoint.sh
