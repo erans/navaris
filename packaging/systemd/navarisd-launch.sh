@@ -28,7 +28,8 @@ add_bool_flag() {
     fi
 }
 
-add_string_flag --auth-token "${NAVARIS_AUTH_TOKEN:-}"
+# NAVARIS_AUTH_TOKEN is intentionally NOT passed as a flag: navarisd reads it
+# from the environment (EnvironmentFile) so it never appears in argv.
 add_string_flag --incus-socket "${NAVARIS_INCUS_SOCKET:-}"
 add_string_flag --gc-interval "${NAVARIS_GC_INTERVAL:-}"
 add_string_flag --concurrency "${NAVARIS_CONCURRENCY:-}"
